@@ -13,11 +13,15 @@ that's already half-written. No promises on response time either way.
 ## Running the tests
 
 ```bash
-python3.12 -m venv .venv
+python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest -q
 ```
 
-That's the whole gate. There's no CI, so a green suite locally is what "it
-works" means here. It covers the receiver logic, the Teams card goldens, the
-CDK synthesis, and the stored prompts.
+Any Python 3.12 or newer works; `pyproject.toml` enforces that. The Lambda
+runs 3.12 and CI covers 3.12 and 3.13, so either is a fine place to develop.
+
+That's the whole gate, and it covers the receiver logic, the Teams card
+goldens, the CDK synthesis, and the stored prompts. CI runs the same suite on
+every push and pull request, plus a secret scan, so a green run locally should
+mean a green run there.

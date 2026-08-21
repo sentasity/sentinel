@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "autofix.yml"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "autofix.yml"
 
 
 def load():
@@ -201,3 +202,44 @@ def test_the_scan_uses_the_committed_config():
     false positive, which would train everyone to ignore it."""
     assert "--config .gitleaks.toml" in scan_step()["run"]
     assert (WORKFLOW_DIR.parent.parent / ".gitleaks.toml").is_file()
+
+
+TESTS_WORKFLOW = WORKFLOW_DIR / "tests.yml"
+
+
+def test_the_suite_runs_on_push_and_pull_request():
+    doc = yaml.safe_load(TESTS_WORKFLOW.read_text())
+
+    # PyYAML reads the top-level `on:` key as boolean True.
+    assert set(doc[True]) == {"push", "pull_request"}
+
+
+def test_the_suite_runs_on_both_the_deploy_and_development_interpreters():
+    """The Lambda runs 3.12 while development happens on something newer, so a
+    matrix over only one of them leaves the other tested by luck."""
+    doc = yaml.safe_load(TESTS_WORKFLOW.read_text())
+    versions = doc["jobs"]["pytest"]["strategy"]["matrix"]["python-version"]
+
+    assert "3.12" in versions, "3.12 is the Lambda runtime"
+    assert len(versions) > 1, "a single-version matrix defeats the point"
+
+
+def test_the_lambda_runtime_is_in_the_test_matrix():
+    """Pins the matrix to the runtime the stack actually declares, so bumping
+    one without the other fails here rather than in production."""
+    stack = (REPO_ROOT / "infra" / "stacks" / "receiver_stack.py").read_text()
+    runtime = re.search(r"Runtime\.PYTHON_(\d+)_(\d+)", stack)
+
+    assert runtime, "could not find the Lambda runtime in the stack"
+    declared = f"{runtime.group(1)}.{runtime.group(2)}"
+    versions = yaml.safe_load(TESTS_WORKFLOW.read_text())["jobs"]["pytest"]["strategy"]["matrix"]["python-version"]
+
+    assert declared in versions, f"the stack deploys {declared}; the matrix does not test it"
+
+
+def test_the_test_job_needs_no_credentials():
+    """A suite that needs secrets cannot run on a fork's pull request."""
+    doc = yaml.safe_load(TESTS_WORKFLOW.read_text())
+
+    assert doc["permissions"] == {"contents": "read"}
+    assert "secrets." not in TESTS_WORKFLOW.read_text()

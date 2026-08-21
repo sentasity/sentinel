@@ -8,7 +8,9 @@ Sentry alert receiver and unattended investigation engine. Start with [README.md
 .venv/bin/python -m pytest -q
 ```
 
-That's the only gate: this repo has no CI. Deploys are manual `cdk deploy`, see [infra/README.md](infra/README.md).
+Run it before every push. CI runs the same suite on 3.12 and 3.13 plus a
+gitleaks scan (`.github/workflows/`), but it is a backstop, not the place to
+find out. Deploys are manual `cdk deploy`, see [infra/README.md](infra/README.md).
 
 ## Docs discipline
 

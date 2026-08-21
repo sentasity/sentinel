@@ -1,0 +1,43 @@
+# The test suite, which is the gate for correctness. It ran only on a
+# developer's machine while the repo was private and every push came from one;
+# a public repo takes pull requests from machines nobody here can see.
+#
+# The matrix is the point: the Lambda runs on 3.12 (see infra/stacks/
+# receiver_stack.py) while local development happens on whatever recent Python
+# is to hand, so without both, one of the two is only ever tested by luck.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # No AWS credentials and no Docker: the CDK tests synthesize a template
+      # in-process, and the receiver tests stub boto3. The real config is
+      # untracked, so this runs against exactly what a stranger clones.
+      - name: Run the suite
+        run: python -m pytest -q
