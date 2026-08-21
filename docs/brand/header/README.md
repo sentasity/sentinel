@@ -16,6 +16,7 @@ to sit at a fixed size.
 | `sentinel-header-dark.svg` | 1221x208, 5.9:1 | Cream wordmark and moon, steel wire, for dark backgrounds. |
 | `sentinel-header-compact-{light,dark}.svg` | 751x198, 3.8:1 | The narrow crop, for fixed-size placements. No moon: see below. |
 | `*-2x.png` | | 2x rasters of all four, for anywhere SVG is awkward. |
+| `sentinel-social-card.png` | 1280x640, 2:1 | The repo's social preview. Not a lockup: see below. |
 
 The wordmark is Gotham Rounded Bold **converted to outlines**. GitHub has no
 Gotham Rounded, so live `<text>` would fall back to whatever the reader happens
@@ -57,9 +58,38 @@ The older `#gh-dark-mode-only` URL-fragment trick is deprecated, so don't use it
 </picture>
 ```
 
+## The social preview card
+
+`sentinel-social-card.png` is what GitHub unfurls when the repo is linked, set
+under Settings, General, Social preview. It is the only file here that is not a
+lockup, and it breaks both of this directory's conventions on purpose.
+
+**It has an opaque ground.** Everything else here is transparent, which is right
+for a README that already has a background. A social card does not: it is
+unfurled by Slack, X, LinkedIn and Discord, each compositing transparency
+against its own backdrop, so the light lockup's navy wordmark would disappear
+on a dark client. The card carries brand navy `#1b2741` and the dark lockup.
+
+**It is 2:1.** GitHub wants 1280x640 and letterboxes anything else against a
+background it picks, not one we control. No lockup aspect here is close: wide is
+5.9:1 and compact is 3.8:1. Wide is the one composited, at full bleed, so the
+wire runs edge to edge rather than stopping inside a padded box, and the moon
+survives, which the compact crop has nowhere to put.
+
+Rebuild it from the wide dark raster, which needs no font because the wordmark
+is already outlined:
+
+```bash
+magick -size 1280x640 xc:'#1b2741' \
+  \( docs/brand/header/sentinel-header-dark-2x.png -resize 1280x \) \
+  -gravity center -composite -strip docs/brand/header/sentinel-social-card.png
+```
+
+GitHub caps the upload at 1MB. This lands around 130KB.
+
 ## Regenerating
 
-`../build_header.py` rebuilds every file here. It needs `hb-view` (harfbuzz) and
+`../build_header.py` rebuilds every lockup here, though not the social card above. It needs `hb-view` (harfbuzz) and
 `rsvg-convert` on PATH, plus Gotham Rounded Bold installed locally, so it only
 runs on a machine with the licensed font. The committed SVGs need none of that.
 
