@@ -1,0 +1,25 @@
+[project]
+name = "sentinel"
+version = "0.1.0"
+description = "Sentry alert receiver and unattended investigation engine"
+requires-python = ">=3.12"
+dependencies = [
+    "boto3>=1.35",
+    "requests>=2.32",
+    "PyYAML>=6.0",
+    "sentry-sdk>=2.14",
+    "PyJWT[crypto]>=2.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "aws-cdk-lib>=2.150", "constructs>=10.3"]
+
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["receiver"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

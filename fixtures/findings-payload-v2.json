@@ -1,0 +1,26 @@
+{
+  "schema_version": 2,
+  "batch_id": "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42",
+  "results": [
+    {
+      "issue_id": "1000000007",
+      "short_id": "SCANNERS-7X",
+      "status": "investigated",
+      "release_investigated": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
+      "root_cause": "The restore flow swallows ClientError and reports sent.",
+      "confidence": "high",
+      "fixability": "high",
+      "evidence": [
+        {
+          "file": "src/example_app/services/accounts.py",
+          "symbol": "restore_session",
+          "line": 214,
+          "note": "every ClientError is swallowed"
+        }
+      ],
+      "assumptions": ["retries were human-driven"],
+      "next_step": "mirror resend_token's LimitExceededException branch",
+      "failure_reason": null
+    }
+  ]
+}

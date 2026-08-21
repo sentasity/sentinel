@@ -1,0 +1,4 @@
+requests>=2.32
+PyYAML>=6.0
+sentry-sdk>=2.14
+PyJWT[crypto]>=2.9

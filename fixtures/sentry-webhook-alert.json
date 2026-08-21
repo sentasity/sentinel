@@ -1,0 +1,259 @@
+{
+  "action": "triggered",
+  "installation": {
+    "uuid": "5fe77d44-54a4-4b1f-9a63-c896f7a94bff"
+  },
+  "data": {
+    "event": {
+      "event_id": "493b2d4ab28d49bdb9b7bc2fc4e478ee",
+      "project": 1000000000000003,
+      "release": "efa4bbfc4e79761e3542990fc090df1bc22ec47f",
+      "dist": null,
+      "platform": "python",
+      "message": "",
+      "datetime": "2026-08-13T21:42:43.110305Z",
+      "tags": [
+        [
+          "environment",
+          "staging"
+        ],
+        [
+          "handled",
+          "yes"
+        ],
+        [
+          "interface_type",
+          "exception"
+        ],
+        [
+          "level",
+          "error"
+        ],
+        [
+          "mechanism",
+          "generic"
+        ],
+        [
+          "runtime",
+          "CPython 3.12.11"
+        ],
+        [
+          "runtime.name",
+          "CPython"
+        ],
+        [
+          "release",
+          "efa4bbfc4e79761e3542990fc090df1bc22ec47f"
+        ],
+        [
+          "server_name",
+          "mac.lan"
+        ],
+        [
+          "smoke_marker",
+          "c48b86ab"
+        ],
+        [
+          "synthetic",
+          "true"
+        ]
+      ],
+      "_dsc": {
+        "environment": "staging",
+        "org_id": "1000000000000001",
+        "public_key": "00000000000000000000000000000000",
+        "release": "efa4bbfc4e79761e3542990fc090df1bc22ec47f",
+        "replay_id": null,
+        "trace_id": "b4032d3d8cab42ecaad5008e93a0a4c4",
+        "transaction": null
+      },
+      "_fingerprint_info": {
+        "client_fingerprint": [
+          "alert-relay-migration-smoke",
+          "c48b86ab"
+        ]
+      },
+      "_meta": {},
+      "_metrics": {
+        "bytes.ingested.event": 4205,
+        "bytes.stored.event": 5731
+      },
+      "_ref": 1000000000000003,
+      "_ref_version": 2,
+      "contexts": {
+        "runtime": {
+          "build": "3.12.11 (main, Jun 12 2025, 12:22:42) [Clang 20.1.4 ]",
+          "name": "CPython",
+          "runtime": "CPython 3.12.11",
+          "type": "runtime",
+          "version": "3.12.11"
+        },
+        "trace": {
+          "span_id": "9f498169a757f37d",
+          "status": "unknown",
+          "trace_id": "b4032d3d8cab42ecaad5008e93a0a4c4",
+          "type": "trace"
+        }
+      },
+      "culprit": "__main__ in <module>",
+      "environment": "staging",
+      "exception": {
+        "values": [
+          {
+            "mechanism": {
+              "data": null,
+              "description": null,
+              "exception_id": null,
+              "handled": true,
+              "help_link": null,
+              "is_exception_group": null,
+              "meta": null,
+              "parent_id": null,
+              "source": null,
+              "synthetic": null,
+              "type": "generic"
+            },
+            "module": "__main__",
+            "stacktrace": {
+              "frames": [
+                {
+                  "abs_path": "/private/tmp/claude-501/-Users-timfurlong-code-example-app/scratchpad/force_alert.py",
+                  "addr_mode": null,
+                  "colno": null,
+                  "context_line": "        raise AlertRelayMigrationSmokeTest(",
+                  "data": {
+                    "orig_in_app": -1
+                  },
+                  "errors": null,
+                  "filename": "force_alert.py",
+                  "function": "<module>",
+                  "image_addr": null,
+                  "in_app": false,
+                  "instruction_addr": null,
+                  "lineno": 35,
+                  "lock": null,
+                  "module": "__main__",
+                  "package": null,
+                  "parent_index": null,
+                  "platform": null,
+                  "post_context": [
+                    "            f\"Synthetic post-migration delivery check ({MARKER}). Safe to resolve.\"",
+                    "        )",
+                    "    except AlertRelayMigrationSmokeTest:",
+                    "        event_id = sentry_sdk.capture_exception()",
+                    ""
+                  ],
+                  "pre_context": [
+                    "            \"marker\": MARKER,",
+                    "        },",
+                    "    )",
+                    "    scope.fingerprint = [\"alert-relay-migration-smoke\", MARKER]",
+                    "    try:"
+                  ],
+                  "raw_function": null,
+                  "sample_count": null,
+                  "source_link": null,
+                  "symbol": null,
+                  "symbol_addr": null,
+                  "trust": null,
+                  "vars": {
+                    "__annotations__": {},
+                    "__builtins__": "<module 'builtins' (built-in)>",
+                    "__cached__": "None",
+                    "__doc__": "'Send one synthetic error to backend-api / staging to exercise the migrated alert.\\n\\nDeliberately unique per run so the \"New Issue - Staging\" alert, which fires on\\nfirst_seen_event, actually triggers rather than folding into an existing issue.\\n'",
+                    "__file__": "'/private/tmp/claude-501/-Users-timfurlong-code-example-app/scratchpad/force_alert.py'",
+                    "__loader__": "<_frozen_importlib_external.SourceFileLoader object at 0x102ba08f0>",
+                    "__name__": "'__main__'",
+                    "__package__": "None",
+                    "__spec__": "None",
+                    "sys": "<module 'sys' (built-in)>"
+                  }
+                }
+              ]
+            },
+            "type": "AlertRelayMigrationSmokeTest",
+            "value": "Synthetic post-migration delivery check (c48b86ab). Safe to resolve."
+          }
+        ]
+      },
+      "extra": {
+        "sys.argv": [
+          "/var/task/app.py"
+        ]
+      },
+      "fingerprint": [
+        "alert-relay-migration-smoke",
+        "c48b86ab"
+      ],
+      "grouping_config": {
+        "enhancements": "KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA#KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA#KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA",
+        "id": "newstyle:2026-01-20"
+      },
+      "hashes": [
+        "d69cb96c9bc0ab9c906317dd60a4e458"
+      ],
+      "ingest_path": [
+        {
+          "public_key": "0000000000000000000000000000000000000000000",
+          "version": "26.7.2"
+        }
+      ],
+      "key_id": "1000030",
+      "level": "error",
+      "location": "force_alert.py",
+      "logger": "",
+      "metadata": {
+        "filename": "force_alert.py",
+        "function": "<module>",
+        "in_app_frame_mix": "system-only",
+        "type": "AlertRelayMigrationSmokeTest",
+        "value": "Synthetic post-migration delivery check (c48b86ab). Safe to resolve."
+      },
+      "nodestore_insert": 1000000002.49158,
+      "received": 1000000001.100002,
+      "sdk": {
+        "integrations": [
+          "argv",
+          "atexit",
+          "boto3",
+          "dedupe",
+          "excepthook",
+          "logging",
+          "modules",
+          "stdlib",
+          "threading"
+        ],
+        "name": "sentry.python",
+        "packages": [
+          {
+            "name": "pypi:sentry-sdk",
+            "version": "2.67.1"
+          }
+        ],
+        "version": "2.67.1"
+      },
+      "timestamp": 1000000001.100001,
+      "title": "AlertRelayMigrationSmokeTest: Synthetic post-migration delivery check (c48b86ab). Safe to resolve.",
+      "transaction_info": {},
+      "type": "error",
+      "version": "7",
+      "url": "https://sentry.io/api/0/projects/example-org/backend-api/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
+      "web_url": "https://sentry.io/organizations/example-org/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
+      "issue_url": "https://sentry.io/api/0/organizations/example-org/issues/1000000007/",
+      "issue_id": "1000000007",
+      "modules": {
+        "requests": "2.32.3",
+        "urllib3": "2.2.3"
+      },
+      "user": {
+        "ip_address": "0.0.0.0"
+      }
+    },
+    "triggered_rule": "[Backend API] New Issue - Staging"
+  },
+  "actor": {
+    "type": "application",
+    "id": "sentry",
+    "name": "Sentry"
+  }
+}

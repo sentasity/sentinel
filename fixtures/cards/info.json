@@ -1,0 +1,78 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "Container",
+      "style": "emphasis",
+      "bleed": true,
+      "items": [
+        {
+          "type": "ColumnSet",
+          "columns": [
+            {
+              "type": "Column",
+              "width": "auto",
+              "items": [
+                {
+                  "type": "TextBlock",
+                  "text": "🔵 INFO",
+                  "weight": "Bolder",
+                  "size": "Medium",
+                  "wrap": false
+                }
+              ]
+            },
+            {
+              "type": "Column",
+              "width": "stretch",
+              "horizontalAlignment": "Right",
+              "items": [
+                {
+                  "type": "TextBlock",
+                  "text": "STAGING · New Issue",
+                  "weight": "Bolder",
+                  "horizontalAlignment": "Right",
+                  "wrap": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "AlertRelayMigrationSmokeTest: Synthetic post-migration delivery check (c48b86ab). Safe to resolve.",
+      "weight": "Bolder",
+      "wrap": true,
+      "maxLines": 3,
+      "spacing": "Medium"
+    },
+    {
+      "type": "FactSet",
+      "facts": [
+        {
+          "title": "Project",
+          "value": "scanners"
+        },
+        {
+          "title": "Issue",
+          "value": "SCANNERS-7X"
+        },
+        {
+          "title": "Culprit",
+          "value": "\\_\\_main\\_\\_ in <module>"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "Open in Sentry",
+      "url": "https://sentry.io/organizations/example-org/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/"
+    }
+  ]
+}

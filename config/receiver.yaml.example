@@ -1,0 +1,98 @@
+# Config shape for one target project. Copy this file, drop the .example
+# suffix, and replace every REPLACE_WITH_* value before deploying.
+#
+# NOT config (startup assertion instead): the investigable-environment guard.
+# The routines API exposes no configuration read, so the repo-binding and
+# connector-allowlist guards are probe-verified, not asserted. See docs/ARCHITECTURE.md.
+
+project: my-project
+
+# Repository the routine session investigates (must match the routine's
+# repository binding; the startup assertion enforces this).
+target_repo: REPLACE_WITH_OWNER/REPLACE_WITH_REPO
+
+# How a Sentry `release` value maps to a git SHA. For many projects the
+# release IS the commit SHA (identity). Other projects may need a lookup.
+release_to_sha: identity
+
+# Sentry environments to investigate. Name the ones you run here; the
+# per-developer dev envs are best excluded:
+# stale/unpushed release SHAs make release-checkout structurally wrong.
+environments:
+  - prod
+  - staging
+
+model: opus
+
+# Hard caps for an unattended session.
+caps:
+  max_turns: 50
+
+# Where findings go: github-issue | teams-thread
+output: teams-thread
+
+# issue-ids-only: the fire carries project, issue ids, and the release SHA;
+# the session fetches event detail via the Sentry connector. The only
+# supported mode: a full event body can exceed the 65,536-character fire cap.
+payload_mode: issue-ids-only
+
+# auto: fire on every eligible Sentry notification
+# shadow: run the gate and record what would have fired, firing nothing
+# on-request: fire only when a human asks (reserved; not built)
+trigger_mode: shadow
+
+# Trigger endpoint and a REFERENCE to the token, never the token itself.
+# `token_ref` is the SSM key under `webhook.ssm_prefix`.
+trigger:
+  routine_id: REPLACE_WITH_ROUTINE_ID
+  token_ref: routine-trigger-token
+
+investigation:
+  debounce_seconds: 60
+  max_batch_issues: 8
+  daily_fire_cap: 40
+  per_sweep_fire_cap: 4
+  deadline_seconds: 900
+  # The receiver's own Function URL, which does not exist until the first
+  # deploy. Required only once `trigger_mode` fires, which is why the mode
+  # above ships as `shadow`.
+  findings_url: "REPLACE_WITH_FUNCTION_URL/findings"
+
+# --- receiver ---
+
+aws:
+  account: "123456789012"          # your AWS account id
+  region: us-east-1
+  table_name: sentinel-alerts
+  alarm_email: alerts@example.com
+
+teams:
+  tenant_id: "REPLACE_WITH_ENTRA_TENANT_ID"
+  service_url: "https://smba.trafficmanager.net/amer/"
+  bot_app_id: "REPLACE_WITH_ENTRA_APP_ID"
+  channels:
+    prod: "REPLACE_WITH_PROD_CHANNEL_ID"
+    staging: "REPLACE_WITH_STAGING_CHANNEL_ID"
+
+webhook:
+  sentry_org: REPLACE_WITH_SENTRY_ORG
+  ssm_prefix: /sentinel
+
+observability:
+  # The `automation` project's DSN. Not a secret (DSNs are ingest-only), so it
+  # lives in config and CDK passes it through as SENTRY_DSN.
+  automation_dsn: ""
+
+# --- autofix gate ---
+# enabled false ships the code inert; turning it on is a config deploy.
+# min_fixability medium is this deployment's chosen value (code default high).
+autofix:
+  enabled: false
+  projects: []
+  min_confidence: high
+  min_fixability: medium
+  exclude_paths: []
+  daily_pr_cap: 5
+  app_id: "REPLACE_WITH_APP_ID"
+  repo: REPLACE_WITH_OWNER/ENGINE_REPO
+  callback_url: "REPLACE_WITH_FUNCTION_URL/autofix-result"

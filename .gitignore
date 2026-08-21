@@ -1,0 +1,23 @@
+.DS_Store
+.env
+.envrc
+.env.*
+*.local.*
+__pycache__/
+.venv/
+node_modules/
+cdk.out/
+.pytest_cache/
+*.egg-info/
+.cadence/config.local.yaml
+.cadence/worktrees/
+teams-app/*.zip
+docs/superpowers/
+
+# brand exploration scratch; the adopted marks live in docs/brand/assets/
+docs/brand/options/
+
+# The receiver's real config is a local deployment fact; only the
+# `.example` template beside it ships. `*.yaml.example` does not match
+# this glob, so templates stay tracked.
+config/*.yaml

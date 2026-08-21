@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "batch_id": "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42",
+  "results": [
+    {
+      "issue_id": "1000000007",
+      "short_id": "SCANNERS-7X",
+      "status": "investigated",
+      "release_investigated": "efa4bbfc4e79761e3542990fc090df1bc22ec47f",
+      "root_cause": "restore_session is called before __init__ finishes, so self._client is still None.",
+      "confidence": "high",
+      "evidence": [
+        {
+          "file": "src/example_app/scanners/recovery.py",
+          "symbol": "restore_session",
+          "line": 214,
+          "note": "Dereferences self._client with no guard."
+        }
+      ],
+      "assumptions": ["The traceback's top frame is the raising frame."],
+      "next_step": "Move the _client assignment above the restore_session call.",
+      "failure_reason": null
+    }
+  ]
+}

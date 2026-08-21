@@ -1,0 +1,11 @@
+{
+  "type": "webhook",
+  "integrationId": null,
+  "data": {},
+  "config": {
+    "targetType": null,
+    "targetDisplay": null,
+    "targetIdentifier": "alert-relay-98aa06"
+  },
+  "status": "active"
+}

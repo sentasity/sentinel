@@ -1,0 +1,7 @@
+aws-cdk-lib>=2.150.0
+boto3>=1.35
+# The stack imports receiver.config and receiver.observability at synth time,
+# so the CDK venv needs the receiver's own runtime deps too.
+sentry-sdk>=2.14
+constructs>=10.3.0
+PyYAML>=6.0

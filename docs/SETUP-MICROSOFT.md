@@ -1,0 +1,122 @@
+# Microsoft-side setup (manual, one time)
+
+Everything below needs tenant admin rights, so it is Tim's to perform. Nothing
+in the receiver can be deployed against a live channel until it is done. All of
+it is free: the Azure subscription costs nothing to create and the bot runs on
+the F0 tier.
+
+## 1. Azure subscription
+
+In the Azure portal, create a pay-as-you-go subscription on the Sentasity M365
+tenant if one does not already exist. Required only because the Azure Bot
+resource must live in a subscription; the F0 tier itself is $0.
+
+## 2. Entra app registration
+
+Entra ID → App registrations → New registration.
+
+- Name: `Sentasity Sentinel`
+- Supported account types: **Accounts in this organizational directory only** (single tenant)
+- Redirect URI: none
+
+Record the **Application (client) ID** and the **Directory (tenant) ID**.
+
+Certificates & secrets → New client secret. Record the secret **value** (not the
+id) once; it is never shown again.
+
+## 3. Store the secret
+
+```bash
+BOT_CLIENT_SECRET='<the value>' \
+SENTRY_WEBHOOK_SECRET='<from docs/SETUP-SENTRY.md>' \
+SENTRY_API_TOKEN='<from docs/SETUP-SENTRY.md>' \
+  scripts/put-parameters.sh
+```
+
+This writes `/sentinel/bot-client-secret` and the two Sentry
+parameters as SecureStrings in SharedServices-Prod.
+
+## 4. Azure Bot resource
+
+Azure portal → Create a resource → Azure Bot.
+
+- Bot handle: `sentasity-alert-relay` (immutable in Azure; the display name is
+  Sentinel, only this handle keeps the original string)
+- Pricing tier: **F0 (free)**
+- Type of App: **Single Tenant**
+- Creation type: **Use existing app registration**, with the client id and
+  tenant id from step 2
+
+After creation, Settings → Configuration → Messaging endpoint:
+`<FunctionUrl>bot` (the stack output from `infra/README.md`, with `bot`
+appended). The receiver answers that route with a bare 200; a notification-only
+bot never processes inbound activities, but Azure requires the endpoint to be set.
+
+Then Channels → Microsoft Teams → enable.
+
+## 5. Fill in the config
+
+In `config/receiver.yaml`, replace:
+
+- `teams.tenant_id` with the Directory (tenant) ID
+- `teams.bot_app_id` with the Application (client) ID
+- `aws.alarm_email` with the address that should receive receiver alarms
+
+Leave `teams.service_url` at `https://smba.trafficmanager.net/amer/` (the North
+America Bot Framework endpoint for this tenant) and leave the two channel ids
+as they are; they were captured from the live Sentry integration.
+
+## 6. Icons
+
+Nothing to do. Both icons are committed in `teams-app/`, generated from the
+Sentinel mark in `docs/brand/assets/perch-cream`:
+
+- `color.png` — 192x192, opaque, the app tile
+- `outline.png` — 32x32, transparent background, white glyph only
+
+Teams renders the outline icon on the manifest's `accentColor`, which is set to
+brand navy `#1b2741`. `teams-app/build-package.sh` refuses to build without both
+files. To swap in a different mark, copy its `-tile-192.png` over `color.png` and
+its `-outline-32.png` over `outline.png`; see `docs/brand/assets/README.md`.
+
+## 7. Build and install the Teams app
+
+```bash
+BOT_APP_ID='<Application (client) ID>' teams-app/build-package.sh
+```
+
+Teams admin center → Teams apps → Manage apps → Upload new app → upload
+`teams-app/sentinel.zip`.
+
+Then install it into the team. In the Teams client open **Sentinel** and
+choose Add. Teams presents a "Choose a place to use the app" picker listing
+channels; select any channel in the team that owns Prod Alerts and Staging
+Alerts. The manifest declares `team` scope, so choosing a channel installs into
+that channel's *parent team*, not into the channel itself. The older route
+reaches the same place: the team's `⋯` → Manage team → Apps → More apps →
+**Sentinel**.
+
+Installing at the team scope is what lets the bot post into that team's
+channels; there is no per-channel install step. Both alert channels live in the
+same team, so one install covers both.
+
+## 8. Prove it
+
+```bash
+.venv/bin/python -m scripts.bot_smoke --channel '<staging channel id>' --level error
+```
+
+`scripts` is a package, so it has to run with `-m`. Invoking the file by path
+puts `scripts/` on `sys.path` instead of the repo root, and the script's own
+`from scripts.preview_card import ...` then fails with a ModuleNotFoundError.
+
+Expected: a red-banner card in Staging Alerts, a threaded reply beneath it, and
+both `conversation_id=` and `message_id=` printed. That reply is the exact
+mechanism the investigation engine uses to deliver findings.
+
+## Rollback
+
+Uninstalling the Teams app stops all bot posts immediately. Sentry alerts keep
+flowing to the receiver, which will then fail its posts and return 500 —
+visible in the CloudWatch alarm and in Sentry's delivery log. To restore stock
+Teams cards, run `scripts/migrate_rules.py rollback` as well.

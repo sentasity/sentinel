@@ -1,0 +1,19 @@
+# Config for the secret-scan workflow and for the pre-publish check in
+# docs/OPERATIONS.md. Extends gitleaks' default rule set; the only addition is
+# one allowlist entry.
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+`WithDecryption=True` is the boto3 keyword argument for reading an SSM
+SecureString, asserted in tests/test_config.py. The SSM parameter names
+legitimately contain the word "secret" (see SECRET_KEYS in receiver/config.py),
+and gitleaks' generic-api-key rule reads the token following one as its value.
+
+Allowlisted by exact value rather than by file path, so a real credential
+pasted into a test is still caught.
+"""
+regexes = [
+  '''^WithDecryption=True$''',
+]

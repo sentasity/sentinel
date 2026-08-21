@@ -1,0 +1,17 @@
+config_version: 7
+paths:
+  designs: docs/designs
+  plans: docs/plans
+  future: docs/future
+  config: .cadence
+plan:
+  tdd: true
+  commit_cadence: per-task
+execute:
+  mode: inline
+  parallel: false
+  branch_check: true
+audits:
+  build_validator:
+    command: .venv/bin/python -m pytest -q
+    expect_zero_exit: true

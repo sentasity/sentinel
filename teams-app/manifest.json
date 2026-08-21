@@ -1,0 +1,34 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.1.0",
+  "id": "REPLACE_WITH_BOT_APP_ID",
+  "developer": {
+    "name": "Sentasity",
+    "websiteUrl": "https://sentasity.com",
+    "privacyUrl": "https://sentasity.com/privacy",
+    "termsOfUseUrl": "https://sentasity.com/terms"
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "name": {
+    "short": "Sentinel",
+    "full": "Sentasity Sentinel"
+  },
+  "description": {
+    "short": "Posts severity-legible Sentry alerts into the alert channels.",
+    "full": "Sentinel posts Sentry issue alerts into this team's alert channels as colour-coded cards, so an error is distinguishable from a warning at a glance. It only posts; it cannot be messaged, and it reads nothing from the channel."
+  },
+  "accentColor": "#1b2741",
+  "bots": [
+    {
+      "botId": "REPLACE_WITH_BOT_APP_ID",
+      "scopes": ["team"],
+      "isNotificationOnly": true,
+      "supportsFiles": false
+    }
+  ],
+  "validDomains": []
+}

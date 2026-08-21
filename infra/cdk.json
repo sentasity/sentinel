@@ -1,0 +1,9 @@
+{
+  "app": "python3 app.py",
+  "requireApproval": "never",
+  "watch": { "exclude": ["**/.venv/**", "**/cdk.out/**"] },
+  "context": {
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true
+  }
+}
