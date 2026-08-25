@@ -148,14 +148,23 @@ def raw_body(event: dict) -> str:
     return body
 
 
+def sign_body(body: str, secret: str) -> str:
+    """Sentry's HMAC-SHA256 of the raw body, hex-encoded.
+
+    Split out from `signature_valid` so `scripts/replay_alert.py` signs with
+    this exact function rather than its own copy: two implementations of one
+    HMAC format drift into a 401 that reads like a wrong secret.
+    """
+    return hmac.new(secret.encode(), body.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 def signature_valid(body: str, provided: str | None, secret: str) -> bool:
     """Constant-time comparison against Sentry's HMAC-SHA256 of the raw body."""
     if not provided or not provided.isascii():
         # compare_digest raises TypeError on non-ASCII, and a real Sentry
         # signature is always hex, so a non-ASCII header is simply invalid.
         return False
-    expected = hmac.new(secret.encode(), body.encode("utf-8"), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, provided)
+    return hmac.compare_digest(sign_body(body, secret), provided)
 
 
 def deliver(alert) -> None:

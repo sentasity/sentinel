@@ -78,6 +78,27 @@ expand to an empty repository name and the `gh api` call fails.
 SHA: the workflow diffs exactly those paths to build the drift context, and a
 path that does not resolve produces an empty drift patch rather than an error.
 
+## Runbook: replaying an alert the receiver has already seen
+
+Sentry will not re-send an alert for a known issue. New-issue rules fire on `first_seen` only, and a repeat event on an unchanged release finds the investigation row and stops before any Sentry call. So when you need the receiver to process a known issue again, after fixing something in the pipeline for example, sign a webhook body and post it yourself:
+
+```bash
+python -m scripts.replay_alert --issue 1000000007 --environment prod --dry-run
+```
+
+The body is `fixtures/sentry-webhook-alert.json` with the target issue's fields written over it from its stored `alert:<environment>` row, so you can only replay an issue the receiver has already posted. The signature comes from `receiver.handler.sign_body`, the same function `/sentry` verifies against, and the webhook secret is read from SSM rather than the environment so it never lands in shell history.
+
+Start with `--dry-run`. It prints the exact body and target and sends nothing. A live replay posts a real card to that environment's real Teams channel.
+
+Two rows make a replay a no-op for a repeat, and `--reset` deletes both before posting:
+
+- `investigation:<env>#<release>` stops the enqueue, so no session fires and no findings arrive.
+- `autofix:<env>#<release>` stops the autofix gate one stage later, as "already attempted for this release".
+
+Each delete is conditional on the row existing, and the script prints `deleted:` or `absent:` per row. That distinction is the point: an unconditional `delete-item` against a mistyped sort key succeeds silently and reads as a successful clear. The `alert:<environment>` row is never touched, because it is the replay's own input.
+
+Without `--reset`, a repeat issue posts a fresh card and nothing else happens. That is the right mode for a freshly staged error that has no rows yet.
+
 ## Configuration probe
 
 The prompts in `prompts/` are templates. `REPLACE_WITH_FUNCTION_URL` stands in
