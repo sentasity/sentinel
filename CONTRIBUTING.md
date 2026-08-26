@@ -25,3 +25,15 @@ That's the whole gate, and it covers the receiver logic, the Teams card
 goldens, the CDK synthesis, and the stored prompts. CI runs the same suite on
 every push and pull request, plus a secret scan, so a green run locally should
 mean a green run there.
+
+## Pre-commit hooks
+
+```bash
+.venv/bin/pre-commit install
+```
+
+One-time, per clone. Every commit then runs gitleaks and the public-tree
+invariants (`tests/test_public_tree.py`) before it lands, which matters here
+because pushing any branch to a public repository is publishing. CI runs the
+same two checks, so the hooks cost you nothing you wouldn't hit later anyway;
+they just move the failure to before the content leaves your machine.
