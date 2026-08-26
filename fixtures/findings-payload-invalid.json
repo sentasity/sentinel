@@ -4,14 +4,14 @@
   "results": [
     {
       "issue_id": "1000000007",
-      "short_id": "SCANNERS-7X",
+      "short_id": "CHECKOUT-4B2",
       "status": "investigated",
       "release_investigated": "efa4bbfc4e79761e3542990fc090df1bc22ec47f",
-      "root_cause": "Something happened.",
+      "root_cause": "capture_intent raises PaymentIntentTimeout when the gateway poll passes its deadline, but submit_order wraps the call in a bare except that treats every exception as retryable and reports the capture as sent.",
       "confidence": "very high",
       "evidence": [],
       "assumptions": [],
-      "next_step": "Look at it.",
+      "next_step": "mirror refund_intent's explicit PaymentIntentTimeout branch in submit_order",
       "failure_reason": null,
       "extra_field": "unexpected"
     }

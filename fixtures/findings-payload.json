@@ -4,21 +4,23 @@
   "results": [
     {
       "issue_id": "1000000007",
-      "short_id": "SCANNERS-7X",
+      "short_id": "CHECKOUT-4B2",
       "status": "investigated",
       "release_investigated": "efa4bbfc4e79761e3542990fc090df1bc22ec47f",
-      "root_cause": "restore_session is called before __init__ finishes, so self._client is still None.",
+      "root_cause": "capture_intent raises PaymentIntentTimeout when the gateway poll passes its deadline, but submit_order wraps the call in a bare except that treats every exception as retryable and reports the capture as sent.",
       "confidence": "high",
       "evidence": [
         {
-          "file": "src/example_app/scanners/recovery.py",
-          "symbol": "restore_session",
-          "line": 214,
-          "note": "Dereferences self._client with no guard."
+          "file": "src/checkout/services/payments.py",
+          "symbol": "capture_intent",
+          "line": 184,
+          "note": "the deadline branch raises but submit_order swallows it"
         }
       ],
-      "assumptions": ["The traceback's top frame is the raising frame."],
-      "next_step": "Move the _client assignment above the restore_session call.",
+      "assumptions": [
+        "the 8s gateway ceiling is a product decision, not a bug"
+      ],
+      "next_step": "mirror refund_intent's explicit PaymentIntentTimeout branch in submit_order",
       "failure_reason": null
     }
   ]
