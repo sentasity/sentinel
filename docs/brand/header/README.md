@@ -67,8 +67,17 @@ lockup, and it breaks both of this directory's conventions on purpose.
 **It has an opaque ground.** Everything else here is transparent, which is right
 for a README that already has a background. A social card does not: it is
 unfurled by Slack, X, LinkedIn and Discord, each compositing transparency
-against its own backdrop, so the light lockup's navy wordmark would disappear
-on a dark client. The card carries brand navy `#1b2741` and the dark lockup.
+against its own backdrop, so a transparent card's wordmark would disappear on
+whichever clients happen to disagree with it. The card carries an opaque white
+ground and the light lockup.
+
+The ground has to be white rather than brand navy, and that is not a taste
+call. The owl's near half is filled `#1b2741`, brand navy exactly, so on a navy
+card that half and its ear tuft are not low-contrast but literally the same
+pixels as the background: the bird renders as a lopsided offcut with the eyes
+and chest floating free. The dark lockup only recolors the wordmark, wire and
+moon, so there is no dark-ground owl to reach for. GitHub's own dark mode gets
+away with the same lockup because `#0d1117` is darker than the owl.
 
 **It is 2:1.** GitHub wants 1280x640 and letterboxes anything else against a
 background it picks, not one we control. No lockup aspect here is close: wide is
@@ -76,16 +85,18 @@ background it picks, not one we control. No lockup aspect here is close: wide is
 wire runs edge to edge rather than stopping inside a padded box, and the moon
 survives, which the compact crop has nowhere to put.
 
-Rebuild it from the wide dark raster, which needs no font because the wordmark
+Rebuild it from the wide light raster, which needs no font because the wordmark
 is already outlined:
 
 ```bash
-magick -size 1280x640 xc:'#1b2741' \
-  \( docs/brand/header/sentinel-header-dark-2x.png -resize 1280x \) \
+magick -size 1280x640 xc:'#ffffff' \
+  \( docs/brand/header/sentinel-header-light-2x.png -resize 1280x \) \
   -gravity center -composite -strip docs/brand/header/sentinel-social-card.png
 ```
 
-GitHub caps the upload at 1MB. This lands around 130KB.
+GitHub caps the upload at 1MB. This lands around 120KB. Changing the file does
+not change what GitHub serves: re-upload it under Settings, General, Social
+preview.
 
 ## Regenerating
 

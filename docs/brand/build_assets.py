@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Build the full asset set for the four chosen Sentinel marks.
 
-Per mark:  mark.svg (transparent) | tile.svg (on its pale tint)
+Per mark:  mark.svg (transparent) | tile.svg (inset on white)
            PNGs at 16..1024 transparent | tile-192.png (Teams color icon)
            outline-32.png (Teams outline icon: white silhouette, eyes knocked out)
            sentry-256.png (Sentry small icon: black silhouette, face knocked out)
@@ -25,8 +25,7 @@ PER = {n: (sid, shape, col) for sid, n, shape, col, _ in
        [(s, n.lower(), sh, c, b) for s, n, sh, c, b in g.PERCH]}
 PER["shaded"] = ("p-shaded", "base",
                  dict(belly="", disc="#eef4f9", beak="#ddb377", feet="#c98a3c", cat="#ffffff"))
-TINT = {"curious-cream": "#faf4ec", "curious-frost": "#eef4f9",
-        "perch-cream": "#faf4ec", "perch-shaded": "#eef4f9"}
+TILE_BG = "#ffffff"
 
 def sym_body(sid, kind, shape, col):
     fn = g.curious_sym if kind == "curious" else g.perch_sym
@@ -58,7 +57,21 @@ def silhouette(kind, shape):
 # black and transparent pixels and the mark has to clear the circle. The marks reach
 # 32.25 units from center in the 64-unit frame, so 0.88 leaves ~3.5 units of margin.
 SENTRY_FIT = 0.88
+
+# Tiles inset the mark rather than bleeding it to the edges. A full-bleed mark
+# fills an avatar with the bird's dark body, so at the size Teams actually renders
+# it the tile reads as a navy ground with eyes and a belly floating on it instead
+# of as an owl. Insetting puts the tile's own ground back around the mark, which
+# is the read the README header gets for free from the page behind it.
+#
+# Microsoft masks the color icon's corners at runtime and asks for the brand mark
+# inside a 120x120 safe area of the 192x192 canvas, balanced around 96x96. At 0.58
+# the tallest of the four marks lands 98px tall in the 192 tile, which clears the
+# safe area and sits on the balance target.
+TILE_FIT = 0.58
+
 MARK_CY = 30.5  # measured vertical center of the marks, which sit high in the frame
+
 
 def sentry_mask(kind, shape):
     """Black silhouette with the eyes and beak knocked out, inset for a circular crop.
@@ -85,6 +98,12 @@ def sentry_mask(kind, shape):
             '  <rect width="64" height="64" fill="#000000" mask="url(#k)"/>\n</svg>\n')
 
 
+def inset(body):
+    """The mark centered in the 64-unit frame at TILE_FIT, so ground surrounds it."""
+    return (f'<g transform="translate(32,32) scale({TILE_FIT}) '
+            f'translate(-32,{-MARK_CY})">{body}</g>')
+
+
 def run(*a):
     subprocess.run(a, check=True)
 
@@ -95,19 +114,20 @@ for name, (kind, key) in CHOSEN.items():
     shutil.rmtree(d, ignore_errors=True)  # per mark, so assets/README.md survives a rebuild
     os.makedirs(d, exist_ok=True)
     body = sym_body(sid, kind, shape, col)
-    tint = TINT[name]
 
     open(f"{d}/{name}.svg", "w").write(wrap(body, f"Sentinel — {name}"))
+    # Square corners on purpose: Teams and GitHub both round the tile themselves,
+    # and Microsoft calls a pre-rounded upload out by name.
     open(f"{d}/{name}-tile.svg", "w").write(wrap(
-        body, f"Sentinel — {name} tile",
-        extra=f'  <rect width="64" height="64" rx="14" fill="{tint}"/>\n'))
+        inset(body), f"Sentinel — {name} tile",
+        extra=f'  <rect width="64" height="64" fill="{TILE_BG}"/>\n'))
     open(f"{d}/{name}-outline.svg", "w").write(silhouette(kind, shape))
     open(f"{d}/{name}-sentry.svg", "w").write(sentry_mask(kind, shape))
 
     for px in (16, 32, 48, 64, 128, 256, 512, 1024):
         run("rsvg-convert", "-w", str(px), "-h", str(px),
             f"{d}/{name}.svg", "-o", f"{d}/{name}-{px}.png")
-    run("rsvg-convert", "-w", "192", "-h", "192", "-b", tint,
+    run("rsvg-convert", "-w", "192", "-h", "192", "-b", TILE_BG,
         f"{d}/{name}-tile.svg", "-o", f"{d}/{name}-tile-192.png")
     run("rsvg-convert", "-w", "512", "-h", "512",
         f"{d}/{name}-tile.svg", "-o", f"{d}/{name}-tile-512.png")

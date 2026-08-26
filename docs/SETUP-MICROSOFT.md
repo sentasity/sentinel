@@ -71,13 +71,21 @@ as they are; they were captured from the live Sentry integration.
 Nothing to do. Both icons are committed in `teams-app/`, generated from the
 Sentinel mark in `docs/brand/assets/perch-cream`:
 
-- `color.png` — 192x192, opaque, the app tile
+- `color.png` — 192x192, opaque, square, the owl inset on white
 - `outline.png` — 32x32, transparent background, white glyph only
 
 Teams renders the outline icon on the manifest's `accentColor`, which is set to
 brand navy `#1b2741`. `teams-app/build-package.sh` refuses to build without both
 files. To swap in a different mark, copy its `-tile-192.png` over `color.png` and
 its `-outline-32.png` over `outline.png`; see `docs/brand/assets/README.md`.
+
+Editing either icon does not change what Teams shows. The icons ship inside the
+app package, so a change means rebuilding `sentinel.zip` in step 7 and updating
+the app in the Teams admin center (Manage apps, Sentinel, Update). Bump
+`version` in `teams-app/manifest.json` first, or the admin center rejects the
+upload with "This update needs a new app version number". It compares against
+the published version, not against the package contents, so even an icon-only
+change needs the bump.
 
 ## 7. Build and install the Teams app
 
