@@ -6,8 +6,12 @@
  * cannot drift from what receiver/cards.py produces: tests/test_card_goldens.py
  * asserts those fixtures equal the renderer's output on every run.
  *
- * Supports exactly the vocabulary the goldens use: Container (style), ColumnSet,
- * Column (auto|stretch), TextBlock, FactSet, and Action.OpenUrl.
+ * Supports exactly the vocabulary the goldens use: Container (style, isVisible),
+ * ColumnSet, Column (auto|stretch), TextBlock, FactSet, and both action types.
+ *
+ * A Container with isVisible:false is Teams' collapsed detail pane, driven by an
+ * Action.ToggleVisibility button. On the web that is a <details> disclosure, so it
+ * renders as one and the toggle action is dropped rather than shown twice.
  *
  * The palette is intentionally hardcoded rather than tokenised. This reproduces a
  * Teams surface, not the site, and recolouring it would misrepresent what
@@ -34,8 +38,14 @@ function render(el: any): string {
   if (!el || typeof el !== 'object') return '';
   switch (el.type) {
     case 'Container': {
+      const inner = (el.items ?? []).map(render).join('');
+      if (el.isVisible === false) {
+        return `<details class="ac__details"><summary>${inline(
+          toggleTitleFor(el.id),
+        )}</summary><div class="ac__body">${inner}</div></details>`;
+      }
       const cls = el.style === 'attention' ? 'ac__attention' : 'ac__body';
-      return `<div class="${cls}">${(el.items ?? []).map(render).join('')}</div>`;
+      return `<div class="${cls}">${inner}</div>`;
     }
     case 'ColumnSet':
       return `<div class="ac__row">${(el.columns ?? []).map(render).join('')}</div>`;
@@ -58,8 +68,19 @@ function render(el: any): string {
   }
 }
 
+// A ToggleVisibility action is the button Teams draws for a collapsed container;
+// the <details> summary takes its title, so it must not also appear as an action.
+function toggleTitleFor(id: string | undefined): string {
+  const a = (card.actions ?? []).find(
+    (x: any) => x.type === 'Action.ToggleVisibility' && (x.targetElements ?? []).includes(id),
+  );
+  return a?.title ?? 'Details';
+}
+
 const bodyHtml = (card.body ?? []).map(render).join('');
-const actions: string[] = (card.actions ?? []).map((a: any) => a.title);
+const actions: string[] = (card.actions ?? [])
+  .filter((a: any) => a.type !== 'Action.ToggleVisibility')
+  .map((a: any) => a.title);
 ---
 
 <figure class="ac">
@@ -118,6 +139,16 @@ const actions: string[] = (card.actions ?? []).map((a: any) => a.title);
     font-weight: 600;
   }
   .ac__actions { padding: 0 0.85rem 0.9rem; }
+  .ac__details { border-top: 1px solid #e1e4e8; }
+  .ac__details > summary {
+    cursor: pointer;
+    padding: 0.5rem 0.85rem;
+    font-weight: 600;
+    list-style: none;
+  }
+  .ac__details > summary::-webkit-details-marker { display: none; }
+  .ac__details > summary::before { content: "▸ "; }
+  .ac__details[open] > summary::before { content: "▾ "; }
   figcaption {
     margin-top: 0.6rem;
     font-size: 0.78rem;
