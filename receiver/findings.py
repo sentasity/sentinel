@@ -10,13 +10,11 @@ from receiver.cards import SCHEMA, VERSION, escape_markdown
 
 LOG = logging.getLogger(__name__)
 
-# Written against the one component that emits PII. Exactly one Sentry init in
-# the product repo sets send_default_pii=True: the trigger Lambda
-# (src/checkout/services/payments.py:184, checkout
-# project). Every other init sets it False. So these patterns target that known
-# surface (request headers, cookies, client IP, request body) where they can be
-# specific enough to test, while the pass itself runs on every reply: a
-# component that flips the flag later must not ship PII to Teams unnoticed.
+# Written against the surface a component with send_default_pii=True exposes:
+# request headers, cookies, client IP, and request body. Targeting a known shape
+# is what lets these patterns be specific enough to test. The pass itself runs on
+# every reply rather than on the components known to set the flag, because a
+# component that flips it later must not ship PII to Teams unnoticed.
 #
 # Cookie and Bearer come first: their values can contain an @ or a dotted
 # quad, and a narrower rule firing first would leave the rest of the header.
