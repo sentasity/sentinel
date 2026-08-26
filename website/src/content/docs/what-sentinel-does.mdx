@@ -1,0 +1,73 @@
+---
+title: What Sentinel does
+description: A Sentry issue arrives, an unattended session investigates it, and the findings come back in the alert thread.
+---
+
+Sentinel watches a Sentry project. When a new or regressed issue fires, it posts an
+alert card to Microsoft Teams and then hands the issue to an unattended Claude Code
+session, which checks the repository out at the release the error came from and works
+out what went wrong. The findings come back as a reply in the same Teams thread. If a
+finding is confident enough, a separate workflow can write the fix and open a pull
+request.
+
+## The problem it solves
+
+A new Sentry issue arrives with a stack trace, a release, and nobody who has looked at
+it yet. Someone has to open it, find the commit, read the surrounding code, and decide
+whether it matters. That work is mechanical for the first several minutes and it is
+the reason issues sit unread.
+
+Sentinel does those first several minutes automatically, and does them at the exact
+commit the error came from rather than at whatever the default branch happens to be
+today.
+
+## What it does about it
+
+1. **Alert.** Sentry webhooks the issue to a receiver, which verifies the signature,
+   renders an Adaptive Card, and posts it to a Teams channel through its own bot
+   identity.
+2. **Gate and enqueue.** Alerts that are error-level, in an investigated environment,
+   and carry a release that resolves to a commit SHA are queued with a debounce, so a
+   burst of related issues becomes one batch rather than a stampede of sessions.
+3. **Investigate.** A scheduled sweep fires one unattended session per batch. It checks
+   out the target repository at the release SHA, investigates each issue, and posts a
+   findings document back, which the receiver renders as a threaded reply.
+4. **Autofix.** A finding whose confidence and fixability both clear their configured
+   minimums can dispatch a GitHub Actions workflow. An unattended session writes the
+   fix; a separate publish step opens the pull request.
+
+See [How it works](/sentinel/how-it-works/) for the same pipeline with its gates and
+failure handling, or [See it work](/sentinel/evidence/) for the artifacts it produces.
+
+## What it will not do
+
+Nothing merges automatically. Every pull request waits for a human reviewer, and the
+session that writes a fix holds no credential that could push one.
+
+Both of the aggressive behaviours ship switched off. A new deployment starts in
+`shadow` mode, which runs the whole gate and records what it would have fired without
+firing anything, and the autofix gate ships `enabled: false`. Turning either on is a
+config change and a deploy, which is deliberate: it means nobody enables unattended
+pull requests by accident.
+
+:::note
+The investigation sessions run as Claude Code cloud routines. Routines are a research
+preview, so the trigger endpoint and its limits can change without notice. The engine
+treats a 429 with a long `Retry-After` as subscription-window exhaustion and skips
+rather than retrying.
+:::
+
+## What it costs you to run
+
+Sentinel is infrastructure, not a plugin. Running it means bringing five things you
+already own or are willing to create:
+
+- a Sentry organization, with permission to create an internal integration
+- a Microsoft 365 tenant with Azure, for the app registration and the bot
+- an AWS account, for the receiver
+- a GitHub App, only if you want autofix
+- Claude Code access, for the unattended sessions
+
+[What you need first](/sentinel/deploy/prerequisites/) walks that list before you
+start, and [the security model](/sentinel/security-model/) covers what the unattended
+sessions can and cannot touch.
