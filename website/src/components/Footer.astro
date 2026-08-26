@@ -1,0 +1,36 @@
+---
+// Starlight Footer override: renders the default footer (pagination, meta), then
+// a small muted credit carrying the build credit and the license. The license
+// links to the repository's LICENSE rather than restating Apache-2.0 here, so
+// there is only ever one copy of the text.
+import Default from '@astrojs/starlight/components/Footer.astro';
+---
+
+<Default><slot /></Default>
+<div class="sentasity-credit">
+  Built by <a href="https://sentasity.com">Sentasity</a>
+  <span aria-hidden="true">·</span>
+  <a href="https://github.com/sentasity/sentinel/blob/main/LICENSE">Apache-2.0</a>
+</div>
+
+<style>
+  .sentasity-credit {
+    margin-top: 1.5rem;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+  }
+  .sentasity-credit a {
+    color: var(--sl-color-gray-3);
+    text-decoration: none;
+  }
+  /* Whitespace between the inline elements collapses in the built output, so the
+   * separator carries its own spacing. */
+  .sentasity-credit span {
+    margin: 0 0.4em;
+  }
+  .sentasity-credit a:hover {
+    color: var(--sl-color-text-accent);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+  }
+</style>

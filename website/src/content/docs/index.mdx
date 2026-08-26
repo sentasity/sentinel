@@ -1,0 +1,49 @@
+---
+title: Sentinel
+description: Unattended investigation of Sentry issues, with optional autofix pull requests.
+template: splash
+tableOfContents: false
+---
+
+import AdaptiveCard from '../../components/AdaptiveCard.astro';
+import lockupDark from '../../assets/sentinel-header-dark.svg?raw';
+import lockupLight from '../../assets/sentinel-header-light.svg?raw';
+import errorCard from '../../../../fixtures/cards/error.json';
+
+<div class="hero-lockup lockup-dark"><Fragment set:html={lockupDark} /></div>
+<div class="hero-lockup lockup-light"><Fragment set:html={lockupLight} /></div>
+
+<div class="splash-grid">
+<div>
+
+<p class="eyebrow">Unattended Sentry investigation</p>
+
+# Your alerts arrive already investigated.
+
+A new Sentry issue posts a card to Teams, then an unattended Claude Code session
+checks your repository out at the release SHA, works out the root cause, and replies
+in the thread. Findings that clear the confidence gate can open a pull request.
+Nothing merges automatically.
+
+<div class="cta-row">
+  <a class="cta cta--primary" href="/sentinel/evidence/">See it work</a>
+  <a class="cta cta--ghost" href="/sentinel/how-it-works/">How it works</a>
+</div>
+
+<div class="trust-row">
+  <span><strong>Apache-2.0</strong></span>
+  <span>Tested on <strong>Python 3.12 and 3.13</strong></span>
+  <span>Ships in <strong>shadow mode</strong></span>
+  <span>Autofix <strong>off by default</strong></span>
+</div>
+
+</div>
+<div>
+
+<div class="proof">
+  <p class="proof-cap">What lands in Teams</p>
+  <AdaptiveCard card={errorCard} />
+</div>
+
+</div>
+</div>

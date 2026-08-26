@@ -21,7 +21,7 @@ ROW = {
     "issue_id": "1000000007",
     "environment": "staging",
     "release": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
-    "project": "scanners",
+    "project": "checkout",
     "conversation_id": "conv-1",
     "message_id": "msg-9",
 }
@@ -76,7 +76,7 @@ def test_an_unlisted_project_is_declined(tmp_path):
 
 
 def test_an_empty_allowlist_opts_in_every_project(tmp_path):
-    body = (VALID + AUTOFIX).replace("projects:\n    - scanners", "projects: []")
+    body = (VALID + AUTOFIX).replace("projects:\n    - checkout", "projects: []")
     doc = doc_v2()
 
     decision = evaluate(

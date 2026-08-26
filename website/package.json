@@ -1,0 +1,23 @@
+{
+  "name": "sentinel-docs",
+  "type": "module",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.9",
+    "@fontsource/ibm-plex-mono": "^5.2.8",
+    "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@fontsource/outfit": "^5.2.8",
+    "astro": "^7.2.7",
+    "astro-mermaid": "^2.0.2",
+    "mermaid": "^11.15.0"
+  }
+}

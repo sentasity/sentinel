@@ -4,22 +4,24 @@
   "results": [
     {
       "issue_id": "1000000007",
-      "short_id": "SCANNERS-7X",
+      "short_id": "CHECKOUT-4B2",
       "status": "investigated",
       "release_investigated": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
-      "root_cause": "The restore flow swallows ClientError and reports sent.",
+      "root_cause": "submit_order wraps capture_intent in a bare except, so the gateway timeout is retried silently and the capture is reported as sent.",
       "confidence": "high",
       "fixability": "high",
       "evidence": [
         {
-          "file": "src/example_app/services/accounts.py",
-          "symbol": "restore_session",
-          "line": 214,
-          "note": "every ClientError is swallowed"
+          "file": "src/checkout/services/payments.py",
+          "symbol": "capture_intent",
+          "line": 184,
+          "note": "the deadline branch raises but submit_order swallows it"
         }
       ],
-      "assumptions": ["retries were human-driven"],
-      "next_step": "mirror resend_token's LimitExceededException branch",
+      "assumptions": [
+        "the 8s gateway ceiling is a product decision, not a bug"
+      ],
+      "next_step": "mirror refund_intent's explicit PaymentIntentTimeout branch in submit_order",
       "failure_reason": null
     }
   ]

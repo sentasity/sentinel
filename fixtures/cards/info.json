@@ -44,7 +44,7 @@
     },
     {
       "type": "TextBlock",
-      "text": "AlertRelayMigrationSmokeTest: Synthetic post-migration delivery check (c48b86ab). Safe to resolve.",
+      "text": "PaymentIntentTimeout: Gateway did not acknowledge intent pi\\_3QwXm2Lk8Nv within 8s",
       "weight": "Bolder",
       "wrap": true,
       "maxLines": 3,
@@ -55,15 +55,15 @@
       "facts": [
         {
           "title": "Project",
-          "value": "scanners"
+          "value": "checkout"
         },
         {
           "title": "Issue",
-          "value": "SCANNERS-7X"
+          "value": "CHECKOUT-4B2"
         },
         {
           "title": "Culprit",
-          "value": "\\_\\_main\\_\\_ in <module>"
+          "value": "checkout.services.payments in capture\\_intent"
         }
       ]
     }
@@ -72,7 +72,7 @@
     {
       "type": "Action.OpenUrl",
       "title": "Open in Sentry",
-      "url": "https://sentry.io/organizations/example-org/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/"
+      "url": "https://sentry.io/organizations/acme-tools/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/"
     }
   ]
 }

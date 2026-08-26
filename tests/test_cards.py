@@ -10,7 +10,7 @@ from receiver.models import parse_alert
 from receiver.sentry_api import IssueRef
 from tests.conftest import load_fixture
 
-REF = IssueRef(short_id="SCANNERS-7X", project="scanners")
+REF = IssueRef(short_id="CHECKOUT-4B2", project="checkout")
 
 
 def alert_at_level(level):
@@ -69,7 +69,7 @@ def test_severity_styles_cover_every_sentry_level():
 def test_card_summary_leads_with_banner_and_short_id():
     summary = card_summary(alert_at_level("error"), REF)
 
-    assert summary.startswith("🔴 ERROR SCANNERS-7X: ")
+    assert summary.startswith("🔴 ERROR CHECKOUT-4B2: ")
 
 
 def facts(card):
@@ -86,9 +86,9 @@ def test_card_lists_the_triage_facts():
     card = render_card(alert_at_level("error"), REF)
 
     assert facts(card) == {
-        "Project": "scanners",
-        "Issue": "SCANNERS-7X",
-        "Culprit": r"\_\_main\_\_ in <module>",
+        "Project": "checkout",
+        "Issue": "CHECKOUT-4B2",
+        "Culprit": r"checkout.services.payments in capture\_intent",
     }
 
 
@@ -99,7 +99,9 @@ def test_dunder_culprits_are_not_eaten_as_markdown():
     and the golden files cannot catch this: they hold the JSON we send, not what
     Teams draws from it.
     """
-    card = render_card(alert_at_level("error"), REF)
+    alert = dataclasses.replace(alert_at_level("error"), culprit="__main__ in <module>")
+
+    card = render_card(alert, REF)
 
     assert facts(card)["Culprit"] == r"\_\_main\_\_ in <module>"
 
@@ -119,7 +121,9 @@ def test_escaping_leaves_ordinary_text_alone():
 
 
 def test_card_shows_the_wrapped_issue_title():
-    alert = alert_at_level("error")
+    alert = dataclasses.replace(
+        alert_at_level("error"), title="ConnectionResetError: peer hung up"
+    )
     card = render_card(alert, REF)
     title_block = card["body"][1]
 

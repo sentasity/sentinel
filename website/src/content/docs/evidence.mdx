@@ -1,0 +1,64 @@
+---
+title: See it work
+description: One issue walked through the pipeline, from the first alert to the pull request.
+---
+
+import AdaptiveCard from '../../components/AdaptiveCard.astro';
+import errorCard from '../../../../fixtures/cards/error.json';
+import replyCard from '../../../../fixtures/cards/reply.json';
+import fatalCard from '../../../../fixtures/cards/fatal.json';
+import warningCard from '../../../../fixtures/cards/warning.json';
+import infoCard from '../../../../fixtures/cards/info.json';
+
+One issue, three artifacts, in the order they land in a Teams thread.
+
+## 1. The alert
+
+A payment capture times out against the gateway. Sentry raises the issue and webhooks
+it to the receiver, which verifies the signature and posts this card.
+
+<AdaptiveCard card={errorCard} />
+
+The gate lets this one through: it is error-level, `staging` is an investigated
+environment, and its release resolves to a commit SHA, so the session will read the
+code that actually produced the error rather than today's default branch. The issue is
+queued with a debounce and picked up by the next sweep.
+
+## 2. The investigation
+
+The session checks the repository out at that SHA, reads the traceback and the
+surrounding code, and posts its findings back. The receiver renders them as a reply in
+the alert's own thread.
+
+<AdaptiveCard
+  card={replyCard}
+  caption="Open **Details** for the evidence and assumptions, which Teams collapses the same way."
+/>
+
+The finding is that `capture_intent` raises on its polling deadline, but the caller
+wraps it in a bare `except` and reports the capture as sent, so the failure never
+surfaces. The suggested fix mirrors `refund_intent`, which already has an explicit
+timeout branch.
+
+Confidence is **high** and fixability is **high**. Those two values are the only thing
+that decides what happens next.
+
+## 3. The fix
+
+With `autofix.enabled` on, a finding at high confidence and high fixability clears the
+gate, so the receiver dispatches the workflow. An unattended session judges drift
+against the current default branch, re-verifies the root cause, and writes the change.
+A separate publish step then opens the pull request as the GitHub App and reports the
+outcome back into the same thread.
+
+Nothing merges automatically. The session that wrote the fix holds no credential that
+could push it, and the pull request waits for a human exactly like any other.
+
+## Severity variants
+
+The renderer handles four severities. Only `error` is investigated; the rest are posted
+for visibility and say so.
+
+<AdaptiveCard card={fatalCard} />
+<AdaptiveCard card={warningCard} />
+<AdaptiveCard card={infoCard} />

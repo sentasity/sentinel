@@ -12,7 +12,7 @@ LOG = logging.getLogger(__name__)
 
 # Written against the one component that emits PII. Exactly one Sentry init in
 # the product repo sets send_default_pii=True: the trigger Lambda
-# (src/example_app/handlers/trigger/main.py:93, backend-api
+# (src/checkout/services/payments.py:184, checkout
 # project). Every other init sets it False. So these patterns target that known
 # surface (request headers, cookies, client IP, request body) where they can be
 # specific enough to test, while the pass itself runs on every reply: a

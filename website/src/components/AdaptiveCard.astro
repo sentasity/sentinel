@@ -1,0 +1,207 @@
+---
+/**
+ * Renders an Adaptive Card definition as HTML at build time.
+ *
+ * The card JSON is imported by the page and passed in, so the rendered result
+ * cannot drift from what receiver/cards.py produces: tests/test_card_goldens.py
+ * asserts those fixtures equal the renderer's output on every run.
+ *
+ * Supports exactly the vocabulary the goldens use: Container (style, isVisible),
+ * ColumnSet, Column (auto|stretch), TextBlock, FactSet, and both action types.
+ *
+ * A Container with isVisible:false is Teams' collapsed detail pane, driven by an
+ * Action.ToggleVisibility button. On the web that is a <details> disclosure, so it
+ * renders as one and the toggle action is dropped rather than shown twice.
+ *
+ * The palette is intentionally hardcoded rather than tokenised. This reproduces a
+ * Teams surface, not the site, and recolouring it would misrepresent what
+ * actually gets posted.
+ */
+interface Props {
+  card: any;
+  caption?: string;
+}
+const { card, caption } = Astro.props;
+
+// Teams renders a small markdown subset in TextBlocks. Escape first, then
+// re-introduce only bold and code, so a fixture can never inject markup.
+const inline = (text = ''): string =>
+  String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\\([\\`*_[\]])/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+
+function render(el: any): string {
+  if (!el || typeof el !== 'object') return '';
+  switch (el.type) {
+    case 'Container': {
+      const inner = (el.items ?? []).map(render).join('');
+      if (el.isVisible === false) {
+        return `<details class="ac__details"><summary>${inline(
+          toggleTitleFor(el.id),
+        )}</summary><div class="ac__body">${inner}</div></details>`;
+      }
+      // receiver/cards.py's SEVERITY_STYLES uses three of Adaptive Cards'
+      // container styles for the severity banner. Each gets its own tint; a
+      // container with no style is just a padded region.
+      const banner: Record<string, string> = {
+        attention: 'ac__banner ac__banner--attention',
+        warning: 'ac__banner ac__banner--warning',
+        emphasis: 'ac__banner ac__banner--emphasis',
+      };
+      const cls = banner[el.style] ?? 'ac__body';
+      return `<div class="${cls}">${inner}</div>`;
+    }
+    case 'ColumnSet':
+      return `<div class="ac__row">${(el.columns ?? []).map(render).join('')}</div>`;
+    case 'Column': {
+      const grow = el.width === 'stretch' ? 'flex:1' : 'flex:none';
+      const align = el.horizontalAlignment === 'Right' ? ';text-align:right' : '';
+      return `<div style="${grow}${align}">${(el.items ?? []).map(render).join('')}</div>`;
+    }
+    case 'TextBlock': {
+      const cls = el.weight === 'Bolder' ? 'ac__text ac__text--bolder' : 'ac__text';
+      const align = el.horizontalAlignment === 'Right' ? ' style="text-align:right"' : '';
+      return `<p class="${cls}"${align}>${inline(el.text)}</p>`;
+    }
+    case 'FactSet':
+      return `<dl class="ac__facts">${(el.facts ?? [])
+        .map((f: any) => `<dt>${inline(f.title)}</dt><dd>${inline(f.value)}</dd>`)
+        .join('')}</dl>`;
+    default:
+      return '';
+  }
+}
+
+// A ToggleVisibility action is the button Teams draws for a collapsed container;
+// the <details> summary takes its title, so it must not also appear as an action.
+function toggleTitleFor(id: string | undefined): string {
+  const a = (card.actions ?? []).find(
+    (x: any) => x.type === 'Action.ToggleVisibility' && (x.targetElements ?? []).includes(id),
+  );
+  return a?.title ?? 'Details';
+}
+
+// Teams gives the card a padded content region. The goldens put the title, the
+// FactSet, and the action at the card's top level rather than inside a Container,
+// so anything that is not itself a Container gets grouped into one here. Without
+// this the banner and the action are inset while the title and facts run flush to
+// the card's edge, which reads as broken padding against a rounded corner.
+function renderBody(elements: any[]): string {
+  const out: string[] = [];
+  let loose: any[] = [];
+  const flush = () => {
+    if (loose.length) {
+      out.push(`<div class="ac__body">${loose.map(render).join('')}</div>`);
+      loose = [];
+    }
+  };
+  for (const el of elements) {
+    if (el?.type === 'Container') {
+      flush();
+      out.push(render(el));
+    } else {
+      loose.push(el);
+    }
+  }
+  flush();
+  return out.join('');
+}
+
+const bodyHtml = renderBody(card.body ?? []);
+const actions: string[] = (card.actions ?? [])
+  .filter((a: any) => a.type !== 'Action.ToggleVisibility')
+  .map((a: any) => a.title);
+---
+
+<figure class="ac">
+  <div class="ac__card">
+    <Fragment set:html={bodyHtml} />
+    {actions.length > 0 && (
+      <div class="ac__actions">
+        {actions.map((t) => <span class="ac__action">{t}</span>)}
+      </div>
+    )}
+  </div>
+  {caption && <figcaption set:html={inline(caption)} />}
+</figure>
+
+<!-- Global on purpose, namespaced under .ac: the card body is injected with
+     set:html, and Astro's scoped styles only reach elements it compiled. -->
+<style is:global>
+  .ac { margin: 1.5rem 0; }
+  .ac__card {
+    background: #f3f4f6;
+    color: #1f2328;
+    border-radius: 7px;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 0.86rem;
+    line-height: 1.45;
+    max-width: 34rem;
+  }
+  .ac__banner {
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-weight: 700;
+  }
+  .ac__banner--attention { background: #fce8e6; }
+  .ac__banner--warning { background: #fdf3e2; }
+  .ac__banner--emphasis { background: #eef0f2; }
+  .ac__row { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
+  .ac__body { padding: 0.8rem 0.85rem 0.9rem; }
+  .ac__body > :last-child { margin-bottom: 0; }
+  /* Teams keeps the action inside the card's content region, so the two must not
+     each contribute a bottom padding. */
+  .ac__body:has(+ .ac__actions) { padding-bottom: 0; }
+  .ac__text { margin: 0 0 0.6rem; }
+  .ac__text--bolder { font-weight: 700; }
+  .ac__banner .ac__text { margin: 0; }
+  .ac__facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    gap: 0.35rem 1rem;
+    margin: 0 0 0.8rem;
+  }
+  .ac__facts dt { font-weight: 700; }
+  .ac__facts dd { margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
+  .ac__action {
+    display: inline-block;
+    background: #ffffff;
+    border: 1px solid #c8ccd2;
+    border-radius: 4px;
+    padding: 0.35rem 0.8rem;
+    font-weight: 600;
+  }
+  .ac__actions { padding: 0 0.85rem 0.9rem; }
+  .ac__details { border-top: 1px solid #e1e4e8; }
+  /* Starlight styles details/summary for its own asides, so the card pins every
+     value it cares about rather than inheriting the site's. */
+  .ac__details { background: #f3f4f6; }
+  .ac__details > summary {
+    cursor: pointer;
+    padding: 0.5rem 0.85rem;
+    margin: 0;
+    font-weight: 600;
+    font-size: 0.86rem;
+    color: #1f2328;
+    background: #f3f4f6;
+    list-style: none;
+  }
+  .ac__details > summary:hover { background: #e9ebee; }
+  .ac__details > summary::-webkit-details-marker { display: none; }
+  .ac__details > summary::before { content: "▸ "; }
+  .ac__details[open] > summary::before { content: "▾ "; }
+  figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--sl-color-gray-3);
+    line-height: 1.5;
+  }
+</style>

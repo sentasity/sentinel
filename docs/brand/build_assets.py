@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Build the full asset set for the four chosen Sentinel marks.
 
-Per mark:  mark.svg (transparent) | tile.svg (inset on white)
+Per mark:  mark.svg (transparent) | tile.svg (inset on amber)
            PNGs at 16..1024 transparent | tile-192.png (Teams color icon)
            outline-32.png (Teams outline icon: white silhouette, eyes knocked out)
            sentry-256.png (Sentry small icon: black silhouette, face knocked out)
@@ -13,11 +13,11 @@ import gen_round3 as g
 OUT = "assets"
 NAVY, STEEL = g.NAVY, g.STEEL
 
+# The selection round is over: `perch` is the adopted mark and the only one built.
+# The three candidates it beat stay defined in gen_round3.py as the record of that
+# round, and are recoverable from git history.
 CHOSEN = {
-    "curious-cream": ("curious", "cream"),
-    "curious-frost": ("curious", "frost"),
-    "perch-cream":   ("perch",   "cream"),
-    "perch-shaded":  ("perch",   "shaded"),
+    "perch": ("perch", "cream"),
 }
 CUR = {n: (sid, shape, col) for sid, n, shape, col, _ in
        [(s, n.lower(), sh, c, b) for s, n, sh, c, b in g.CURIOUS]}
@@ -25,7 +25,10 @@ PER = {n: (sid, shape, col) for sid, n, shape, col, _ in
        [(s, n.lower(), sh, c, b) for s, n, sh, c, b in g.PERCH]}
 PER["shaded"] = ("p-shaded", "base",
                  dict(belly="", disc="#eef4f9", beak="#ddb377", feet="#c98a3c", cat="#ffffff"))
-TILE_BG = "#ffffff"
+# A tile has to let the navy body and the off-white chest read at once. White never
+# did: the chest sits at 1.19:1 against it and reads only because the dark body
+# encircles it. Against amber the body measures 5.08:1 and the chest 2.46:1.
+TILE_BG = "#c98a3c"
 
 def sym_body(sid, kind, shape, col):
     fn = g.curious_sym if kind == "curious" else g.perch_sym
@@ -65,10 +68,11 @@ SENTRY_FIT = 0.88
 # is the read the README header gets for free from the page behind it.
 #
 # Microsoft masks the color icon's corners at runtime and asks for the brand mark
-# inside a 120x120 safe area of the 192x192 canvas, balanced around 96x96. At 0.58
-# the tallest of the four marks lands 98px tall in the 192 tile, which clears the
-# safe area and sits on the balance target.
-TILE_FIT = 0.58
+# inside a 120x120 safe area of the 192x192 canvas, balanced around 96x96. The mark
+# spans ~56 units of its 64-unit frame, so in a 192px tile its height is
+# 56*3*TILE_FIT. 0.70 lands it at 117.6px, the largest value that still clears the
+# safe area; 0.71 breaches it.
+TILE_FIT = 0.70
 
 MARK_CY = 30.5  # measured vertical center of the marks, which sit high in the frame
 

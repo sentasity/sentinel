@@ -77,8 +77,8 @@ CURIOUS = [
   dict(disc="#eef4f9", brow="#7ba7c8", beak="#c98a3c", cat="#ffffff"),
   "Blue-50 eyes and a blue-300 brow. The coolest of the four, and the smallest step from where we were."),
  ("c-cream", "Cream", "wide",
-  dict(disc="#f5e7d0", brow="#ddb377", beak="#c98a3c", cat="#fffdf9"),
-  "Everything warm. The eyes take amber-100 and the brow amber-300, so the whole mark sits in one hue family with the navy."),
+  dict(disc="#e6ecf2", brow="#ddb377", beak="#c98a3c", cat="#ffffff"),
+  "Off-white eyes with an amber-300 brow. The amber reads stronger without a warm disc competing with it."),
  ("c-teal", "Teal", "bigeye",
   dict(disc="#d3e9e9", brow="#74b8b8", beak="#3a8f8f", cat="#ffffff"),
   "Teal as the second hue, eyes enlarged. Amber stays on the irises, so the mark carries two accents pulling opposite ways."),
@@ -89,8 +89,8 @@ CURIOUS = [
 
 PERCH = [
  ("p-cream", "Cream", "base",
-  dict(belly="#f5e7d0", disc="#faf4ec", beak="#ddb377", feet="#c98a3c", cat="#fffdf9"),
-  "The chest goes amber-100. Warm enough that the navy reads as dusk rather than as a dark UI."),
+  dict(belly="#e6ecf2", disc="#f4f7fa", beak="#ddb377", feet="#c98a3c", cat="#ffffff"),
+  "An off-white chest against the navy body. The amber irises and feet are the only warm notes left, which is what makes them read."),
  ("p-sky", "Sky", "round",
   dict(belly="#d6e4f0", disc="#eef4f9", beak="#4aa3c7", feet="#c98a3c", cat="#ffffff"),
   "A rounder body with a pale blue chest. Stays entirely inside the existing blue ramp, no new hue introduced."),
@@ -155,8 +155,8 @@ def perch_sym(sid, shape, c, band=None):
 </symbol>'''
 
 SYMS, CARDS = [], []
-TILE = {"c-frost":"#eef4f9","c-cream":"#faf4ec","c-teal":"#eef6f6","c-sky":"#eef4f9",
-        "p-cream":"#faf4ec","p-sky":"#eef4f9","p-teal":"#eef6f6","p-shaded":"#eef4f9"}
+TILE = {"c-frost":"#eef4f9","c-cream":"#eef4f9","c-teal":"#eef6f6","c-sky":"#eef4f9",
+        "p-cream":"#c98a3c","p-sky":"#eef4f9","p-teal":"#eef6f6","p-shaded":"#eef4f9"}
 
 for sid, name, shape, col, blurb in CURIOUS:
     SYMS.append(curious_sym(sid, shape, col))

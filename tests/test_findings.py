@@ -33,8 +33,8 @@ def test_a_well_formed_document_parses():
     doc = parse_findings(payload(), batch_id=BATCH, known_issue_ids=KNOWN)
 
     assert doc.batch_id == BATCH
-    assert doc.results[0].short_id == "SCANNERS-7X"
-    assert doc.results[0].evidence[0].line == 214
+    assert doc.results[0].short_id == "CHECKOUT-4B2"
+    assert doc.results[0].evidence[0].line == 184
 
 
 def test_a_body_that_is_not_an_object_is_rejected():
@@ -133,11 +133,11 @@ def test_a_version_number_is_not_mistaken_for_an_ip():
 
 
 def test_a_file_path_with_a_dotted_name_survives():
-    assert redact("src/example_app/scanners/recovery.py")[1] == 0
+    assert redact("src/checkout/services/payments.py")[1] == 0
 
 
 def test_a_line_reference_is_not_redacted():
-    assert redact("recovery.py:214 in restore_session")[1] == 0
+    assert redact("payments.py:214 in capture_intent")[1] == 0
 
 
 def test_the_count_reflects_every_rule_that_fired():
@@ -148,13 +148,13 @@ def test_the_count_reflects_every_rule_that_fired():
 
 
 def test_prose_underscores_are_escaped_so_teams_stops_eating_them():
-    assert escape_prose("call __init__ then restore_session") == (
-        "call \\_\\_init\\_\\_ then restore\\_session"
+    assert escape_prose("call __init__ then capture_intent") == (
+        "call \\_\\_init\\_\\_ then capture\\_intent"
     )
 
 
 def test_a_code_span_needs_no_escaping_and_gets_none():
-    assert code("restore_session") == "`restore_session`"
+    assert code("capture_intent") == "`capture_intent`"
 
 
 def test_a_backtick_inside_an_identifier_cannot_break_out_of_its_span():
@@ -166,16 +166,18 @@ def test_a_rendered_reply_names_the_issue_confidence_and_evidence():
 
     text, redactions = render_reply(doc.results[0])
 
-    assert "SCANNERS-7X" in text
+    assert "CHECKOUT-4B2" in text
     assert "high" in text
-    assert "`src/example_app/scanners/recovery.py`" in text
-    assert "`restore_session`" in text
-    assert ":214" in text
+    assert "`src/checkout/services/payments.py`" in text
+    assert "`capture_intent`" in text
+    assert ":184" in text
     assert redactions == 0
 
 
 def test_identifiers_in_prose_are_escaped_not_left_to_teams():
-    doc = parse_findings(payload(), batch_id=BATCH, known_issue_ids=KNOWN)
+    body = payload()
+    body["results"][0]["root_cause"] = "capture_intent runs before __init__ finishes."
+    doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
 
     text, _ = render_reply(doc.results[0])
 
@@ -291,14 +293,18 @@ def detail_texts(card):
 def test_the_reply_card_leads_with_the_tldr():
     card, redactions = render_reply_card(result_v2())
 
-    assert card["body"][0]["text"] == "Automated investigation: SCANNERS-7X"
+    assert card["body"][0]["text"] == "Automated investigation: CHECKOUT-4B2"
     assert card["body"][0]["weight"] == "Bolder"
     assert card["body"][1]["text"] == (
         "Confidence: high · Fixability: high · Release: 79bad4b79fb0"
     )
-    assert "The restore flow swallows ClientError and reports sent." in visible_texts(card)
     assert (
-        "**Next step:** mirror resend\\_token's LimitExceededException branch"
+        "submit\\_order wraps capture\\_intent in a bare except, so the gateway "
+        "timeout is retried silently and the capture is reported as sent."
+    ) in visible_texts(card)
+    assert (
+        "**Next step:** mirror refund\\_intent's explicit PaymentIntentTimeout "
+        "branch in submit\\_order"
         in visible_texts(card)
     )
     assert redactions == 0
@@ -319,11 +325,11 @@ def test_the_reply_card_collapses_evidence_behind_the_details_toggle():
     texts = detail_texts(card)
     assert "Evidence" in texts
     assert (
-        "- src/example\\_app/services/accounts.py:214 "
-        "in restore\\_session every ClientError is swallowed"
+        "- src/checkout/services/payments.py:184 "
+        "in capture\\_intent the deadline branch raises but submit\\_order swallows it"
     ) in texts
     assert "Assumptions" in texts
-    assert "- retries were human-driven" in texts
+    assert "- the 8s gateway ceiling is a product decision, not a bug" in texts
 
 
 def test_evidence_never_renders_outside_the_details_container():
@@ -354,7 +360,7 @@ def test_a_reply_card_with_no_detail_has_no_toggle():
 
 def test_reply_card_escapes_markdown_for_teams():
     card, _ = render_reply_card(
-        result_v2(root_cause="restore_session is called before __init__ finishes.")
+        result_v2(root_cause="capture_intent is called before __init__ finishes.")
     )
 
     joined = " ".join(visible_texts(card))
@@ -415,7 +421,7 @@ def test_reply_card_clips_an_enormous_root_cause():
 
 
 def test_reply_summary_names_the_issue_for_the_toast():
-    assert reply_summary("SCANNERS-7X") == "Automated investigation: SCANNERS-7X"
+    assert reply_summary("CHECKOUT-4B2") == "Automated investigation: CHECKOUT-4B2"
 
 
 def test_the_rendered_reply_is_stable_and_fully_escaped():
@@ -425,19 +431,20 @@ def test_the_rendered_reply_is_stable_and_fully_escaped():
     text, _ = render_reply(doc.results[0])
 
     assert text == (
-        "**Automated investigation: SCANNERS-7X**\n"
+        "**Automated investigation: CHECKOUT-4B2**\n"
         "Confidence: high\n"
         "Release investigated: `efa4bbfc4e79`\n"
         "\n"
-        "restore\\_session is called before \\_\\_init\\_\\_ finishes, so self.\\_client "
-        "is still None.\n"
+        "submit\\_order wraps capture\\_intent in a bare except, so the gateway "
+        "timeout is retried silently and the capture is reported as sent.\n"
         "\n"
         "**Evidence**\n"
-        "- `src/example_app/scanners/recovery.py`:214 in `restore_session` "
-        "Dereferences self.\\_client with no guard.\n"
+        "- `src/checkout/services/payments.py`:184 in `capture_intent` "
+        "the deadline branch raises but submit\\_order swallows it\n"
         "\n"
         "**Assumptions**\n"
-        "- The traceback's top frame is the raising frame.\n"
+        "- the 8s gateway ceiling is a product decision, not a bug\n"
         "\n"
-        "**Next step:** Move the \\_client assignment above the restore\\_session call."
+        "**Next step:** mirror refund\\_intent's explicit PaymentIntentTimeout "
+        "branch in submit\\_order"
     )

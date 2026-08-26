@@ -26,14 +26,14 @@ OUT = os.path.join(HERE, "header")
 FONT = os.path.expanduser("~/Library/Fonts/GothamRnd-Bold.otf")
 
 WORD, SIZE, TRACK = "Sentinel", 116, -2.0
-NAVY, STEEL, AMBER, CREAM = "#1b2741", "#2f485e", "#c98a3c", "#f5e7d0"
+NAVY, STEEL, AMBER, OFFWHITE = "#1b2741", "#2f485e", "#c98a3c", "#e6ecf2"
 
 THEMES = {
     "light": dict(word=NAVY, wire=NAVY, wire_op=0.9, moon=AMBER),
-    "dark": dict(word="#f2e6d2", wire="#8aa6c0", wire_op=0.95, moon="#f2e6d2"),
+    "dark": dict(word="#edf2f8", wire="#8aa6c0", wire_op=0.95, moon="#edf2f8"),
 }
 
-# perch-cream, verbatim from assets/perch-cream/perch-cream.svg. 64x64 space,
+# perch, verbatim from assets/perch/perch.svg. 64x64 space,
 # with the amber feet running y 54.0 -> 58.5.
 OWL = '''<path fill="#1b2741" d="M24,8.5 C21,5 18,3 16,2.5 C16,6 17,10 19,13 C20.5,11.2 22.3,9.7 24,8.5 Z"/>
 <path fill="#2f485e" d="M40,8.5 C43,5 46,3 48,2.5 C48,6 47,10 45,13 C43.5,11.2 41.7,9.7 40,8.5 Z"/>
@@ -41,11 +41,11 @@ OWL = '''<path fill="#1b2741" d="M24,8.5 C21,5 18,3 16,2.5 C16,6 17,10 19,13 C20
 <rect fill="#c98a3c" x="33.5" y="54.0" width="5" height="4.5" rx="2"/>
 <path fill="#1b2741" d="M32,7 C19,7 10,19 10,33 C10,47 20,57 32,57 Z"/>
 <path fill="#2f485e" d="M32,7 C45,7 54,19 54,33 C54,47 44,57 32,57 Z"/>
-<path fill="#f5e7d0" d="M32,36 C25.5,36 21.5,42 21.5,48 C21.5,53.6 26,57 32,57 C38,57 42.5,53.6 42.5,48 C42.5,42 38.5,36 32,36 Z"/>
-<circle fill="#faf4ec" cx="23" cy="23" r="7.6"/><circle fill="#faf4ec" cx="41" cy="23" r="7.6"/>
+<path fill="#e6ecf2" d="M32,36 C25.5,36 21.5,42 21.5,48 C21.5,53.6 26,57 32,57 C38,57 42.5,53.6 42.5,48 C42.5,42 38.5,36 32,36 Z"/>
+<circle fill="#f4f7fa" cx="23" cy="23" r="7.6"/><circle fill="#f4f7fa" cx="41" cy="23" r="7.6"/>
 <circle fill="#c98a3c" cx="23" cy="23" r="4.1"/><circle fill="#1b2741" cx="23" cy="23" r="2.0"/>
 <circle fill="#c98a3c" cx="41" cy="23" r="4.1"/><circle fill="#1b2741" cx="41" cy="23" r="2.0"/>
-<circle fill="#fffdf9" cx="21.1" cy="21.0" r="1.4"/><circle fill="#fffdf9" cx="39.1" cy="21.0" r="1.4"/>
+<circle fill="#ffffff" cx="21.1" cy="21.0" r="1.4"/><circle fill="#ffffff" cx="39.1" cy="21.0" r="1.4"/>
 <path fill="#ddb377" d="M32,29.5 C30.1,29.5 29,30.5 29,31.7 C29,33.5 30.6,35.4 32,36.2 C33.4,35.4 35,33.5 35,31.7 C35,30.5 33.9,29.5 32,29.5 Z"/>'''
 
 FEET_BOTTOM, OWL_W = 58.5, 44.0   # in the owl's own 64-unit space

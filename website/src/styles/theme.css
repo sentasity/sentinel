@@ -1,0 +1,315 @@
+/* Sentinel docs theme. Dark-first, built from the brand palette in
+ * docs/brand/gen_round3.py plus a surface scale derived from navy.
+ *
+ * Reading colours are cool off-whites; amber is reserved for interaction and
+ * emphasis (eyebrows, callouts, link hover, the active sidebar marker, focus).
+ * A page where amber is doing more than that has drifted from the contract in
+ * the design's 95-visual-contract.
+ */
+
+:root {
+  --sl-font: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+  --sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sentinel-heading-font: 'Outfit', -apple-system, 'Segoe UI', sans-serif;
+  /* The wordmark colour the lockup itself uses, so the header title and the
+   * hero lockup read as the same mark rather than two different ones. */
+  --sentinel-wordmark: #edf2f8;
+
+  /* Dark is the default theme, so its values sit on bare :root. */
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #dbe4ef;
+  --sl-color-gray-2: #c3cfdd;
+  --sl-color-gray-3: #8fa0b5;
+  --sl-color-gray-4: #4a5f7a;
+  --sl-color-gray-5: #2f485e;
+  --sl-color-gray-6: #1b2741;
+  --sl-color-gray-7: #16203a;
+  --sl-color-black: #131c2e;
+
+  --sl-color-accent-low: #3a2a15;
+  --sl-color-accent: #c98a3c;
+  --sl-color-accent-high: #ddb377;
+
+  --sl-color-bg: #131c2e;
+  --sl-color-bg-nav: #131c2e;
+  --sl-color-bg-sidebar: #131c2e;
+  --sl-color-bg-inline-code: #1b2741;
+  --sl-color-hairline: #2f485e;
+  --sl-color-hairline-light: #2f485e;
+  --sl-color-hairline-shade: #2f485e;
+  --sl-color-text: #dbe4ef;
+  --sl-color-text-accent: #ddb377;
+  --sl-color-text-invert: #131c2e;
+
+  /* The primary button's hover pair. It cannot be derived from accent-high alone:
+   * that token is a pale amber on the dark ground and a dark brown on paper, so the
+   * label has to flip with it. */
+  --sentinel-cta-hover-bg: #ddb377;
+  --sentinel-cta-hover-text: #131c2e;
+
+  /* Diagram strokes carry meaning, so they answer to the 3:1 non-text bar rather
+   * than to the surface scale. The hairline and surface tokens both sit near 1.2:1
+   * against their ground, which is right for a divider and wrong for an arrow. */
+  --sentinel-diagram-stroke: #546e8c;
+  --sentinel-diagram-edge: #8fa0b5;
+}
+
+:root[data-theme='light'] {
+  --sl-color-white: #131c2e;
+  --sl-color-gray-1: #24314a;
+  --sl-color-gray-2: #3d4d66;
+  --sl-color-gray-3: #5d6d84;
+  --sl-color-gray-4: #93a2b6;
+  --sl-color-gray-5: #d9e2ec;
+  --sl-color-gray-6: #e8eef6;
+  --sl-color-gray-7: #eef3f9;
+  --sl-color-black: #ffffff;
+  --sentinel-wordmark: #1b2741;
+
+  /* Brand amber measures 2.67:1 on a light ground, which fails AA for body text
+   * and even the 3:1 bar for large text and UI. Light mode uses a darkened amber
+   * that holds 5.54:1. An inaccessible accent is a worse brand failure than an
+   * off-by-a-shade one. */
+  --sl-color-accent-low: #f7edde;
+  --sl-color-accent: #8a5a1e;
+  --sl-color-accent-high: #6d4716;
+
+  --sl-color-bg: #f6f8fb;
+  --sl-color-bg-nav: #f6f8fb;
+  --sl-color-bg-sidebar: #f6f8fb;
+  --sl-color-bg-inline-code: #eef3f9;
+  --sl-color-hairline: #d9e2ec;
+  --sl-color-hairline-light: #d9e2ec;
+  --sl-color-hairline-shade: #d9e2ec;
+  --sl-color-text: #24314a;
+  --sl-color-text-accent: #8a5a1e;
+  --sl-color-text-invert: #ffffff;
+
+  --sentinel-cta-hover-bg: #6d4716;
+  --sentinel-cta-hover-text: #f6f8fb;
+
+  --sentinel-diagram-stroke: #7f91a8;
+  --sentinel-diagram-edge: #5d6d84;
+
+  /* Light mode inverts the elevation direction. Dark mode lifts a surface by
+   * lightening it; on paper the equivalent move is to sink it, which is also what
+   * keeps the fixed-white Teams card readable as a separate object on top of it. */
+}
+
+/* Starlight has no heading-font token, so headings and the site title are
+ * switched to Outfit explicitly. */
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
+.site-title,
+.content-panel h1 {
+  font-family: var(--sentinel-heading-font);
+  letter-spacing: -0.015em;
+}
+
+/* Starlight paints the site title with --sl-color-text-accent, which is amber
+ * here. Amber is for interaction and emphasis, and the wordmark is neither. */
+a.site-title,
+.site-title {
+  color: var(--sentinel-wordmark);
+}
+
+/* Links and headings share the same colour, so the underline is what identifies
+ * a link. It cannot be hover-only: on a dark ground that leaves body links
+ * invisible until the pointer finds them. Hover is where amber does its work. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--sl-color-white);
+  text-decoration: underline;
+  text-decoration-color: var(--sl-color-hairline);
+  text-underline-offset: 0.18em;
+}
+.sl-markdown-content a:not(:where(.not-content *)):hover {
+  color: var(--sl-color-accent-high);
+  text-decoration-color: var(--sl-color-accent-high);
+}
+
+/* The header bar takes the page ground rather than a raised surface: the
+ * transparent mark needs the darker ground behind it to read. */
+header.header {
+  background: var(--sl-color-bg-nav);
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+.site-title img,
+header.header img {
+  height: 2.5rem;
+  width: auto;
+}
+
+/* Asides: a 3px accent left border on the accent-low ground, title in Outfit. */
+.starlight-aside {
+  border-inline-start-color: var(--sl-color-accent);
+  border-inline-start-width: 3px;
+  background-color: var(--sl-color-accent-low);
+  border-radius: 0 0.45rem 0.45rem 0;
+}
+.starlight-aside__title {
+  font-family: var(--sentinel-heading-font);
+  color: var(--sl-color-accent-high);
+}
+.starlight-aside__content {
+  color: var(--sl-color-text);
+}
+
+/* Active sidebar item: accent-low ground, accent-high label, 2px accent rule. */
+:where(nav) a[aria-current='page'] {
+  background-color: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--sl-color-accent);
+}
+
+/* Focus is always visible and always amber. */
+:focus-visible {
+  outline: 2px solid var(--sl-color-accent);
+  outline-offset: 2px;
+}
+
+/* The home hero carries the full wire-and-moon lockup. It needs width to work,
+ * which is why it appears there and nowhere else on the site. */
+/* The wide lockup was drawn to run a full column width: the wire reaches both
+ * edges rather than stopping inside a padded box. Capping it would centre a
+ * short wire in a wide space, so it spans the whole content column. */
+.hero-lockup {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 0 2.75rem;
+}
+.hero-lockup svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.eyebrow {
+  font-family: var(--sl-font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--sl-color-accent);
+  margin: 0 0 1rem;
+}
+.trust-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+  margin-top: 2rem;
+  padding-top: 1.35rem;
+  border-top: 1px solid var(--sl-color-hairline);
+  font-size: 0.82rem;
+  color: var(--sl-color-gray-3);
+}
+.trust-row strong {
+  color: var(--sl-color-text);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- home splash ---------- */
+
+/* Two lockups are inlined and swapped by theme: the dark one carries an
+ * off-white wordmark that would vanish on the light paper ground, and the light
+ * one a navy wordmark that would vanish on the dark ground. */
+.lockup-light { display: none; }
+:root[data-theme='light'] .lockup-dark { display: none; }
+:root[data-theme='light'] .lockup-light { display: block; }
+
+.splash-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 25rem;
+  gap: 3.5rem;
+  align-items: start;
+}
+@media (max-width: 62rem) {
+  .splash-grid { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+}
+
+.splash-grid h1 {
+  font-size: clamp(2rem, 1.2rem + 2.6vw, 2.9rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 0 0 1.1rem;
+}
+
+.cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+.cta {
+  display: inline-flex;
+  align-items: center;
+  height: 2.75rem;
+  padding: 0 1.25rem;
+  border-radius: 7px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+}
+.cta--primary {
+  background: var(--sl-color-white);
+  color: var(--sl-color-bg);
+}
+.cta--primary:hover {
+  background: var(--sentinel-cta-hover-bg);
+  color: var(--sentinel-cta-hover-text);
+}
+.cta--ghost {
+  color: var(--sl-color-text);
+  border: 1px solid var(--sl-color-hairline);
+}
+.cta--ghost:hover { color: var(--sl-color-accent-high); border-color: var(--sl-color-accent-high); }
+
+/* The proof panel: the card sits on a raised surface with a hairline and real
+ * padding, so it reads as a quoted artifact rather than as loose page content. */
+.proof {
+  background: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 10px;
+  padding: 1rem;
+}
+.proof-cap {
+  font-family: var(--sl-font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  margin: 0 0 0.75rem;
+}
+/* The card is the panel's only content, so it brings no margin of its own and
+ * stretches to the panel's inner width. */
+.proof .ac { margin: 0; }
+.proof .ac__card { max-width: none; }
+.proof figcaption { margin-top: 0.75rem; }
+
+/* The splash template still renders the frontmatter title as an h1, which would
+ * duplicate the wordmark the hero lockup already carries. Hide that panel on the
+ * home page only, keyed off a marker class in the page body. */
+main:has(.splash-grid) > .content-panel:first-child { display: none; }
+
+/* Starlight's own link rule paints every in-content anchor, so the buttons need
+ * to out-specify it rather than sit beside it. */
+.sl-markdown-content a.cta {
+  text-decoration: none;
+}
+.sl-markdown-content a.cta--primary {
+  background: var(--sl-color-white);
+  color: var(--sl-color-bg);
+}
+.sl-markdown-content a.cta--primary:hover {
+  background: var(--sentinel-cta-hover-bg);
+  color: var(--sentinel-cta-hover-text);
+}
+.sl-markdown-content a.cta--ghost {
+  color: var(--sl-color-text);
+}
+.sl-markdown-content a.cta--ghost:hover {
+  color: var(--sl-color-accent-high);
+  border-color: var(--sl-color-accent-high);
+}

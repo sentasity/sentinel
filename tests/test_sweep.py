@@ -451,7 +451,7 @@ def test_shadow_mode_never_fires_or_spends_the_budget():
 def overdue_dispatch():
     return {
         "dispatch_id": "d-1",
-        "short_id": "SCANNERS-7X",
+        "short_id": "CHECKOUT-4B2",
         "conversation_id": "conv-1",
         "message_id": "msg-9",
         "status": "dispatched",

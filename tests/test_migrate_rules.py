@@ -11,10 +11,10 @@ from scripts import migrate_rules as mr
 from tests.conftest import load_fixture
 
 DETECTORS = load_fixture("sentry-detectors.json")
-WORKFLOWS = load_fixture("sentry-workflows-scanners.json")
+WORKFLOWS = load_fixture("sentry-workflows-checkout.json")
 WORKFLOW_ACTION = load_fixture("sentry-workflow-action.json")
 
-SCANNERS_PROJECT_ID = next(d["projectId"] for d in DETECTORS if str(d["id"]) == "1000038")
+CHECKOUT_PROJECT_ID = next(d["projectId"] for d in DETECTORS if str(d["id"]) == "1000038")
 
 # The two staging workflows were migrated before this port landed.
 PENDING_IDS = ["1000008", "1000010"]
@@ -33,15 +33,15 @@ def conditions_of(workflow):
 
 
 def test_workflows_are_scoped_to_a_project_through_detectors():
-    found = mr.workflows_for_project(WORKFLOWS, DETECTORS, SCANNERS_PROJECT_ID)
+    found = mr.workflows_for_project(WORKFLOWS, DETECTORS, CHECKOUT_PROJECT_ID)
 
     assert {w["name"] for w in found} == {
-        "[Scanners] New Issue - Prod",
-        "[Scanners] New Issue - Staging",
-        "[Scanners] New Issue - Dev",
-        "[Scanners] Regression - Prod",
-        "[Scanners] Regression - Staging",
-        "[Scanners] Regression - Dev",
+        "[Checkout] New Issue - Prod",
+        "[Checkout] New Issue - Staging",
+        "[Checkout] New Issue - Dev",
+        "[Checkout] Regression - Prod",
+        "[Checkout] Regression - Staging",
+        "[Checkout] Regression - Dev",
     }
 
 
@@ -52,15 +52,15 @@ def test_workflows_for_another_project_are_excluded():
 
 
 def test_a_workflow_spanning_two_projects_is_refused():
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     workflow["detectorIds"] = ["1000038", "1000032"]
 
     with pytest.raises(mr.MigrationError, match="spans projects"):
-        mr.workflows_for_project([workflow], DETECTORS, SCANNERS_PROJECT_ID)
+        mr.workflows_for_project([workflow], DETECTORS, CHECKOUT_PROJECT_ID)
 
 
 def test_put_payload_keeps_only_writable_keys():
-    payload = mr.put_payload(wf_by_name("[Scanners] New Issue - Prod"))
+    payload = mr.put_payload(wf_by_name("[Checkout] New Issue - Prod"))
 
     assert set(payload) == {
         "name",
@@ -77,7 +77,7 @@ def test_put_payload_keeps_only_writable_keys():
 
 def test_put_payload_always_carries_enabled():
     """A PUT that omits `enabled` switches a disabled alert back on."""
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     workflow["enabled"] = False
 
     assert mr.put_payload(workflow)["enabled"] is False
@@ -85,17 +85,17 @@ def test_put_payload_always_carries_enabled():
 
 def test_swap_workflow_action_replaces_the_msteams_action():
     swapped = mr.swap_workflow_action(
-        wf_by_name("[Scanners] New Issue - Prod"), WORKFLOW_ACTION
+        wf_by_name("[Checkout] New Issue - Prod"), WORKFLOW_ACTION
     )
 
     actions = actions_of(swapped)
     assert len(actions) == 1
     assert actions[0]["type"] == mr.WEBHOOK_ACTION_TYPE
-    assert actions[0]["config"]["targetIdentifier"] == "alert-relay-98aa06"
+    assert actions[0]["config"]["targetIdentifier"] == "sentinel-a1b2c3"
 
 
 def test_swap_workflow_action_ignores_the_server_assigned_id_when_deduping():
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     already_there = copy.deepcopy(WORKFLOW_ACTION)
     already_there["id"] = "99999999"
     workflow["actionFilters"][0]["actions"].append(already_there)
@@ -106,7 +106,7 @@ def test_swap_workflow_action_ignores_the_server_assigned_id_when_deduping():
 
 
 def test_swap_workflow_action_keeps_an_unrelated_action():
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     workflow["actionFilters"][0]["actions"].append(
         {"type": "email", "config": {"targetType": "user", "targetIdentifier": "56789"}}
     )
@@ -117,7 +117,7 @@ def test_swap_workflow_action_keeps_an_unrelated_action():
 
 
 def test_swap_workflow_action_leaves_the_source_workflow_untouched():
-    workflow = wf_by_name("[Scanners] New Issue - Prod")
+    workflow = wf_by_name("[Checkout] New Issue - Prod")
 
     mr.swap_workflow_action(workflow, WORKFLOW_ACTION)
 
@@ -125,7 +125,7 @@ def test_swap_workflow_action_leaves_the_source_workflow_untouched():
 
 
 def test_swap_workflow_action_preserves_triggers_frequency_and_environment():
-    workflow = wf_by_name("[Scanners] Regression - Prod")
+    workflow = wf_by_name("[Checkout] Regression - Prod")
 
     swapped = mr.swap_workflow_action(workflow, WORKFLOW_ACTION)
 
@@ -137,7 +137,7 @@ def test_swap_workflow_action_preserves_triggers_frequency_and_environment():
 
 
 def test_swap_workflow_action_refuses_a_workflow_with_no_msteams_action():
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     workflow["actionFilters"][0]["actions"] = []
 
     with pytest.raises(mr.MigrationError, match="no Msteams action"):
@@ -145,7 +145,7 @@ def test_swap_workflow_action_refuses_a_workflow_with_no_msteams_action():
 
 
 def test_prod_workflows_lose_the_level_condition():
-    planned = mr.plan_workflow(wf_by_name("[Scanners] New Issue - Prod"), WORKFLOW_ACTION)
+    planned = mr.plan_workflow(wf_by_name("[Checkout] New Issue - Prod"), WORKFLOW_ACTION)
 
     assert [c["type"] for c in conditions_of(planned)] == []
 
@@ -157,9 +157,9 @@ def test_non_prod_workflows_keep_their_level_condition():
     which would make this assertion pass even if `plan_workflow` stripped them
     unconditionally. So the condition is added here rather than found.
     """
-    source = copy.deepcopy(wf_by_name("[Scanners] New Issue - Dev"))
+    source = copy.deepcopy(wf_by_name("[Checkout] New Issue - Dev"))
     level = copy.deepcopy(
-        next(c for c in conditions_of(wf_by_name("[Scanners] New Issue - Prod")))
+        next(c for c in conditions_of(wf_by_name("[Checkout] New Issue - Prod")))
     )
     source["actionFilters"][0]["conditions"].append(level)
 
@@ -169,15 +169,15 @@ def test_non_prod_workflows_keep_their_level_condition():
 
 
 def test_classify_separates_migrated_from_pending():
-    pending = wf_by_name("[Scanners] New Issue - Prod")
-    migrated = wf_by_name("[Scanners] New Issue - Staging")
+    pending = wf_by_name("[Checkout] New Issue - Prod")
+    migrated = wf_by_name("[Checkout] New Issue - Staging")
 
     assert mr.classify(pending, WORKFLOW_ACTION) == "pending"
     assert mr.classify(migrated, WORKFLOW_ACTION) == "migrated"
 
 
 def test_classify_flags_a_workflow_with_neither_action():
-    workflow = copy.deepcopy(wf_by_name("[Scanners] New Issue - Prod"))
+    workflow = copy.deepcopy(wf_by_name("[Checkout] New Issue - Prod"))
     workflow["actionFilters"][0]["actions"] = []
 
     assert mr.classify(workflow, WORKFLOW_ACTION) == "unexpected"
@@ -187,7 +187,7 @@ def fake_client():
     client = MagicMock()
     client.list_workflows.return_value = json.loads(json.dumps(WORKFLOWS))
     client.list_detectors.return_value = json.loads(json.dumps(DETECTORS))
-    client.project_id.return_value = str(SCANNERS_PROJECT_ID)
+    client.project_id.return_value = str(CHECKOUT_PROJECT_ID)
     return client
 
 
@@ -195,12 +195,12 @@ def test_apply_writes_a_backup_before_touching_anything(tmp_path):
     client = fake_client()
     backup = tmp_path / "backup.json"
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     saved = json.loads(backup.read_text())
     assert [w["name"] for w in saved] == [
-        "[Scanners] New Issue - Prod",
-        "[Scanners] Regression - Prod",
+        "[Checkout] New Issue - Prod",
+        "[Checkout] Regression - Prod",
     ]
     assert actions_of(saved[0])[0]["type"] == mr.MSTEAMS_ACTION_TYPE
 
@@ -208,7 +208,7 @@ def test_apply_writes_a_backup_before_touching_anything(tmp_path):
 def test_apply_updates_only_the_named_environment(tmp_path):
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
 
     updated_ids = [call.args[0] for call in client.update.call_args_list]
     assert sorted(updated_ids) == PENDING_IDS
@@ -218,7 +218,7 @@ def test_apply_never_touches_the_dev_workflows(tmp_path):
     """The per-developer rules keep the stock integration and the dev channel."""
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json")
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json")
 
     updated_ids = [call.args[0] for call in client.update.call_args_list]
     assert sorted(updated_ids) == PENDING_IDS
@@ -228,11 +228,11 @@ def test_apply_skips_the_already_migrated_staging_workflows(tmp_path):
     """2 of 18 were migrated before the port, so a slice holding them must proceed."""
     client = fake_client()
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json")
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json")
 
     assert sorted(result["skipped"]) == [
-        "[Scanners] New Issue - Staging",
-        "[Scanners] Regression - Staging",
+        "[Checkout] New Issue - Staging",
+        "[Checkout] Regression - Staging",
     ]
     assert sorted(result["updated"]) == PENDING_IDS
 
@@ -240,7 +240,7 @@ def test_apply_skips_the_already_migrated_staging_workflows(tmp_path):
 def test_apply_sends_the_planned_payload(tmp_path):
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
 
     payloads = [call.args[1] for call in client.update.call_args_list]
     assert all(actions_of(p)[0]["type"] == mr.WEBHOOK_ACTION_TYPE for p in payloads)
@@ -253,13 +253,13 @@ def test_apply_refuses_a_workflow_in_an_unknown_shape(tmp_path):
     client = fake_client()
     workflows = json.loads(json.dumps(WORKFLOWS))
     for workflow in workflows:
-        if workflow["name"] == "[Scanners] New Issue - Prod":
+        if workflow["name"] == "[Checkout] New Issue - Prod":
             workflow["actionFilters"][0]["actions"] = []
     client.list_workflows.return_value = workflows
     backup = tmp_path / "b.json"
 
     with pytest.raises(mr.MigrationError, match="unknown shape"):
-        mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+        mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     assert not backup.exists()
     client.update.assert_not_called()
@@ -271,7 +271,7 @@ def test_apply_refuses_when_the_backup_path_is_not_writable(tmp_path):
     with pytest.raises(mr.MigrationError, match="cannot write backup"):
         mr.apply(
             client,
-            "scanners",
+            "checkout",
             WORKFLOW_ACTION,
             tmp_path / "missing-dir" / "b.json",
             environments=("prod",),
@@ -295,7 +295,7 @@ def test_rollback_puts_every_backed_up_workflow_back(tmp_path):
 def test_rollback_restores_the_prod_level_condition(tmp_path):
     client = MagicMock()
     backup = tmp_path / "backup.json"
-    backup.write_text(json.dumps([wf_by_name("[Scanners] New Issue - Prod")]))
+    backup.write_text(json.dumps([wf_by_name("[Checkout] New Issue - Prod")]))
 
     mr.rollback(client, backup)
 
@@ -317,8 +317,8 @@ def test_rollback_refuses_an_empty_backup(tmp_path):
 
 
 def test_default_backup_path_separates_environment_slices():
-    staging = mr.default_backup_path("scanners", ("staging",))
-    prod = mr.default_backup_path("scanners", ("prod",))
+    staging = mr.default_backup_path("checkout", ("staging",))
+    prod = mr.default_backup_path("checkout", ("prod",))
 
     assert staging != prod
     assert "staging" in staging.name
@@ -331,7 +331,7 @@ def test_apply_refuses_to_overwrite_an_existing_backup(tmp_path):
     backup.write_text("[]")
 
     with pytest.raises(mr.MigrationError, match="backup already exists"):
-        mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+        mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     assert backup.read_text() == "[]"
     client.update.assert_not_called()
@@ -341,25 +341,25 @@ def test_dry_run_plans_without_writing(tmp_path):
     client = fake_client()
     backup = tmp_path / "backup.json"
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, backup, dry_run=True)
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, backup, dry_run=True)
 
     client.update.assert_not_called()
     assert not backup.exists()
     assert result["updated"] == []
     assert sorted(result["planned"]) == [
-        "[Scanners] New Issue - Prod",
-        "[Scanners] Regression - Prod",
+        "[Checkout] New Issue - Prod",
+        "[Checkout] Regression - Prod",
     ]
 
 
 def test_dry_run_still_reports_what_it_would_skip(tmp_path):
     client = fake_client()
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", dry_run=True)
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", dry_run=True)
 
     assert sorted(result["skipped"]) == [
-        "[Scanners] New Issue - Staging",
-        "[Scanners] Regression - Staging",
+        "[Checkout] New Issue - Staging",
+        "[Checkout] Regression - Staging",
     ]
 
 
@@ -369,7 +369,7 @@ def test_apply_names_the_workflows_it_already_updated_when_one_fails(tmp_path):
 
     with pytest.raises(mr.MigrationError, match="1000008"):
         mr.apply(
-            client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
+            client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
         )
 
 
@@ -380,12 +380,12 @@ def test_a_dropped_connection_still_names_what_it_already_updated(tmp_path):
 
     with pytest.raises(mr.MigrationError, match="1000008"):
         mr.apply(
-            client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
+            client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
         )
 
 
 def test_client_transport_errors_surface_as_migration_errors():
-    client = mr.SentryWorkflows("example-org", "tok")
+    client = mr.SentryWorkflows("acme-tools", "tok")
 
     with patch.object(
         client.session, "get", side_effect=requests.exceptions.ConnectTimeout("timed out")
@@ -402,7 +402,7 @@ def test_client_transport_errors_surface_as_migration_errors():
 
 def test_the_client_only_calls_org_scoped_endpoints():
     """The legacy project-rules endpoints return HTTP 410 as of 17 August 2026."""
-    client = mr.SentryWorkflows("example-org", "tok")
+    client = mr.SentryWorkflows("acme-tools", "tok")
     ok = MagicMock(ok=True)
     ok.json.return_value = []
 
@@ -414,9 +414,9 @@ def test_the_client_only_calls_org_scoped_endpoints():
 
     called = [c.args[0] for c in get.call_args_list] + [c.args[0] for c in put.call_args_list]
     assert called == [
-        "https://sentry.io/api/0/organizations/example-org/workflows/",
-        "https://sentry.io/api/0/organizations/example-org/detectors/",
-        "https://sentry.io/api/0/organizations/example-org/workflows/1000008/",
+        "https://sentry.io/api/0/organizations/acme-tools/workflows/",
+        "https://sentry.io/api/0/organizations/acme-tools/detectors/",
+        "https://sentry.io/api/0/organizations/acme-tools/workflows/1000008/",
     ]
 
 

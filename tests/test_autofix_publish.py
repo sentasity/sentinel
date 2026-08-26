@@ -7,12 +7,12 @@ from scripts.autofix_publish import branch_name, main, pr_body, pr_title
 
 
 def test_branch_name_is_stable_and_lowercase():
-    assert branch_name("SCANNERS-7X", "d1b2c3d4-rest") == "autofix/scanners-7x-d1b2c3"
+    assert branch_name("CHECKOUT-4B2", "d1b2c3d4-rest") == "autofix/checkout-4b2-d1b2c3"
 
 
 def test_pr_title_carries_the_marker_and_short_id():
-    assert pr_title("SCANNERS-7X", "Swallowed ClientError in recover flow") == (
-        "[autofix] Swallowed ClientError in recover flow (SCANNERS-7X)"
+    assert pr_title("CHECKOUT-4B2", "Swallowed ClientError in recover flow") == (
+        "[autofix] Swallowed ClientError in recover flow (CHECKOUT-4B2)"
     )
 
 
@@ -75,27 +75,27 @@ def test_a_verified_diff_runs_the_full_publish_sequence(run, tmp_path, capsys):
         _cp(),  # git add --all
         _cp(),  # git commit
         _cp(),  # git push
-        _cp(stdout="https://github.com/example-org/example-repo/pull/42\n"),  # gh pr create
+        _cp(stdout="https://github.com/acme-tools/checkout/pull/42\n"),  # gh pr create
     ]
     env = {
-        "AUTOFIX_SHORT_ID": "SCANNERS-7X",
+        "AUTOFIX_SHORT_ID": "CHECKOUT-4B2",
         "AUTOFIX_DISPATCH_ID": "d1b2c3d4-rest",
         "AUTOFIX_RELEASE_SHA": "abc",
         "AUTOFIX_RUN_URL": "https://run",
         # No default any more: the workflow passes this through from the
         # AUTOFIX_TARGET_* repository variables, so the test must too.
-        "AUTOFIX_TARGET_REPO": "example-org/example-repo",
+        "AUTOFIX_TARGET_REPO": "acme-tools/checkout",
     }
 
     assert main(workspace=workspace, env=env) == "pr_opened"
     assert run.call_count == 8
 
     out = capsys.readouterr().out
-    assert "pr_url=https://github.com/example-org/example-repo/pull/42" in out
+    assert "pr_url=https://github.com/acme-tools/checkout/pull/42" in out
 
     pr_create_args = run.call_args_list[-1].args[0]
     assert pr_create_args[:3] == ["gh", "pr", "create"]
-    assert "example-org/example-repo" in pr_create_args
+    assert "acme-tools/checkout" in pr_create_args
 
 
 @patch("scripts.autofix_publish.subprocess.run")
@@ -169,7 +169,7 @@ def test_the_empty_diff_check_uses_the_same_pathspec_as_git_add(run, tmp_path):
         _cp(),
         _cp(),
         _cp(),
-        _cp(stdout="https://github.com/example-org/example-repo/pull/1\n"),
+        _cp(stdout="https://github.com/acme-tools/checkout/pull/1\n"),
     ]
     env = {"AUTOFIX_SHORT_ID": "S-1", "AUTOFIX_DISPATCH_ID": "d-1"}
 

@@ -1,0 +1,87 @@
+---
+title: Configure and deploy
+description: The config file, the knobs that matter, and where the deploy hands off.
+---
+
+## The config file
+
+Copy the template and fill it in:
+
+```bash
+cp config/receiver.yaml.example config/receiver.yaml
+```
+
+`config/receiver.yaml` stays out of git; only the `.example` template ships. Replace
+every `REPLACE_WITH_*` value before deploying. The CDK app runs `assert_ready` before
+synth and refuses to deploy while any placeholder remains, so a half-filled config
+fails loudly rather than deploying something inert.
+
+## The knobs that matter
+
+Defaults are the template's own. The inline comments below are quoted from it, because
+the template is the source of truth.
+
+| Key | Default | What it means |
+|---|---|---|
+| `trigger_mode` | `shadow` | `auto` fires on every eligible notification; `shadow` runs the gate and records what would have fired, firing nothing |
+| `environments` | `prod`, `staging` | "Name the ones you run here; the per-developer dev envs are best excluded: stale/unpushed release SHAs make release-checkout structurally wrong" |
+| `target_repo` | placeholder | "Repository the routine session investigates (must match the routine's repository binding; the startup assertion enforces this)" |
+| `release_to_sha` | `identity` | "For many projects the release IS the commit SHA. Other projects may need a lookup" |
+| `caps.max_turns` | 50 | "Hard caps for an unattended session" |
+| `investigation.debounce_seconds` | 60 | How long a new issue waits, so related issues batch into one session |
+| `investigation.max_batch_issues` | 8 | Most issues handed to a single session |
+| `investigation.per_sweep_fire_cap` | 4 | Most sessions fired in one sweep |
+| `investigation.daily_fire_cap` | 40 | Most sessions fired in a day |
+| `investigation.deadline_seconds` | 900 | After this, the batch is failed loudly into the thread |
+| `investigation.findings_url` | placeholder | "The receiver's own Function URL, which does not exist until the first deploy" |
+| `payload_mode` | `issue-ids-only` | "The only supported mode: a full event body can exceed the 65,536-character fire cap" |
+| `autofix.enabled` | `false` | "enabled false ships the code inert; turning it on is a config deploy" |
+| `autofix.min_confidence` | `high` | Minimum finding confidence for a fix attempt |
+| `autofix.min_fixability` | `medium` | Minimum fixability for a fix attempt |
+| `autofix.projects` | `[]` | Allowlist; "an empty allowlist opts in every project" |
+| `autofix.exclude_paths` | `[]` | A cited path matching any of these vetoes the attempt |
+| `autofix.daily_pr_cap` | 5 | Most pull requests opened in a day |
+
+Note the ordering problem in `investigation.findings_url`: it is the receiver's own
+Function URL, which does not exist until the first deploy. That is precisely why
+`trigger_mode` ships as `shadow`. Deploy once, read the stack output, fill it in,
+deploy again, then soak before switching to `auto`.
+
+## Secrets
+
+Secrets never go in the config file. It carries only a `token_ref`, the name of the SSM
+parameter holding the value. The parameters themselves are SecureStrings written by:
+
+```bash
+BOT_CLIENT_SECRET='...' \
+SENTRY_WEBHOOK_SECRET='...' \
+SENTRY_API_TOKEN='...' \
+  scripts/put-parameters.sh
+```
+
+The one value in the config that looks like a secret and is not is
+`observability.automation_dsn`. A Sentry DSN is ingest-only, so it lives in config and
+CDK passes it through as `SENTRY_DSN`.
+
+## Deploy
+
+The CDK app and its commands live beside the code they deploy, in
+[`infra/README.md`](https://github.com/sentasity/sentinel/blob/main/infra/README.md).
+It covers the prerequisites, the `cdk deploy` sequence, the health check, and rollback.
+
+The stack outputs `FunctionUrl`. Its two routes go to the two setup stages:
+
+- `<FunctionUrl>sentry` becomes the Webhook URL on the
+  [Sentry integration](/sentinel/deploy/sentry/)
+- `<FunctionUrl>bot` becomes the Messaging endpoint on the
+  [Azure Bot](/sentinel/deploy/microsoft/)
+
+## Turning it on
+
+Moving `trigger_mode` from `shadow` to `auto` is a config change plus a deploy, and it
+should follow a soak: leave it in shadow long enough to see the gate make decisions on
+real traffic, then read what it recorded before letting it fire.
+
+Autofix is a second, separate switch. `autofix.enabled: true` should follow its own soak
+on findings you have read, because it is the one gate whose output lands in somebody
+else's repository.

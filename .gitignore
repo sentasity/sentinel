@@ -21,3 +21,8 @@ docs/brand/options/
 # `.example` template beside it ships. `*.yaml.example` does not match
 # this glob, so templates stay tracked.
 config/*.yaml
+
+# documentation site build output
+website/node_modules/
+website/dist/
+website/.astro/

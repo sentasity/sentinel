@@ -1,0 +1,48 @@
+---
+title: What you need first
+description: The five accounts and the local tooling Sentinel needs before any of the setup steps will work.
+---
+
+Sentinel is infrastructure you deploy, not a plugin you install. Before starting, it is
+worth knowing exactly what that means, because the setup is four manual stages and none
+of them can be completed without the accounts below.
+
+## Accounts you must already have
+
+| What | Why | What you need in it |
+|---|---|---|
+| A Sentry organization | The alerts come from here | Permission to create an internal integration, and an org admin token for the alert migration |
+| A Microsoft 365 tenant with Azure | The cards are posted here | Tenant admin rights, to register an app and create an Azure Bot |
+| An AWS account | The receiver runs here | Credentials for the region you deploy into, and permission to write SSM parameters and deploy a CDK stack |
+| A GitHub App | Only if you want autofix | Installed on the repository the fixes will target |
+| Claude Code access | The unattended sessions run on it | A subscription that can run cloud routines |
+
+If any of those five is a blocker, it is a blocker now rather than three stages in.
+
+## Local tooling
+
+- Python 3.12 or newer. The Lambda runs 3.12 and CI covers 3.12 and 3.13.
+- Docker running, for the Lambda bundle. OrbStack is fine.
+- AWS credentials for the target account.
+- Node 22, only if you intend to work on this documentation site.
+
+## The order
+
+The stages depend on each other, so run them in this order:
+
+1. **[Microsoft setup](/sentinel/deploy/microsoft/)**, which gives the receiver its bot
+   identity.
+2. **[Sentry setup](/sentinel/deploy/sentry/)**, which creates the integration that
+   webhooks alerts in.
+3. **[Configure and deploy](/sentinel/deploy/configure/)**, which fills in the config
+   and stands the receiver up.
+
+The two setup stages both write secrets with the same script, so you can run it once
+with all three values rather than twice.
+
+:::caution
+A new deployment starts in `shadow` mode, which runs the whole gate and records what it
+would have fired without firing anything. The autofix gate ships `enabled: false`
+separately. Both defaults are deliberate. Turning either on is a config change and a
+deploy, which means nobody enables unattended pull requests by accident.
+:::

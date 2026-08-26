@@ -33,7 +33,7 @@ def ok(status=200, body="", headers=None):
 def test_fire_posts_the_payload_as_a_json_string_in_text():
     client = make_client(ok())
 
-    outcome, delay = client.fire({"project": "scanners", "issue_ids": ["1"]})
+    outcome, delay = client.fire({"project": "checkout", "issue_ids": ["1"]})
 
     assert outcome is FireOutcome.FIRED
     assert delay == 0
@@ -41,14 +41,14 @@ def test_fire_posts_the_payload_as_a_json_string_in_text():
     assert url.endswith("/v1/claude_code/routines/trig_abc/fire")
     sent = client.session.post.call_args.kwargs["json"]
     assert set(sent) == {"text"}
-    assert json.loads(sent["text"])["project"] == "scanners"
+    assert json.loads(sent["text"])["project"] == "checkout"
 
 
 def test_fire_sends_both_required_version_headers():
     """The beta header is documented as required; a fire without it can 400."""
     client = make_client(ok())
 
-    client.fire({"project": "scanners"})
+    client.fire({"project": "checkout"})
 
     headers = client.session.post.call_args.kwargs["headers"]
     assert headers["anthropic-version"] == ANTHROPIC_VERSION

@@ -39,13 +39,13 @@ def test_put_alert_writes_the_expected_item():
     store, table = make_store()
     alert = parse_alert(load_fixture("sentry-webhook-alert.json"))
 
-    store.put_alert(alert, IssueRef("SCANNERS-7X", "scanners"), "conv-1", "msg-9")
+    store.put_alert(alert, IssueRef("CHECKOUT-4B2", "checkout"), "conv-1", "msg-9")
 
     item = table.put_item.call_args.kwargs["Item"]
     assert item["pk"] == "issue:1000000007"
     assert item["sk"] == "alert:staging"
-    assert item["short_id"] == "SCANNERS-7X"
-    assert item["project"] == "scanners"
+    assert item["short_id"] == "CHECKOUT-4B2"
+    assert item["project"] == "checkout"
     assert item["level"] == "error"
     assert item["conversation_id"] == "conv-1"
     assert item["message_id"] == "msg-9"
@@ -59,7 +59,7 @@ def test_put_alert_omits_a_null_release():
     payload = copy.deepcopy(load_fixture("sentry-webhook-alert.json"))
     payload["data"]["event"]["release"] = None
 
-    store.put_alert(parse_alert(payload), IssueRef("SCANNERS-7X", "scanners"), "c", "m")
+    store.put_alert(parse_alert(payload), IssueRef("CHECKOUT-4B2", "checkout"), "c", "m")
 
     assert "release" not in table.put_item.call_args.kwargs["Item"]
 
@@ -87,7 +87,7 @@ def test_put_investigation_writes_a_sibling_item_under_the_same_partition():
     alert = parse_alert(load_fixture("sentry-webhook-alert.json"))
 
     store.put_investigation(
-        alert, IssueRef("SCANNERS-7X", "scanners"), "conv-1", "msg-9", "2026-08-13T10:01:00Z"
+        alert, IssueRef("CHECKOUT-4B2", "checkout"), "conv-1", "msg-9", "2026-08-13T10:01:00Z"
     )
 
     item = table.put_item.call_args.kwargs["Item"]
@@ -97,7 +97,7 @@ def test_put_investigation_writes_a_sibling_item_under_the_same_partition():
     assert item["due_pk"] == "pending"
     assert item["due_at"] == "2026-08-13T10:01:00Z"
     assert item["message_id"] == "msg-9"
-    assert item["project"] == "scanners"
+    assert item["project"] == "checkout"
 
 
 def test_put_investigation_guards_against_overwriting_an_existing_row():
@@ -106,7 +106,7 @@ def test_put_investigation_guards_against_overwriting_an_existing_row():
     alert = parse_alert(load_fixture("sentry-webhook-alert.json"))
 
     assert store.put_investigation(
-        alert, IssueRef("S", "scanners"), "c", "m", "2026-08-13T10:01:00Z"
+        alert, IssueRef("S", "checkout"), "c", "m", "2026-08-13T10:01:00Z"
     ) is True
     assert table.put_item.call_args.kwargs["ConditionExpression"] == "attribute_not_exists(pk)"
 
@@ -118,7 +118,7 @@ def test_put_investigation_returns_false_when_the_issue_was_already_enqueued():
     alert = parse_alert(load_fixture("sentry-webhook-alert.json"))
 
     assert store.put_investigation(
-        alert, IssueRef("S", "scanners"), "c", "m", "2026-08-13T10:01:00Z"
+        alert, IssueRef("S", "checkout"), "c", "m", "2026-08-13T10:01:00Z"
     ) is False
 
 
@@ -411,7 +411,7 @@ def test_a_dispatch_record_enters_the_due_index():
             "issue_id": "1000000007",
             "environment": "staging",
             "release": "abc",
-            "short_id": "SCANNERS-7X",
+            "short_id": "CHECKOUT-4B2",
             "conversation_id": "conv-1",
             "message_id": "msg-9",
             "callback_token_hash": "hash",
