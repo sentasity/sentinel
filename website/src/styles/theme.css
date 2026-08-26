@@ -11,6 +11,9 @@
   --sl-font: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --sentinel-heading-font: 'Outfit', -apple-system, 'Segoe UI', sans-serif;
+  /* The wordmark colour the lockup itself uses, so the header title and the
+   * hero lockup read as the same mark rather than two different ones. */
+  --sentinel-wordmark: #edf2f8;
 
   /* Dark is the default theme, so its values sit on bare :root. */
   --sl-color-white: #ffffff;
@@ -49,6 +52,7 @@
   --sl-color-gray-6: #f2ece0;
   --sl-color-gray-7: #f7f2e8;
   --sl-color-black: #ffffff;
+  --sentinel-wordmark: #1b2741;
 
   /* Brand amber measures 2.67:1 on the light paper ground, which fails AA for
    * body text and even the 3:1 bar for large text and UI. Light mode uses a
@@ -77,6 +81,13 @@
 .content-panel h1 {
   font-family: var(--sentinel-heading-font);
   letter-spacing: -0.015em;
+}
+
+/* Starlight paints the site title with --sl-color-text-accent, which is amber
+ * here. Amber is for interaction and emphasis, and the wordmark is neither. */
+a.site-title,
+.site-title {
+  color: var(--sentinel-wordmark);
 }
 
 /* Links and headings share the same colour, so the underline is what identifies
@@ -185,7 +196,7 @@ header.header img {
 
 .splash-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 22rem;
+  grid-template-columns: minmax(0, 1fr) 25rem;
   gap: 3.5rem;
   align-items: start;
 }
@@ -222,6 +233,14 @@ header.header img {
 }
 .cta--ghost:hover { color: var(--sl-color-accent-high); border-color: var(--sl-color-accent-high); }
 
+/* The proof panel: the card sits on a raised surface with a hairline and real
+ * padding, so it reads as a quoted artifact rather than as loose page content. */
+.proof {
+  background: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 10px;
+  padding: 1rem;
+}
 .proof-cap {
   font-family: var(--sl-font-mono);
   font-size: 0.66rem;
@@ -230,6 +249,11 @@ header.header img {
   color: var(--sl-color-gray-3);
   margin: 0 0 0.75rem;
 }
+/* The card is the panel's only content, so it brings no margin of its own and
+ * stretches to the panel's inner width. */
+.proof .ac { margin: 0; }
+.proof .ac__card { max-width: none; }
+.proof figcaption { margin-top: 0.75rem; }
 
 /* The splash template still renders the frontmatter title as an h1, which would
  * duplicate the wordmark the hero lockup already carries. Hide that panel on the
