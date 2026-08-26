@@ -51,9 +51,7 @@ config change and a deploy, which is deliberate: it means nobody enables unatten
 pull requests by accident.
 
 :::note
-The investigation sessions run as Claude Code cloud routines. Routines are a research
-preview, so the trigger endpoint and its limits can change without notice. The engine
-treats a 429 with a long `Retry-After` as subscription-window exhaustion and skips
+The investigation sessions run as Claude Code cloud routines. The engine treats a 429 with a long `Retry-After` as subscription-window exhaustion and skips
 rather than retrying.
 :::
 

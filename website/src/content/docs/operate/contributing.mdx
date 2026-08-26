@@ -6,8 +6,8 @@ description: Running the documentation site locally, and the rules that keep it 
 ## Contributing to Sentinel
 
 Issues are welcome and get read. For anything beyond a small fix, please open an issue
-first: this is a small project maintained alongside other work, and the roadmap lives
-elsewhere, so it is easy to build something that is already half-written.
+first: this is a small project maintained alongside other work, so it is easy to build
+something that is already half-written.
 [CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md) has
 the details and the test-suite instructions.
 
@@ -67,13 +67,17 @@ and the renderer disagree, which is the backstop.
 
 ## What CI runs on a documentation change
 
-Four things, and only the first is documentation-specific:
+Five things, and only the first is documentation-specific:
 
 - `docs-ci.yml` builds the site and runs both checkers plus their own unit tests
 - `tests.yml` runs the Python suite on 3.12 and 3.13
 - `secret-scan.yml` runs gitleaks
+- `disclosure-scan.yml` reads what the change touches and reports anything a public
+  repository should not be handing a stranger
 - inside the Python suite, `tests/test_public_tree.py` reads every tracked file looking
   for strings that must never be published, which now includes every page of this site
 
-The last one is worth knowing about before you paste a real endpoint or channel id into
-a page: it will fail the build, which is the intended outcome.
+The last two are worth knowing about before you paste a real endpoint or channel id
+into a page. The string ban fails the build outright; the scan reads for the same class
+of thing without needing someone to have described it first. Both outcomes are
+intended. [Runbooks](/sentinel/operate/runbooks/) covers the scan in full.

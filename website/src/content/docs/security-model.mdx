@@ -79,14 +79,24 @@ secrets. Neither ever appears in the config file, which carries only a reference
 parameter name. The full inventory and the rotation runbooks are in
 [Runbooks](/sentinel/operate/runbooks/).
 
-## What we accept
+## The disclosure scan reads and nothing else
 
-One residual risk is documented rather than solved. The Claude Agent SDK forwards the
-process environment to its subprocess, so the workflow's OAuth token is technically
-reachable from inside the autofix session. Containment for that is the runner's egress
-posture, not the runner code.
+A third unattended session sweeps the repository before anything is published from it,
+looking for what a public tree should not hand a stranger: live credentials, real tenant
+and organization identifiers, deployment endpoints, and the inventories that turn a
+runbook into a deployment map.
 
-It is listed here because a security model that only lists its wins is not a security
-model. If you find something else, please report it through
+It holds the narrowest posture of the three. The session gets `Read`, `Glob`, and
+`Grep`, no shell and no write tool, and it loads no project settings, because the tree
+it reviews is also where an injected instruction file would be waiting. Its verdict
+counts only when it carries a token minted after that tree was already fixed, so a
+result block planted in a file cannot claim the run's outcome, and it prints a fixed set
+of fields so a value smuggled into an extra one never reaches the public log.
+
+[Runbooks](/sentinel/operate/runbooks/) covers running it and reading what it reports.
+
+## Reporting a vulnerability
+
+Please report anything you find through
 [GitHub's private vulnerability reporting](https://github.com/sentasity/sentinel/security/advisories/new)
 rather than opening a public issue.

@@ -10,7 +10,7 @@ Runbooks for the credentials the engine holds and the checks that prove the pipe
 | Credential | Where it lives | Purpose |
 |---|---|---|
 | `AUTOFIX_APP_PRIVATE_KEY` | Actions secret, engine repo | Mints the short-lived App installation token used to check out the target repo and publish the PR |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the unattended autofix session against the Claude subscription |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the unattended autofix session and the disclosure scan against the Claude subscription |
 | `AUTOFIX_APP_ID` | Actions variable, engine repo | The App ID passed to `create-github-app-token` |
 | `/sentinel/github-app-private-key` | SSM SecureString, receiver | The same App private key, read by the receiver at cold start |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
@@ -21,7 +21,9 @@ The routine trigger token is never stored in this repo; keep the only other copy
 ## Runbook: rotating the GitHub App private key
 
 1. Generate a second private key in the GitHub App settings. GitHub Apps allow two active keys at once, so this rotation is zero-downtime: the old key keeps authenticating while the new one rolls out.
-2. Update the key everywhere it lives, one place at a time:
+2. Update the key everywhere it lives, one place at a time. Set `AWS_REGION` to the
+   region you deployed into first; `scripts/put-parameters.sh` and the receiver both
+   default to `us-east-1`, but nothing requires it.
    - **Your password manager:** update the stored copy manually.
    - **Actions secret** (mints the App installation token the workflow uses to check out the target repo and publish PRs):
      ```bash
@@ -35,10 +37,10 @@ The routine trigger token is never stored in this repo; keep the only other copy
        --type SecureString \
        --value "$GITHUB_APP_PRIVATE_KEY" \
        --overwrite \
-       --region us-east-1
+       --region "$AWS_REGION"
      ```
 3. Confirm the new key is actually the one in place, not just that GitHub accepts requests (both keys stay valid until you delete one, so a dispatch succeeding proves nothing about which key was used):
-   - SSM: `aws ssm get-parameter --name /sentinel/github-app-private-key --with-decryption --region us-east-1 --query Parameter.Value --output text`, and diff the output against the new key file.
+   - SSM: `aws ssm get-parameter --name /sentinel/github-app-private-key --with-decryption --region "$AWS_REGION" --query Parameter.Value --output text`, and diff the output against the new key file.
    - Actions secret: GitHub never returns a secret's value, so check `gh secret list --repo "$ENGINE_REPO"` and confirm `AUTOFIX_APP_PRIVATE_KEY`'s `Updated` column reflects the change you just made.
    - Run the proof point below (or wait for a real dispatch) and confirm the "Mint App installation token" step and the Publish step both succeed, i.e. a PR actually opens.
 4. Only once all three checks in step 3 pass, delete the old key from the App settings.
@@ -48,6 +50,29 @@ The routine trigger token is never stored in this repo; keep the only other copy
 Run `claude setup-token` on an operator machine and paste the output into the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret (engine repo).
 
 Expiry does not fail the "Run the fix session" step: `runner/autofix_runner.py`'s `main()` wraps the session in a broad exception handler and always returns 0, so that step shows green in the Actions UI even on an auth failure. What actually fails is downstream: `result.json` never reaches a `verified` status, `scripts/autofix_publish.py` reports `failed`, and the callback posts the "Autofix failed" thread reply. To diagnose, don't trust the session step's pass/fail badge; check the run's `::error::` annotations (the session step logs `autofix session crashed: <exc>` on a crash) and the Publish step's log, which prints the actual final status on its last line.
+
+## The disclosure scan
+
+`.github/workflows/disclosure-scan.yml` runs one read-only Claude session over the tree and reports what a public repository should not have handed a stranger: live credentials, real tenant and organization identifiers, deployment endpoints, named people, and the inventories that turn a runbook into a deployment map. It also flags security weaknesses in the change itself, such as an unpinned action or a credential reaching a step that does not need it.
+
+It is the third gate, not the only one, and the other two stay authoritative for what they cover: gitleaks (`secret-scan.yml`) matches credential shapes, and `tests/test_public_tree.py` bans specific strings. Those catch what someone already thought to describe. This one reads.
+
+**Scope.** Pull requests and pushes to the default branch scan what the diff touches. A manual run scans the whole tracked tree:
+
+```bash
+gh workflow run disclosure-scan.yml -f scope=full
+```
+
+Run the full sweep before publishing anything new from the repository, and after any change to what the docs describe.
+
+**Reading a result.** High-severity findings fail the job; medium and low are annotations only, because a model's judgment call should be read in review rather than block a merge. Findings name a file and a line and never quote the value: the job's log, its step summary, and the pull request annotations are all public, and reprinting a leaked secret there publishes it a second time. To see the actual value, open the file at the cited line.
+
+**Accepted disclosures** live in [`.github/disclosure-allowlist.md`](https://github.com/sentasity/sentinel/blob/main/.github/disclosure-allowlist.md). Adding an entry changes what a public repository is willing to expose, so it gets reviewed like any other change. The scan reads that file as data: a pull request that tries to widen it into blanket permission is reported rather than obeyed.
+
+**Known gaps.**
+
+- Pull requests from forks cannot be scanned: GitHub does not give a fork's run the OAuth token, so the session has nothing to authenticate with. The job fails such a run rather than skipping it, because GitHub records a skipped job as "skipped" and branch protection counts a skipped required check as satisfied, which would let a fork's pull request merge looking scanned when nothing read it. Review the change by hand, or re-run the scan from a branch in the repository itself; either way the scan of record is the push to the default branch after the merge.
+- An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly, unlike the autofix session, which returns 0 regardless. So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
 
 ## Proof point: the autofix pipeline end to end
 

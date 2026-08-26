@@ -147,9 +147,8 @@ organization, and the backup carries it.
 
 ## Notes on the workflows API
 
-The legacy `/projects/{org}/{project}/rules/` endpoints were retired on 17 August 2026
-and return HTTP 410. There are no backwards-compatible endpoints and no exemptions.
-Everything above goes through `/organizations/{org}/workflows/`, documented at
+The legacy `/projects/{org}/{project}/rules/` endpoints are gone and return HTTP 410.
+There is no backwards-compatible replacement and no exemption. Everything above goes through `/organizations/{org}/workflows/`, documented at
 [https://docs.sentry.io/api/monitors/](https://docs.sentry.io/api/monitors/).
 
 Three things about that API are worth knowing before editing the script, all
