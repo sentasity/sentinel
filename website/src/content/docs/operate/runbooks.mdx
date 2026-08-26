@@ -15,6 +15,7 @@ Runbooks for the credentials the engine holds and the checks that prove the pipe
 | `/sentinel/github-app-private-key` | SSM SecureString, receiver | The same App private key, read by the receiver at cold start |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the autofix workflow presents to `/autofix-result`; scoped to a single dispatch, not reusable |
+| `SENTINEL_BANNED_PATTERNS` | Actions secret, engine repo | The deployment-identifying ban patterns `tests/test_public_tree.py` enforces; not a credential, but held like one because publishing the list would index what it protects |
 
 The routine trigger token is never stored in this repo; keep the only other copy in your password manager.
 
@@ -56,6 +57,16 @@ Expiry does not fail the "Run the fix session" step: `runner/autofix_runner.py`'
 `.github/workflows/disclosure-scan.yml` runs one read-only Claude session over the tree and reports what a public repository should not have handed a stranger: live credentials, real tenant and organization identifiers, deployment endpoints, named people, and the inventories that turn a runbook into a deployment map. It also flags security weaknesses in the change itself, such as an unpinned action or a credential reaching a step that does not need it.
 
 It is the third gate, not the only one, and the other two stay authoritative for what they cover: gitleaks (`secret-scan.yml`) matches credential shapes, and `tests/test_public_tree.py` bans specific strings. Those catch what someone already thought to describe. This one reads.
+
+The banned strings themselves are split in two. Generic shapes live in the test file; the literals that identify a real deployment live in an untracked local file, `config/banned.local.txt`, because a tracked ban list is an index of everything it protects. CI materializes that file from the `SENTINEL_BANNED_PATTERNS` secret and sets `SENTINEL_REQUIRE_BANNED_LOCAL`, so a vanished secret fails the suite rather than quietly narrowing the scan. After editing the local file, mirror it back:
+
+```bash
+gh secret set SENTINEL_BANNED_PATTERNS < config/banned.local.txt
+```
+
+A fork's pull request runs without the secret and tests the generic patterns only, which is the same posture a stranger's clone gets: the push to the default branch after the merge is where the full list applies.
+
+The deterministic gates also run locally, before anything is pushed, for any clone that ran `pre-commit install` (see [CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md)): gitleaks and the public-tree test on every commit. On a public repository every pushed branch is published, so the local hook is the only gate that fires before content becomes public; CI is the backstop for clones without it.
 
 **Scope.** Pull requests and pushes to the default branch scan what the diff touches. A manual run scans the whole tracked tree:
 

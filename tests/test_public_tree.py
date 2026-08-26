@@ -5,9 +5,12 @@ committed real config. The suite reads what git tracks, not what sits on
 disk, because an untracked file is exactly what "not published" means here.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -36,33 +39,59 @@ def test_the_example_config_names_no_specific_deployment():
     assert "sentasity" not in body.lower()
 
 
-# Strings that must never reach the public tree. `seer` is another vendor's
-# product this project is not positioned against; the Function URL host is a
-# live deployment endpoint that should not be advertised. Tasks 1.8 and 1.9
-# append further patterns as each clears the tree of what it bans.
+# Strings that must never reach the public tree, in two tiers.
+#
+# The patterns below are generic shapes — a Lambda Function URL host, a Teams
+# channel id — that identify no particular deployment, so they can be spelled
+# out here. The literals that would identify one (account and organization
+# ids, private repository paths, people) are exactly what this repository must
+# not publish, and a tracked ban list would publish them itself, as an index
+# of everything it protects. Those live in an untracked local file instead:
+# config/banned.local.txt, one Python regex per line, `#` comments (a pattern
+# that must start with a literal # is written `\#`), inline flags like `(?i)`
+# for case-insensitivity. CI materializes the same file from an Actions
+# secret; see local_banned() below for how its absence degrades.
 BANNED = (
-    re.compile(r"\bseer\b", re.IGNORECASE),
     re.compile(r"lambda-url\.[a-z0-9-]+\.on\.aws"),
-    re.compile(r"886557787053"),
-    re.compile(r"sentasity/product"),
-    re.compile(r"#7(87|89|91)\b"),
-    re.compile(r"erik", re.IGNORECASE),
-    re.compile(r"backend/src/sentasity"),
     re.compile(r"19:[0-9a-f]{32}@thread\.tacv2"),
-    # Captured from the live Sentry org and the real GitHub App: every id in
-    # the org's own 4511-prefixed family (the organization itself, whose number
-    # is also the one inside the DSN hostname, plus its team and its projects),
-    # two Sentry account ids, the Teams integration id, and the autofix App id
-    # the example config already ships as REPLACE_WITH_APP_ID.
-    #
-    # None of these carry `\b`, deliberately. An underscore is a word
-    # character, so `\b1234\b` never matches `app_1234_id` — the same blind
-    # spot that let `\berik\b` through until it was caught in review.
-    re.compile(r"4511\d{12}"),
-    re.compile(r"4393314|4399821"),
-    re.compile(r"390523"),
-    re.compile(r"4629139"),
 )
+
+BANNED_LOCAL_FILE = REPO / "config" / "banned.local.txt"
+
+
+def local_banned() -> list[re.Pattern]:
+    """Patterns from the untracked local ban list, if it exists.
+
+    A fork or a fresh clone has no such file and runs on the generic patterns
+    alone; that is by design, since the file's contents are the one thing this
+    repository will not hand them. The environments that do hold the list set
+    SENTINEL_REQUIRE_BANNED_LOCAL so that losing it fails loudly instead of
+    quietly narrowing the scan (see the test below).
+    """
+    if not BANNED_LOCAL_FILE.is_file():
+        return []
+    patterns = []
+    for line in BANNED_LOCAL_FILE.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(re.compile(line))
+    return patterns
+
+
+def test_the_local_ban_list_is_present_where_required():
+    if not os.environ.get("SENTINEL_REQUIRE_BANNED_LOCAL"):
+        pytest.skip("this environment does not hold the local ban list")
+
+    assert local_banned(), (
+        f"SENTINEL_REQUIRE_BANNED_LOCAL is set but {BANNED_LOCAL_FILE} is "
+        "missing or empty; in CI that means the secret backing it is gone"
+    )
+
+
+def test_the_local_ban_list_is_never_tracked():
+    """Tracking it would publish the index the split exists to withhold."""
+    assert not tracked("config/banned.local.txt")
 
 
 def tracked_text() -> list[tuple[str, str]]:
@@ -93,7 +122,7 @@ def test_no_tracked_file_carries_a_banned_string():
     hits = [
         f"{name} ({pattern.pattern})"
         for name, body in tracked_text()
-        for pattern in BANNED
+        for pattern in (*BANNED, *local_banned())
         if pattern.search(body)
     ]
 
