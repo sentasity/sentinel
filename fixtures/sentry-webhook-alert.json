@@ -34,6 +34,10 @@
           "generic"
         ],
         [
+          "release",
+          "efa4bbfc4e79761e3542990fc090df1bc22ec47f"
+        ],
+        [
           "runtime",
           "CPython 3.12.11"
         ],
@@ -42,20 +46,12 @@
           "CPython"
         ],
         [
-          "release",
-          "efa4bbfc4e79761e3542990fc090df1bc22ec47f"
-        ],
-        [
           "server_name",
-          "mac.lan"
+          "checkout-worker-3"
         ],
         [
-          "smoke_marker",
-          "c48b86ab"
-        ],
-        [
-          "synthetic",
-          "true"
+          "transaction",
+          "POST /api/v1/orders/{order_id}/capture"
         ]
       ],
       "_dsc": {
@@ -69,8 +65,8 @@
       },
       "_fingerprint_info": {
         "client_fingerprint": [
-          "alert-relay-migration-smoke",
-          "c48b86ab"
+          "checkout.services.payments",
+          "PaymentIntentTimeout"
         ]
       },
       "_meta": {},
@@ -95,7 +91,7 @@
           "type": "trace"
         }
       },
-      "culprit": "__main__ in <module>",
+      "culprit": "checkout.services.payments in capture_intent",
       "environment": "staging",
       "exception": {
         "values": [
@@ -113,42 +109,42 @@
               "synthetic": null,
               "type": "generic"
             },
-            "module": "__main__",
+            "module": "checkout.services.payments",
             "stacktrace": {
               "frames": [
                 {
-                  "abs_path": "/private/tmp/claude-501/-Users-timfurlong-code-example-app/scratchpad/force_alert.py",
+                  "abs_path": "/srv/checkout/checkout/services/payments.py",
                   "addr_mode": null,
                   "colno": null,
-                  "context_line": "        raise AlertRelayMigrationSmokeTest(",
+                  "context_line": "        raise PaymentIntentTimeout(",
                   "data": {
-                    "orig_in_app": -1
+                    "orig_in_app": 1
                   },
                   "errors": null,
-                  "filename": "force_alert.py",
-                  "function": "<module>",
+                  "filename": "checkout/services/payments.py",
+                  "function": "capture_intent",
                   "image_addr": null,
-                  "in_app": false,
+                  "in_app": true,
                   "instruction_addr": null,
-                  "lineno": 35,
+                  "lineno": 184,
                   "lock": null,
-                  "module": "__main__",
+                  "module": "checkout.services.payments",
                   "package": null,
                   "parent_index": null,
                   "platform": null,
                   "post_context": [
-                    "            f\"Synthetic post-migration delivery check ({MARKER}). Safe to resolve.\"",
+                    "            f\"Gateway did not acknowledge intent {intent.id} \"",
+                    "            f\"within {GATEWAY_TIMEOUT_S}s\"",
                     "        )",
-                    "    except AlertRelayMigrationSmokeTest:",
-                    "        event_id = sentry_sdk.capture_exception()",
-                    ""
+                    "",
+                    "    def refund_intent(self, intent: PaymentIntent) -> RefundAck:"
                   ],
                   "pre_context": [
-                    "            \"marker\": MARKER,",
-                    "        },",
-                    "    )",
-                    "    scope.fingerprint = [\"alert-relay-migration-smoke\", MARKER]",
-                    "    try:"
+                    "        deadline = time.monotonic() + GATEWAY_TIMEOUT_S",
+                    "        while time.monotonic() < deadline:",
+                    "            ack = self._gateway.poll_intent(intent.id)",
+                    "            if ack.settled:",
+                    "                return ack"
                   ],
                   "raw_function": null,
                   "sample_count": null,
@@ -157,22 +153,16 @@
                   "symbol_addr": null,
                   "trust": null,
                   "vars": {
-                    "__annotations__": {},
-                    "__builtins__": "<module 'builtins' (built-in)>",
-                    "__cached__": "None",
-                    "__doc__": "'Send one synthetic error to backend-api / staging to exercise the migrated alert.\\n\\nDeliberately unique per run so the \"New Issue - Staging\" alert, which fires on\\nfirst_seen_event, actually triggers rather than folding into an existing issue.\\n'",
-                    "__file__": "'/private/tmp/claude-501/-Users-timfurlong-code-example-app/scratchpad/force_alert.py'",
-                    "__loader__": "<_frozen_importlib_external.SourceFileLoader object at 0x102ba08f0>",
-                    "__name__": "'__main__'",
-                    "__package__": "None",
-                    "__spec__": "None",
-                    "sys": "<module 'sys' (built-in)>"
+                    "self": "<PaymentGateway env='staging'>",
+                    "intent": "<PaymentIntent id='pi_3QwXm2Lk8Nv' amount=4250 currency='usd'>",
+                    "deadline": "1913.44",
+                    "GATEWAY_TIMEOUT_S": "8"
                   }
                 }
               ]
             },
-            "type": "AlertRelayMigrationSmokeTest",
-            "value": "Synthetic post-migration delivery check (c48b86ab). Safe to resolve."
+            "type": "PaymentIntentTimeout",
+            "value": "Gateway did not acknowledge intent pi_3QwXm2Lk8Nv within 8s"
           }
         ]
       },
@@ -182,8 +172,8 @@
         ]
       },
       "fingerprint": [
-        "alert-relay-migration-smoke",
-        "c48b86ab"
+        "checkout.services.payments",
+        "PaymentIntentTimeout"
       ],
       "grouping_config": {
         "enhancements": "KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA#KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA#KLUv_SAd6QAAkwORuGFsbC1wbGF0Zm9ybXM6MjAyNi0wMS0yMJA",
@@ -200,14 +190,14 @@
       ],
       "key_id": "1000030",
       "level": "error",
-      "location": "force_alert.py",
+      "location": "checkout/services/payments.py",
       "logger": "",
       "metadata": {
-        "filename": "force_alert.py",
-        "function": "<module>",
-        "in_app_frame_mix": "system-only",
-        "type": "AlertRelayMigrationSmokeTest",
-        "value": "Synthetic post-migration delivery check (c48b86ab). Safe to resolve."
+        "filename": "checkout/services/payments.py",
+        "function": "capture_intent",
+        "in_app_frame_mix": "in-app-only",
+        "type": "PaymentIntentTimeout",
+        "value": "Gateway did not acknowledge intent pi_3QwXm2Lk8Nv within 8s"
       },
       "nodestore_insert": 1000000002.49158,
       "received": 1000000001.100002,
@@ -233,13 +223,15 @@
         "version": "2.67.1"
       },
       "timestamp": 1000000001.100001,
-      "title": "AlertRelayMigrationSmokeTest: Synthetic post-migration delivery check (c48b86ab). Safe to resolve.",
-      "transaction_info": {},
+      "title": "PaymentIntentTimeout: Gateway did not acknowledge intent pi_3QwXm2Lk8Nv within 8s",
+      "transaction_info": {
+        "source": "route"
+      },
       "type": "error",
       "version": "7",
-      "url": "https://sentry.io/api/0/projects/example-org/backend-api/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
-      "web_url": "https://sentry.io/organizations/example-org/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
-      "issue_url": "https://sentry.io/api/0/organizations/example-org/issues/1000000007/",
+      "url": "https://sentry.io/api/0/projects/acme-tools/checkout/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
+      "web_url": "https://sentry.io/organizations/acme-tools/issues/1000000007/events/493b2d4ab28d49bdb9b7bc2fc4e478ee/",
+      "issue_url": "https://sentry.io/api/0/organizations/acme-tools/issues/1000000007/",
       "issue_id": "1000000007",
       "modules": {
         "requests": "2.32.3",
@@ -249,7 +241,7 @@
         "ip_address": "0.0.0.0"
       }
     },
-    "triggered_rule": "[Backend API] New Issue - Staging"
+    "triggered_rule": "[Checkout] New Issue - Staging"
   },
   "actor": {
     "type": "application",
