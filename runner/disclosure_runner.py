@@ -45,6 +45,23 @@ from runner.autofix_runner import emit_section, render_message
 # Read-only by construction. The session's job is to look, and a scan that can
 # edit the tree it is judging could be talked into editing the finding away.
 SCAN_TOOLS = ["Read", "Glob", "Grep"]
+
+# allowed_tools does not, on its own, keep the harness's built-ins out of the
+# session. ReportFindings is the one that matters here: it is a tool built for
+# exactly this shape of work, so a session handed it will reach for it and
+# report into a channel this runner cannot read. The first live run did
+# precisely that, ending with a clean review and no result block. It is denied
+# by name, and the task template also tells the session that no tool reports
+# for it, because the next harness may add another one.
+DENIED_TOOLS = [
+    "AskUserQuestion",
+    "Bash",
+    "Edit",
+    "ReportFindings",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+]
 MAX_TURNS = 80
 
 # The only keys read off a finding. Everything else the session emits is
@@ -62,6 +79,10 @@ SOFT_SEVERITIES = ("medium", "low")
 FIELD_MAX_CHARS = 300
 
 FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+
+# The template's substitution markers, matched in one pass. See
+# build_task_prompt for why one pass is the whole point.
+MARKER_RE = re.compile(r"<<(SCOPE|FILE_LIST|DIFF|ALLOWLIST|SESSION_TOKEN)>>")
 
 
 def flat(text, limit: int = FIELD_MAX_CHARS) -> str:
@@ -86,23 +107,31 @@ def build_task_prompt(
     allowlist_text: str,
     session_token: str,
 ) -> str:
-    """Fill the task template.
+    """Fill the task template in a single pass.
 
-    Substitution is by replace, not str.format: the template embeds a JSON
-    example, and every brace in it would have to be doubled to survive format.
-    A prompt whose literal text differs from what a reader sees in the file is
-    a prompt nobody will keep correct.
+    One pass is the security property, not a tidiness preference. The content
+    being reviewed routinely contains this template's own markers: a diff that
+    touches these prompt files carries a literal `<<SESSION_TOKEN>>`. Replacing
+    the markers in sequence would substitute into text that an earlier
+    substitution had just inserted, stamping the live session token into the
+    untrusted region. Content could then close a data block or open a
+    `Steps [<token>]:` list of its own, which is precisely the attack the token
+    exists to make impossible. `re.sub` never rescans what it wrote, so a
+    marker arriving inside the diff stays a literal marker.
+
+    Substitution is by marker rather than str.format because the template
+    embeds a JSON example, and every brace in it would have to be doubled to
+    survive format. A prompt whose literal text differs from what a reader
+    sees in the file is a prompt nobody will keep correct.
     """
-    body = template_path.read_text()
-    for marker, value in (
-        ("<<SCOPE>>", scope),
-        ("<<FILE_LIST>>", files_text.strip() or "(none)"),
-        ("<<DIFF>>", diff_text.strip() or "(no diff: this is a full sweep)"),
-        ("<<ALLOWLIST>>", allowlist_text.strip() or "(none)"),
-        ("<<SESSION_TOKEN>>", session_token),
-    ):
-        body = body.replace(marker, value)
-    return body
+    values = {
+        "SCOPE": scope,
+        "FILE_LIST": files_text.strip() or "(none)",
+        "DIFF": diff_text.strip() or "(no diff: this is a full sweep)",
+        "ALLOWLIST": allowlist_text.strip() or "(none)",
+        "SESSION_TOKEN": session_token,
+    }
+    return MARKER_RE.sub(lambda match: values[match.group(1)], template_path.read_text())
 
 
 def build_options_kwargs(*, system_prompt_path: Path, workspace: Path, model: str = "") -> dict:
@@ -115,7 +144,7 @@ def build_options_kwargs(*, system_prompt_path: Path, workspace: Path, model: st
     kwargs = {
         "system_prompt": {"type": "file", "path": str(system_prompt_path)},
         "allowed_tools": SCAN_TOOLS,
-        "disallowed_tools": ["AskUserQuestion", "Bash", "Edit", "Write", "WebFetch", "WebSearch"],
+        "disallowed_tools": DENIED_TOOLS,
         "permission_mode": "dontAsk",
         "setting_sources": [],
         "max_turns": MAX_TURNS,
