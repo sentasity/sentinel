@@ -5,7 +5,7 @@
   "config": {
     "targetType": null,
     "targetDisplay": null,
-    "targetIdentifier": "alert-relay-98aa06"
+    "targetIdentifier": "sentinel-a1b2c3"
   },
   "status": "active"
 }

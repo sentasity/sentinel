@@ -91,7 +91,7 @@ def test_swap_workflow_action_replaces_the_msteams_action():
     actions = actions_of(swapped)
     assert len(actions) == 1
     assert actions[0]["type"] == mr.WEBHOOK_ACTION_TYPE
-    assert actions[0]["config"]["targetIdentifier"] == "alert-relay-98aa06"
+    assert actions[0]["config"]["targetIdentifier"] == "sentinel-a1b2c3"
 
 
 def test_swap_workflow_action_ignores_the_server_assigned_id_when_deduping():
