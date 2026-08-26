@@ -1,0 +1,79 @@
+---
+title: Contributing
+description: Running the documentation site locally, and the rules that keep it from rotting.
+---
+
+## Contributing to Sentinel
+
+Issues are welcome and get read. For anything beyond a small fix, please open an issue
+first: this is a small project maintained alongside other work, and the roadmap lives
+elsewhere, so it is easy to build something that is already half-written.
+[CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md) has
+the details and the test-suite instructions.
+
+The rest of this page is about the documentation site itself.
+
+## Running the site locally
+
+```bash
+cd website
+npm install
+npm run dev
+```
+
+The site is an Astro and Starlight project in `website/`, entirely separate from the
+Python engine. The two meet in exactly two places: continuous integration, and the card
+fixtures the evidence page reads.
+
+## The sidebar is explicit
+
+Every page must be named in `website/sidebar.config.mjs`. There is no `autogenerate`
+directive anywhere, on purpose: autogeneration would silently absorb any new file,
+which is the drift the checker exists to catch.
+
+```bash
+node website/scripts/check-sidebar.mjs
+```
+
+It fails in both directions. A sidebar entry naming a page that does not exist is a
+dangling entry; a page reachable from no group is an orphan. Both fail the build.
+
+## Links are checked against the built site
+
+```bash
+node website/scripts/check-links.mjs
+```
+
+Every internal link is resolved against `dist/`, so a link to a page that does not exist
+fails rather than waiting for a reader to find it. External links are not checked.
+
+## Documentation moves with the code
+
+The site is the canonical home for Sentinel's documentation. The four markdown files
+that used to live under `docs/` are now one-line pointers here, which means a behaviour
+change and its documentation belong in the same commit rather than in a follow-up that
+never comes.
+
+One case is easy to miss: a change to the card renderer or to the findings reply shape
+means regenerating the fixtures.
+
+```bash
+.venv/bin/python scripts/preview_card.py --out fixtures/cards
+```
+
+[The evidence page](/sentinel/evidence/) renders those files directly, so they are site
+content as much as they are test fixtures. `tests/test_card_goldens.py` fails if they
+and the renderer disagree, which is the backstop.
+
+## What CI runs on a documentation change
+
+Four things, and only the first is documentation-specific:
+
+- `docs-ci.yml` builds the site and runs both checkers plus their own unit tests
+- `tests.yml` runs the Python suite on 3.12 and 3.13
+- `secret-scan.yml` runs gitleaks
+- inside the Python suite, `tests/test_public_tree.py` reads every tracked file looking
+  for strings that must never be published, which now includes every page of this site
+
+The last one is worth knowing about before you paste a real endpoint or channel id into
+a page: it will fail the build, which is the intended outcome.
