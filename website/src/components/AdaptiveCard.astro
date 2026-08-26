@@ -140,12 +140,20 @@ const actions: string[] = (card.actions ?? [])
   }
   .ac__actions { padding: 0 0.85rem 0.9rem; }
   .ac__details { border-top: 1px solid #e1e4e8; }
+  /* Starlight styles details/summary for its own asides, so the card pins every
+     value it cares about rather than inheriting the site's. */
+  .ac__details { background: #f3f4f6; }
   .ac__details > summary {
     cursor: pointer;
     padding: 0.5rem 0.85rem;
+    margin: 0;
     font-weight: 600;
+    font-size: 0.86rem;
+    color: #1f2328;
+    background: #f3f4f6;
     list-style: none;
   }
+  .ac__details > summary:hover { background: #e9ebee; }
   .ac__details > summary::-webkit-details-marker { display: none; }
   .ac__details > summary::before { content: "▸ "; }
   .ac__details[open] > summary::before { content: "▾ "; }
