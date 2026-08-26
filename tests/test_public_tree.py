@@ -119,10 +119,18 @@ def tracked_text() -> list[tuple[str, str]]:
 
 
 def test_no_tracked_file_carries_a_banned_string():
+    # A local pattern's source is never printed: this failure message lands in
+    # a public CI log, and the local tier holds exactly the literals that must
+    # not be published. The file name is enough to find the hit; run the suite
+    # locally to see which pattern fired.
+    labelled = [(pattern, pattern.pattern) for pattern in BANNED] + [
+        (pattern, f"a pattern from {BANNED_LOCAL_FILE.name}")
+        for pattern in local_banned()
+    ]
     hits = [
-        f"{name} ({pattern.pattern})"
+        f"{name} ({label})"
         for name, body in tracked_text()
-        for pattern in (*BANNED, *local_banned())
+        for pattern, label in labelled
         if pattern.search(body)
     ]
 
