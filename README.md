@@ -8,7 +8,7 @@
 
 Unattended investigation of Sentry issues, with optional autofix pull requests. When a new or regressed issue fires, the engine posts an alert card to Microsoft Teams, then triggers an unattended Claude Code session that checks out the repo at the event's release SHA, investigates the stack trace, and replies to the alert thread with its findings. Findings that clear a confidence gate can go one step further: a GitHub Actions workflow writes the fix and opens a pull request for human review. Nothing merges automatically.
 
-The investigation sessions run as Claude Code cloud routines; the autofix workflow authenticates with a Claude Code OAuth token. Routines are a research preview, so the trigger endpoint and its limits can change under you.
+The investigation sessions run as Claude Code cloud routines; the autofix workflow authenticates with a Claude Code OAuth token.
 
 ## How it works
 
