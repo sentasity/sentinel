@@ -230,3 +230,29 @@ header.header img {
   color: var(--sl-color-gray-3);
   margin: 0 0 0.75rem;
 }
+
+/* The splash template still renders the frontmatter title as an h1, which would
+ * duplicate the wordmark the hero lockup already carries. Hide that panel on the
+ * home page only, keyed off a marker class in the page body. */
+main:has(.splash-grid) > .content-panel:first-child { display: none; }
+
+/* Starlight's own link rule paints every in-content anchor, so the buttons need
+ * to out-specify it rather than sit beside it. */
+.sl-markdown-content a.cta {
+  text-decoration: none;
+}
+.sl-markdown-content a.cta--primary {
+  background: var(--sl-color-white);
+  color: var(--sl-color-bg);
+}
+.sl-markdown-content a.cta--primary:hover {
+  background: var(--sl-color-accent-high);
+  color: #131c2e;
+}
+.sl-markdown-content a.cta--ghost {
+  color: var(--sl-color-text);
+}
+.sl-markdown-content a.cta--ghost:hover {
+  color: var(--sl-color-accent-high);
+  border-color: var(--sl-color-accent-high);
+}

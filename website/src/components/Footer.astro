@@ -23,6 +23,11 @@ import Default from '@astrojs/starlight/components/Footer.astro';
     color: var(--sl-color-gray-3);
     text-decoration: none;
   }
+  /* Whitespace between the inline elements collapses in the built output, so the
+   * separator carries its own spacing. */
+  .sentasity-credit span {
+    margin: 0 0.4em;
+  }
   .sentasity-credit a:hover {
     color: var(--sl-color-text-accent);
     text-decoration: underline;

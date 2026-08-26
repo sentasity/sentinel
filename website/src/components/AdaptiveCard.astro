@@ -74,7 +74,9 @@ const actions: string[] = (card.actions ?? []).map((a: any) => a.title);
   {caption && <figcaption set:html={inline(caption)} />}
 </figure>
 
-<style>
+<!-- Global on purpose, namespaced under .ac: the card body is injected with
+     set:html, and Astro's scoped styles only reach elements it compiled. -->
+<style is:global>
   .ac { margin: 1.5rem 0; }
   .ac__card {
     background: #f3f4f6;
