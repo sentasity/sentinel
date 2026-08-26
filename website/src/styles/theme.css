@@ -173,3 +173,60 @@ header.header img {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ---------- home splash ---------- */
+
+/* Two lockups are inlined and swapped by theme: the dark one carries an
+ * off-white wordmark that would vanish on the light paper ground, and the light
+ * one a navy wordmark that would vanish on the dark ground. */
+.lockup-light { display: none; }
+:root[data-theme='light'] .lockup-dark { display: none; }
+:root[data-theme='light'] .lockup-light { display: block; }
+
+.splash-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22rem;
+  gap: 3.5rem;
+  align-items: start;
+}
+@media (max-width: 62rem) {
+  .splash-grid { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+}
+
+.splash-grid h1 {
+  font-size: clamp(2rem, 1.2rem + 2.6vw, 2.9rem);
+  line-height: 1.08;
+  letter-spacing: -0.02em;
+  margin: 0 0 1.1rem;
+}
+
+.cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+.cta {
+  display: inline-flex;
+  align-items: center;
+  height: 2.75rem;
+  padding: 0 1.25rem;
+  border-radius: 7px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none;
+}
+.cta--primary {
+  background: var(--sl-color-white);
+  color: var(--sl-color-bg);
+}
+.cta--primary:hover { background: var(--sl-color-accent-high); color: #131c2e; }
+.cta--ghost {
+  color: var(--sl-color-text);
+  border: 1px solid var(--sl-color-hairline);
+}
+.cta--ghost:hover { color: var(--sl-color-accent-high); border-color: var(--sl-color-accent-high); }
+
+.proof-cap {
+  font-family: var(--sl-font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  margin: 0 0 0.75rem;
+}
