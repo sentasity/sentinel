@@ -84,13 +84,26 @@ def test_only_the_scan_step_sees_the_oauth_token():
     assert "env" not in job(), "a job-level env would hand the token to every step"
 
 
-def test_fork_pull_requests_are_skipped_rather_than_failed():
-    """A fork's pull_request run gets no secrets, so the session would start
-    unauthenticated. Skipping is a known gap, covered by the push-to-main run;
-    failing every outside contribution would not be."""
-    condition = job()["if"]
+def test_a_fork_pull_request_fails_the_check_rather_than_skipping_it():
+    """A fork's run gets no secrets, so the scan cannot authenticate. Excluding
+    the job with an `if:` would record a "skipped" conclusion, and branch
+    protection counts a skipped required check as satisfied: making this check
+    required would then let a fork's pull request merge looking scanned when
+    nothing read it. Found by the scan itself, on its own workflow."""
+    assert "if" not in job(), "a job-level if: reports 'skipped', which branch protection accepts"
 
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in condition
+    guard = step("Refuse to report on a pull request that cannot be scanned")
+
+    assert "head.repo.full_name != github.repository" in guard["if"]
+    assert "exit 1" in guard["run"]
+
+
+def test_the_unscannable_guard_runs_before_anything_else():
+    """It needs no checkout and no secret, so an unscannable run should cost
+    nothing but the queue time."""
+    names = [s.get("name") for s in job()["steps"]]
+
+    assert names[0] == "Refuse to report on a pull request that cannot be scanned"
 
 
 def test_a_push_to_main_is_never_superseded_by_a_later_one():
@@ -133,6 +146,16 @@ def test_a_capped_scope_says_so():
 
     assert 'head -n "$MAX_FILES" files.all.txt > files.txt' in run
     assert "::warning::scope capped at" in run
+
+
+def test_a_truncated_diff_says_so():
+    """The same rule as the file cap, and the scan caught this one missing on
+    its own workflow: a dropped tail is a stretch of the change nobody read, in
+    a run that still reports clean."""
+    run = step("Collect what is in scope")["run"]
+
+    assert 'head -c "$MAX_DIFF_BYTES" diff.full.patch > diff.patch' in run
+    assert "::warning::diff truncated to" in run
 
 
 def test_the_workflow_hands_the_runner_the_allowlist_it_ships():
