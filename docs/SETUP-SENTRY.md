@@ -18,7 +18,7 @@ Integration → **Internal Integration**.
   id in the webhook body, which the `event_alert` payload does not carry.
 - Webhooks: no resource subscriptions needed. Alert-rule deliveries are driven
   by the rules themselves, not by a subscription.
-- Small Icon: upload `docs/brand/assets/perch-cream/perch-cream-sentry-256.png`.
+- Small Icon: upload `docs/brand/assets/perch/perch-sentry-256.png`.
   Cosmetic, and only shown in UI components. Sentry accepts black and transparent
   pixels only, which is what that file is for. See
   [docs/brand/assets/README.md](brand/assets/README.md).

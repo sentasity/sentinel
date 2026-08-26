@@ -69,7 +69,7 @@ as they are; they were captured from the live Sentry integration.
 ## 6. Icons
 
 Nothing to do. Both icons are committed in `teams-app/`, generated from the
-Sentinel mark in `docs/brand/assets/perch-cream`:
+Sentinel mark in `docs/brand/assets/perch`:
 
 - `color.png` — 192x192, opaque, square, the owl inset on white
 - `outline.png` — 32x32, transparent background, white glyph only
