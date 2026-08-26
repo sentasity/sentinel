@@ -155,7 +155,7 @@ def perch_sym(sid, shape, c, band=None):
 </symbol>'''
 
 SYMS, CARDS = [], []
-TILE = {"c-frost":"#eef4f9","c-cream":"#faf4ec","c-teal":"#eef6f6","c-sky":"#eef4f9",
+TILE = {"c-frost":"#eef4f9","c-cream":"#eef4f9","c-teal":"#eef6f6","c-sky":"#eef4f9",
         "p-cream":"#c98a3c","p-sky":"#eef4f9","p-teal":"#eef6f6","p-shaded":"#eef4f9"}
 
 for sid, name, shape, col, blurb in CURIOUS:
