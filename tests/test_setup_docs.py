@@ -1,13 +1,16 @@
-"""Setup runbooks must name exactly the SSM parameters the receiver reads."""
+"""Setup runbooks must name exactly the SSM parameters the receiver reads.
+
+The runbooks live on the documentation site; the repo files are pointers to it.
+"""
 
 import re
 from pathlib import Path
 
 from receiver.config import SECRET_KEYS
 
-DOCS = Path(__file__).resolve().parent.parent / "docs"
+DOCS = Path(__file__).resolve().parent.parent / "website" / "src" / "content" / "docs"
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-PARAM = re.compile(r"/sentinel/([a-z0-9-]+)")
+PARAM = re.compile(r"/sentinel/([a-z0-9-]+)(?![a-z0-9\-/])")
 
 
 def named_parameters(filename: str) -> set[str]:
@@ -15,19 +18,19 @@ def named_parameters(filename: str) -> set[str]:
 
 
 def test_microsoft_runbook_names_only_real_parameters():
-    assert named_parameters("SETUP-MICROSOFT.md") <= set(SECRET_KEYS)
+    assert named_parameters("deploy/microsoft.mdx") <= set(SECRET_KEYS)
 
 
 def test_microsoft_runbook_covers_the_bot_client_secret():
-    assert "bot-client-secret" in named_parameters("SETUP-MICROSOFT.md")
+    assert "bot-client-secret" in named_parameters("deploy/microsoft.mdx")
 
 
 def test_sentry_runbook_names_only_real_parameters():
-    assert named_parameters("SETUP-SENTRY.md") <= set(SECRET_KEYS)
+    assert named_parameters("deploy/sentry.mdx") <= set(SECRET_KEYS)
 
 
 def test_sentry_runbook_covers_both_sentry_parameters():
-    named = named_parameters("SETUP-SENTRY.md")
+    named = named_parameters("deploy/sentry.mdx")
 
     assert {"sentry-webhook-secret", "sentry-api-token"} <= named
 
