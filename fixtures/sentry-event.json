@@ -1,5 +1,5 @@
 {
-  "issue_short_id": "BACKEND-API-7X",
+  "issue_short_id": "CHECKOUT-7X",
   "title": "LimitExceededException: An error occurred (LimitExceededException) when calling the AdminResetUserPassword operation: Attempt limit exceeded, please try after some time.",
   "culprit": "/public/restore-session",
   "level": "error",

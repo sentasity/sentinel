@@ -1,7 +1,7 @@
 [
   {
     "id": "1000007",
-    "name": "[Scanners] New Issue - Staging",
+    "name": "[Checkout] New Issue - Staging",
     "organizationId": "1000000000000001",
     "createdBy": "1000028",
     "dateCreated": "2026-04-02T19:21:45.781278Z",
@@ -55,7 +55,7 @@
   },
   {
     "id": "1000008",
-    "name": "[Scanners] New Issue - Prod",
+    "name": "[Checkout] New Issue - Prod",
     "organizationId": "1000000000000001",
     "createdBy": "1000028",
     "dateCreated": "2026-04-02T19:21:46.966338Z",
@@ -119,7 +119,7 @@
   },
   {
     "id": "1000009",
-    "name": "[Scanners] Regression - Staging",
+    "name": "[Checkout] Regression - Staging",
     "organizationId": "1000000000000001",
     "createdBy": "1000028",
     "dateCreated": "2026-04-02T19:21:48.262834Z",
@@ -173,7 +173,7 @@
   },
   {
     "id": "1000010",
-    "name": "[Scanners] Regression - Prod",
+    "name": "[Checkout] Regression - Prod",
     "organizationId": "1000000000000001",
     "createdBy": "1000028",
     "dateCreated": "2026-04-02T19:21:50.222995Z",
@@ -237,7 +237,7 @@
   },
   {
     "id": "1000025",
-    "name": "[Scanners] New Issue - Dev",
+    "name": "[Checkout] New Issue - Dev",
     "organizationId": "1000000000000001",
     "createdBy": "1000029",
     "dateCreated": "2026-04-03T19:07:04.628819Z",
@@ -291,7 +291,7 @@
   },
   {
     "id": "1000026",
-    "name": "[Scanners] Regression - Dev",
+    "name": "[Checkout] Regression - Dev",
     "organizationId": "1000000000000001",
     "createdBy": "1000029",
     "dateCreated": "2026-04-03T19:07:05.677240Z",

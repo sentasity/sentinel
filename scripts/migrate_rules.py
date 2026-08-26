@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Migrate Sentry alert workflows from the stock Teams action to sentinel.
 
-    python -m scripts.migrate_rules apply    --project scanners --environment prod
+    python -m scripts.migrate_rules apply    --project checkout --environment prod
     python -m scripts.migrate_rules rollback --backup fixtures/rule-backup-2026-08-12.json
 
 `apply` always writes a backup of every workflow it is about to touch before it
@@ -35,7 +35,6 @@ LEVEL_CONDITION_TYPE = "level"
 
 TARGET_ENVIRONMENTS = ("prod", "staging")
 UNFILTERED_ENVIRONMENT = "prod"
-PROJECTS = ("backend-api", "frontend", "processing", "scanners")
 
 # A full round-trip, which the API accepts losslessly. Omitted keys are
 # otherwise preserved, with one exception: `enabled` resets to true when it is
@@ -299,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     apply_cmd = sub.add_parser("apply", help="swap workflows to sentinel")
-    apply_cmd.add_argument("--project", required=True, choices=PROJECTS)
+    apply_cmd.add_argument("--project", required=True, help="Sentry project slug")
     apply_cmd.add_argument(
         "--environment", action="append", choices=TARGET_ENVIRONMENTS, default=None
     )

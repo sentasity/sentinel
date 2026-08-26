@@ -18,24 +18,24 @@
         "ruleId": 10000009,
         "latestGroup": {
             "id": "1000000003",
-            "title": "cost-query internal error",
+            "title": "ledger reconciliation worker exited non-zero",
             "culprit": "",
-            "shortId": "BACKEND-API-80",
+            "shortId": "LEDGER-80",
             "level": "error",
             "status": "unresolved",
             "substatus": "new",
             "platform": "native",
             "project": {
                 "id": "1000000000000003",
-                "name": "checkout",
-                "slug": "checkout",
+                "name": "ledger",
+                "slug": "ledger",
                 "platform": "python-fastapi"
             },
             "type": "default",
             "issueType": "error",
             "issueCategory": "error",
             "metadata": {
-                "title": "cost-query internal error",
+                "title": "ledger reconciliation worker exited non-zero",
                 "sdk": {
                     "name": "sentry.rust",
                     "name_normalized": "sentry.rust"
@@ -92,27 +92,27 @@
         "ruleId": 10000011,
         "latestGroup": {
             "id": "1000000006",
-            "title": "ReferenceError: periodReport is not defined",
-            "culprit": "GET /demo/msp/spend/credits/[tenant_id]",
-            "shortId": "FRONTEND-F8",
+            "title": "ReferenceError: promoBanner is not defined",
+            "culprit": "GET /store/[store_id]/cart/summary",
+            "shortId": "STOREFRONT-F8",
             "level": "error",
             "status": "unresolved",
             "substatus": "new",
             "platform": "node",
             "project": {
                 "id": "1000000000000004",
-                "name": "frontend",
-                "slug": "frontend",
+                "name": "storefront",
+                "slug": "storefront",
                 "platform": "javascript-nextjs"
             },
             "type": "error",
             "issueType": "error",
             "issueCategory": "error",
             "metadata": {
-                "value": "periodReport is not defined",
+                "value": "promoBanner is not defined",
                 "type": "ReferenceError",
-                "filename": "src/app/portal/(portal)/spend/credits/[tenant_id]/page.tsx",
-                "function": "CreditLedgerPage",
+                "filename": "src/app/store/(shop)/cart/summary/[store_id]/page.tsx",
+                "function": "CartSummaryPage",
                 "in_app_frame_mix": "mixed",
                 "sdk": {
                     "name": "sentry.javascript.nextjs",
@@ -171,26 +171,26 @@
         "latestGroup": {
             "id": "1000000004",
             "title": "ProgrammingError: (psycopg2.errors.SyntaxError) syntax error at or near \":\"",
-            "culprit": "example-worker-orchestrator",
-            "shortId": "PROCESSING-3X",
+            "culprit": "fulfillment-dispatch-worker",
+            "shortId": "FULFILLMENT-3X",
             "level": "error",
             "status": "unresolved",
             "substatus": "escalating",
             "platform": "python",
             "project": {
                 "id": "1000000000000005",
-                "name": "processing",
-                "slug": "processing",
+                "name": "fulfillment",
+                "slug": "fulfillment",
                 "platform": "python-awslambda"
             },
             "type": "error",
             "issueType": "error",
             "issueCategory": "error",
             "metadata": {
-                "value": "(psycopg2.errors.SyntaxError) syntax error at or near \":\"\nLINE 5: ...                             shareable_accounts = :shareable...\n                                                             ^\n\n[SQL: \n                            UPDATE customer_credits\n                            SET sharing_enabled = %(sharing_enabled)s,\n                                credit_sharing_type = %(sharing_type)s,\n                                shareable_accounts = :shareable::jsonb,\n                                updated_at = NOW()\n                            WHERE payer_account_id = %(payer)s\n                              AND credit_id = %(credit_id)s\n                            ]\n[parameters: {'sharing_enabled': True, 'sharing_type': 'DISABLED', 'payer': '100000000001', 'credit_id': '10000000001'}]\n(Background on this error at: https://sqlalche.me/e/20/f405)",
+                "value": "(psycopg2.errors.SyntaxError) syntax error at or near \":\"\nLINE 4: ...                             carrier_options = :options...\n                                                           ^\n\n[SQL: \n                            UPDATE shipment_rates\n                            SET rate_cents = %(rate_cents)s,\n                                carrier_options = :options::jsonb,\n                                updated_at = NOW()\n                            WHERE order_id = %(order_id)s\n                            ]\n[parameters: {'rate_cents': 1295, 'order_id': 'ord_5f21c9'}]\n(Background on this error at: https://sqlalche.me/e/20/f405)",
                 "type": "ProgrammingError",
-                "filename": "checkout/handlers/orchestrator/handler.py",
-                "function": "_refresh_sharing_from_payer_view",
+                "filename": "fulfillment/handlers/dispatch/handler.py",
+                "function": "_refresh_carrier_rates",
                 "in_app_frame_mix": "mixed",
                 "sdk": {
                     "name": "sentry.python.fastapi",
@@ -251,9 +251,9 @@
         "ruleId": 10000012,
         "latestGroup": {
             "id": "1000000005",
-            "title": "Forced soak event for the alert-relay rule swap (20260813T203110Z). Safe to resolve.",
+            "title": "Forced soak event for the alert routing swap. Safe to resolve.",
             "culprit": "",
-            "shortId": "SCANNERS-D2",
+            "shortId": "CHECKOUT-D2",
             "level": "error",
             "status": "unresolved",
             "substatus": "new",
@@ -268,7 +268,7 @@
             "issueType": "error",
             "issueCategory": "error",
             "metadata": {
-                "title": "Forced soak event for the alert-relay rule swap (20260813T203110Z). Safe to resolve.",
+                "title": "Forced soak event for the alert routing swap. Safe to resolve.",
                 "sdk": {
                     "name": "sentry-cli",
                     "name_normalized": "other"

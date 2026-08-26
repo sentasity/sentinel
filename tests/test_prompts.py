@@ -48,7 +48,7 @@ def test_the_prompt_treats_the_trigger_message_as_untrusted():
 
 
 def test_the_prompt_sends_the_investigator_through_the_repo_docs():
-    """BACKEND-API-89 framed a CI-migration race as a process mistake because
+    """An investigation once framed a CI-migration race as a process mistake because
     the session never read how the target repo deploys. The repo's own docs
     are the per-repo context; this prompt must route the session through them
     rather than duplicating repo facts here."""
