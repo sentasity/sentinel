@@ -1,0 +1,26 @@
+# CodeRabbit reviews pull requests as a second reader. The disclosure gates
+# in CI (gitleaks, the public-tree test, the disclosure scan) stay the checks
+# of record for leaks; the instruction below exists so a review comment never
+# becomes one itself.
+reviews:
+  profile: chill
+  path_filters:
+    # Generated: card fixtures come from scripts/preview_card.py and the
+    # brand assets from docs/brand's generators. Review the generators.
+    - "!fixtures/**"
+    - "!docs/brand/assets/**"
+  path_instructions:
+    - path: "**"
+      instructions: |
+        This is a public repository for a generic tool. Everything tracked
+        here is published, and nothing may describe a real deployment or a
+        private codebase. Flag any comment, docstring, fixture, or
+        documentation page that names another repository's internals (paths,
+        modules, tooling), a real org or account identifier, a live endpoint,
+        or measurements taken against a live system. Fixtures must describe
+        the fictional acme-tools deployment only.
+
+        When flagging a possible disclosure or credential, cite the file and
+        line but never quote the offending value in the comment: review
+        comments on this repository are public, and quoting would republish
+        the thing being flagged.
