@@ -1,0 +1,125 @@
+---
+/**
+ * Renders an Adaptive Card definition as HTML at build time.
+ *
+ * The card JSON is imported by the page and passed in, so the rendered result
+ * cannot drift from what receiver/cards.py produces: tests/test_card_goldens.py
+ * asserts those fixtures equal the renderer's output on every run.
+ *
+ * Supports exactly the vocabulary the goldens use: Container (style), ColumnSet,
+ * Column (auto|stretch), TextBlock, FactSet, and Action.OpenUrl.
+ *
+ * The palette is intentionally hardcoded rather than tokenised. This reproduces a
+ * Teams surface, not the site, and recolouring it would misrepresent what
+ * actually gets posted.
+ */
+interface Props {
+  card: any;
+  caption?: string;
+}
+const { card, caption } = Astro.props;
+
+// Teams renders a small markdown subset in TextBlocks. Escape first, then
+// re-introduce only bold and code, so a fixture can never inject markup.
+const inline = (text = ''): string =>
+  String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\\([\\`*_[\]])/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+
+function render(el: any): string {
+  if (!el || typeof el !== 'object') return '';
+  switch (el.type) {
+    case 'Container': {
+      const cls = el.style === 'attention' ? 'ac__attention' : 'ac__body';
+      return `<div class="${cls}">${(el.items ?? []).map(render).join('')}</div>`;
+    }
+    case 'ColumnSet':
+      return `<div class="ac__row">${(el.columns ?? []).map(render).join('')}</div>`;
+    case 'Column': {
+      const grow = el.width === 'stretch' ? 'flex:1' : 'flex:none';
+      const align = el.horizontalAlignment === 'Right' ? ';text-align:right' : '';
+      return `<div style="${grow}${align}">${(el.items ?? []).map(render).join('')}</div>`;
+    }
+    case 'TextBlock': {
+      const cls = el.weight === 'Bolder' ? 'ac__text ac__text--bolder' : 'ac__text';
+      const align = el.horizontalAlignment === 'Right' ? ' style="text-align:right"' : '';
+      return `<p class="${cls}"${align}>${inline(el.text)}</p>`;
+    }
+    case 'FactSet':
+      return `<dl class="ac__facts">${(el.facts ?? [])
+        .map((f: any) => `<dt>${inline(f.title)}</dt><dd>${inline(f.value)}</dd>`)
+        .join('')}</dl>`;
+    default:
+      return '';
+  }
+}
+
+const bodyHtml = (card.body ?? []).map(render).join('');
+const actions: string[] = (card.actions ?? []).map((a: any) => a.title);
+---
+
+<figure class="ac">
+  <div class="ac__card">
+    <Fragment set:html={bodyHtml} />
+    {actions.length > 0 && (
+      <div class="ac__actions">
+        {actions.map((t) => <span class="ac__action">{t}</span>)}
+      </div>
+    )}
+  </div>
+  {caption && <figcaption set:html={inline(caption)} />}
+</figure>
+
+<style>
+  .ac { margin: 1.5rem 0; }
+  .ac__card {
+    background: #f3f4f6;
+    color: #1f2328;
+    border-radius: 7px;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 0.86rem;
+    line-height: 1.45;
+    max-width: 34rem;
+  }
+  .ac__attention {
+    background: #fce8e6;
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-weight: 700;
+  }
+  .ac__row { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
+  .ac__body { padding: 0.8rem 0.85rem 0.9rem; }
+  .ac__text { margin: 0 0 0.6rem; }
+  .ac__text--bolder { font-weight: 700; }
+  .ac__attention .ac__text { margin: 0; }
+  .ac__facts {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.25rem 1rem;
+    margin: 0 0 0.8rem;
+  }
+  .ac__facts dt { font-weight: 700; }
+  .ac__facts dd { margin: 0; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
+  .ac__action {
+    display: inline-block;
+    background: #ffffff;
+    border: 1px solid #c8ccd2;
+    border-radius: 4px;
+    padding: 0.35rem 0.8rem;
+    font-weight: 600;
+  }
+  .ac__actions { padding: 0 0.85rem 0.9rem; }
+  figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--sl-color-gray-3);
+    line-height: 1.5;
+  }
+</style>
