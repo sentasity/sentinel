@@ -1,0 +1,59 @@
+# Documentation-site quality gate. The site is the canonical home for Sentinel's
+# docs, so a broken build or a rotted link is a documentation outage rather than a
+# cosmetic problem.
+#
+# tests.yml and secret-scan.yml carry no path filter, so they run on
+# documentation-only pull requests too; tests/test_public_tree.py scans the whole
+# site for banned strings as a result.
+name: docs-ci
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      # The evidence page imports these directly, so a card-renderer change alters
+      # the site without touching website/.
+      - 'fixtures/cards/**'
+      - '.github/workflows/docs-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the site
+        run: npx astro build
+
+      # Cadence never runs these, which leaves the tests that prove the checkers
+      # work as the one part of the arrangement nothing verifies.
+      - name: Checker unit tests
+        run: node --test scripts/*.test.mjs
+
+      - name: Sidebar and page consistency
+        run: node scripts/check-sidebar.mjs
+
+      - name: Internal links
+        # Base-aware: resolves /sentinel/ links against dist/. Replaces lychee,
+        # which cannot resolve a configured base path for local files without
+        # symlink gymnastics.
+        run: node scripts/check-links.mjs
