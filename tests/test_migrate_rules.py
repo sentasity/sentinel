@@ -11,7 +11,7 @@ from scripts import migrate_rules as mr
 from tests.conftest import load_fixture
 
 DETECTORS = load_fixture("sentry-detectors.json")
-WORKFLOWS = load_fixture("sentry-workflows-scanners.json")
+WORKFLOWS = load_fixture("sentry-workflows-checkout.json")
 WORKFLOW_ACTION = load_fixture("sentry-workflow-action.json")
 
 SCANNERS_PROJECT_ID = next(d["projectId"] for d in DETECTORS if str(d["id"]) == "1000038")
@@ -195,7 +195,7 @@ def test_apply_writes_a_backup_before_touching_anything(tmp_path):
     client = fake_client()
     backup = tmp_path / "backup.json"
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     saved = json.loads(backup.read_text())
     assert [w["name"] for w in saved] == [
@@ -208,7 +208,7 @@ def test_apply_writes_a_backup_before_touching_anything(tmp_path):
 def test_apply_updates_only_the_named_environment(tmp_path):
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
 
     updated_ids = [call.args[0] for call in client.update.call_args_list]
     assert sorted(updated_ids) == PENDING_IDS
@@ -218,7 +218,7 @@ def test_apply_never_touches_the_dev_workflows(tmp_path):
     """The per-developer rules keep the stock integration and the dev channel."""
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json")
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json")
 
     updated_ids = [call.args[0] for call in client.update.call_args_list]
     assert sorted(updated_ids) == PENDING_IDS
@@ -228,7 +228,7 @@ def test_apply_skips_the_already_migrated_staging_workflows(tmp_path):
     """2 of 18 were migrated before the port, so a slice holding them must proceed."""
     client = fake_client()
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json")
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json")
 
     assert sorted(result["skipped"]) == [
         "[Scanners] New Issue - Staging",
@@ -240,7 +240,7 @@ def test_apply_skips_the_already_migrated_staging_workflows(tmp_path):
 def test_apply_sends_the_planned_payload(tmp_path):
     client = fake_client()
 
-    mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
+    mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",))
 
     payloads = [call.args[1] for call in client.update.call_args_list]
     assert all(actions_of(p)[0]["type"] == mr.WEBHOOK_ACTION_TYPE for p in payloads)
@@ -259,7 +259,7 @@ def test_apply_refuses_a_workflow_in_an_unknown_shape(tmp_path):
     backup = tmp_path / "b.json"
 
     with pytest.raises(mr.MigrationError, match="unknown shape"):
-        mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+        mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     assert not backup.exists()
     client.update.assert_not_called()
@@ -271,7 +271,7 @@ def test_apply_refuses_when_the_backup_path_is_not_writable(tmp_path):
     with pytest.raises(mr.MigrationError, match="cannot write backup"):
         mr.apply(
             client,
-            "scanners",
+            "checkout",
             WORKFLOW_ACTION,
             tmp_path / "missing-dir" / "b.json",
             environments=("prod",),
@@ -317,8 +317,8 @@ def test_rollback_refuses_an_empty_backup(tmp_path):
 
 
 def test_default_backup_path_separates_environment_slices():
-    staging = mr.default_backup_path("scanners", ("staging",))
-    prod = mr.default_backup_path("scanners", ("prod",))
+    staging = mr.default_backup_path("checkout", ("staging",))
+    prod = mr.default_backup_path("checkout", ("prod",))
 
     assert staging != prod
     assert "staging" in staging.name
@@ -331,7 +331,7 @@ def test_apply_refuses_to_overwrite_an_existing_backup(tmp_path):
     backup.write_text("[]")
 
     with pytest.raises(mr.MigrationError, match="backup already exists"):
-        mr.apply(client, "scanners", WORKFLOW_ACTION, backup, environments=("prod",))
+        mr.apply(client, "checkout", WORKFLOW_ACTION, backup, environments=("prod",))
 
     assert backup.read_text() == "[]"
     client.update.assert_not_called()
@@ -341,7 +341,7 @@ def test_dry_run_plans_without_writing(tmp_path):
     client = fake_client()
     backup = tmp_path / "backup.json"
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, backup, dry_run=True)
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, backup, dry_run=True)
 
     client.update.assert_not_called()
     assert not backup.exists()
@@ -355,7 +355,7 @@ def test_dry_run_plans_without_writing(tmp_path):
 def test_dry_run_still_reports_what_it_would_skip(tmp_path):
     client = fake_client()
 
-    result = mr.apply(client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", dry_run=True)
+    result = mr.apply(client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", dry_run=True)
 
     assert sorted(result["skipped"]) == [
         "[Scanners] New Issue - Staging",
@@ -369,7 +369,7 @@ def test_apply_names_the_workflows_it_already_updated_when_one_fails(tmp_path):
 
     with pytest.raises(mr.MigrationError, match="1000008"):
         mr.apply(
-            client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
+            client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
         )
 
 
@@ -380,12 +380,12 @@ def test_a_dropped_connection_still_names_what_it_already_updated(tmp_path):
 
     with pytest.raises(mr.MigrationError, match="1000008"):
         mr.apply(
-            client, "scanners", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
+            client, "checkout", WORKFLOW_ACTION, tmp_path / "b.json", environments=("prod",)
         )
 
 
 def test_client_transport_errors_surface_as_migration_errors():
-    client = mr.SentryWorkflows("example-org", "tok")
+    client = mr.SentryWorkflows("acme-tools", "tok")
 
     with patch.object(
         client.session, "get", side_effect=requests.exceptions.ConnectTimeout("timed out")
@@ -402,7 +402,7 @@ def test_client_transport_errors_surface_as_migration_errors():
 
 def test_the_client_only_calls_org_scoped_endpoints():
     """The legacy project-rules endpoints return HTTP 410 as of 17 August 2026."""
-    client = mr.SentryWorkflows("example-org", "tok")
+    client = mr.SentryWorkflows("acme-tools", "tok")
     ok = MagicMock(ok=True)
     ok.json.return_value = []
 
@@ -414,9 +414,9 @@ def test_the_client_only_calls_org_scoped_endpoints():
 
     called = [c.args[0] for c in get.call_args_list] + [c.args[0] for c in put.call_args_list]
     assert called == [
-        "https://sentry.io/api/0/organizations/example-org/workflows/",
-        "https://sentry.io/api/0/organizations/example-org/detectors/",
-        "https://sentry.io/api/0/organizations/example-org/workflows/1000008/",
+        "https://sentry.io/api/0/organizations/acme-tools/workflows/",
+        "https://sentry.io/api/0/organizations/acme-tools/detectors/",
+        "https://sentry.io/api/0/organizations/acme-tools/workflows/1000008/",
     ]
 
 

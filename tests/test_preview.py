@@ -12,13 +12,14 @@ def test_build_cards_covers_every_reviewable_severity():
     assert all(card["type"] == "AdaptiveCard" for card in cards.values())
 
 
-def test_write_cards_emits_one_pretty_json_file_per_severity(tmp_path):
+def test_write_cards_emits_the_whole_gallery(tmp_path):
     written = write_cards(tmp_path)
 
     assert sorted(p.name for p in written) == [
         "error.json",
         "fatal.json",
         "info.json",
+        "reply.json",
         "warning.json",
     ]
     body = (tmp_path / "warning.json").read_text()

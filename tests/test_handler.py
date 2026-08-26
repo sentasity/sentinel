@@ -112,7 +112,7 @@ from receiver.sentry_api import IssueRef
 from receiver.sweep import MAX_ATTEMPTS
 
 
-def wired(bot=None, store=None, ref=IssueRef("SCANNERS-7X", "scanners")):
+def wired(bot=None, store=None, ref=IssueRef("CHECKOUT-4B2", "checkout")):
     """Patch every collaborator `deliver` reaches out to."""
     return (
         patch.object(handler, "webhook_secret", return_value=SECRET),
@@ -142,7 +142,7 @@ def test_error_alert_is_rendered_posted_and_stored():
     channel, card, summary = bot.post_card.call_args.args
     assert channel == "19:staging@thread.tacv2"
     assert card["type"] == "AdaptiveCard"
-    assert summary.startswith("🔴 ERROR SCANNERS-7X: ")
+    assert summary.startswith("🔴 ERROR CHECKOUT-4B2: ")
     store.put_alert.assert_called_once()
     assert store.put_alert.call_args.args[2:] == ("conv-1", "msg-9")
 
@@ -425,7 +425,7 @@ def awaiting_row(issue_id="1000000007"):
         "batch_id": "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42",
         "conversation_id": "conv-1",
         "message_id": "msg-9",
-        "short_id": "SCANNERS-7X",
+        "short_id": "CHECKOUT-4B2",
     }
 
 
@@ -443,8 +443,8 @@ def test_each_result_replies_in_its_own_card_thread():
     assert response["statusCode"] == 200
     conversation_id, message_id, card, summary = bot.reply_card_in_thread.call_args.args
     assert (conversation_id, message_id) == ("conv-1", "msg-9")
-    assert summary == "Automated investigation: SCANNERS-7X"
-    assert "SCANNERS-7X" in card["body"][0]["text"]
+    assert summary == "Automated investigation: CHECKOUT-4B2"
+    assert "CHECKOUT-4B2" in card["body"][0]["text"]
 
 
 def test_an_invalid_document_is_400_and_leaves_the_row_awaiting():
@@ -500,7 +500,7 @@ def test_a_failed_reply_is_requeued_for_the_sweep_not_lost():
     # first attempt composed.
     stored = json.loads(requeue.kwargs["extra"]["pending_reply"])
     assert stored["type"] == "AdaptiveCard"
-    assert "SCANNERS-7X" in stored["body"][0]["text"]
+    assert "CHECKOUT-4B2" in stored["body"][0]["text"]
 
 
 def test_a_transient_reply_failure_does_not_trip_the_delivery_alarm(caplog):
@@ -576,7 +576,7 @@ def test_findings_past_the_deadline_is_401_not_a_quiet_ok():
 
 
 def probe_request(
-    body='{"schema_version": 2, "repo_remote": "https://github.com/example-org/example-repo", "health_status": 200}',
+    body='{"schema_version": 2, "repo_remote": "https://github.com/acme-tools/checkout", "health_status": 200}',
     path="/findings/probe",
 ):
     return {
@@ -600,7 +600,7 @@ def test_a_probe_report_is_logged_where_the_rollout_gate_can_read_it(caplog):
         handler.lambda_handler(probe_request(), None)
 
     assert observability.PROBE_MARKER in caplog.text
-    assert "example-org/example-repo" in caplog.text
+    assert "acme-tools/checkout" in caplog.text
 
 
 def test_a_probe_report_is_truncated_so_it_cannot_flood_the_log(caplog):
@@ -628,8 +628,8 @@ def autofix_row():
         "environment": "staging",
         "release": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
         "batch_id": "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42",
-        "project": "scanners",
-        "short_id": "SCANNERS-7X",
+        "project": "checkout",
+        "short_id": "CHECKOUT-4B2",
         "conversation_id": "conv-1",
         "message_id": "msg-9",
     }
@@ -677,7 +677,7 @@ def test_a_declined_finding_appends_the_reason_line(
     from receiver.config import load_config
 
     config.return_value = load_config(
-        write(tmp_path, VALID + AUTOFIX.replace("- scanners", "- frontend"))
+        write(tmp_path, VALID + AUTOFIX.replace("- checkout", "- frontend"))
     )
     store = alert_store.return_value
     store.advance.return_value = True
@@ -786,7 +786,7 @@ def dispatch_record(token="cb-token"):
 
     return {
         "dispatch_id": "d-1",
-        "short_id": "SCANNERS-7X",
+        "short_id": "CHECKOUT-4B2",
         "conversation_id": "conv-1",
         "message_id": "msg-9",
         "callback_token_hash": AlertStore.hash_token(token),
@@ -914,7 +914,7 @@ def test_a_legitimate_pr_url_survives_intact_and_stays_a_link(alert_store, bot_c
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
 
-    good_url = "https://github.com/example-org/example-repo/pull/42"
+    good_url = "https://github.com/acme-tools/checkout/pull/42"
     response = route(callback_event(pr_url=good_url))
 
     assert response["statusCode"] == 200

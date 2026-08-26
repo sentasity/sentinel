@@ -26,19 +26,19 @@ class FakeResponse:
 
 def test_resolve_issue_ref_uses_api_values():
     sentry_api.clear_cache()
-    response = FakeResponse(200, {"shortId": "SCANNERS-7X", "project": {"slug": "scanners"}})
+    response = FakeResponse(200, {"shortId": "CHECKOUT-4B2", "project": {"slug": "checkout"}})
 
     with patch.object(sentry_api.requests, "get", return_value=response) as get:
         ref = sentry_api.resolve_issue_ref(make_alert(), "tok")
 
-    assert ref.short_id == "SCANNERS-7X"
-    assert ref.project == "scanners"
+    assert ref.short_id == "CHECKOUT-4B2"
+    assert ref.project == "checkout"
     assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
 
 
 def test_resolve_issue_ref_caches_by_issue_url():
     sentry_api.clear_cache()
-    response = FakeResponse(200, {"shortId": "SCANNERS-7X", "project": {"slug": "scanners"}})
+    response = FakeResponse(200, {"shortId": "CHECKOUT-4B2", "project": {"slug": "checkout"}})
 
     with patch.object(sentry_api.requests, "get", return_value=response) as get:
         sentry_api.resolve_issue_ref(make_alert(), "tok")
@@ -54,7 +54,7 @@ def test_resolve_issue_ref_falls_back_on_api_failure():
         ref = sentry_api.resolve_issue_ref(make_alert(), "tok")
 
     assert ref.short_id == "#1000000007"
-    assert ref.project == "Backend API"
+    assert ref.project == "Checkout"
 
 
 def test_resolve_issue_ref_falls_back_on_transport_error():
@@ -64,7 +64,7 @@ def test_resolve_issue_ref_falls_back_on_transport_error():
         ref = sentry_api.resolve_issue_ref(make_alert(), "tok")
 
     assert ref.short_id == "#1000000007"
-    assert ref.project == "Backend API"
+    assert ref.project == "Checkout"
 
 
 def test_project_from_rule_name_handles_missing_prefix():

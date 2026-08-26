@@ -12,7 +12,7 @@ VALID = textwrap.dedent(
     environments:
       - prod
       - staging
-    target_repo: example-org/example-repo
+    target_repo: acme-tools/checkout
     trigger_mode: auto
     payload_mode: issue-ids-only
     trigger:
@@ -72,7 +72,7 @@ def write(tmp_path, body):
 def test_load_config_reads_the_investigation_section(tmp_path):
     cfg = load_config(write(tmp_path, VALID))
 
-    assert cfg.target_repo == "example-org/example-repo"
+    assert cfg.target_repo == "acme-tools/checkout"
     assert cfg.trigger_mode == "auto"
     assert cfg.payload_mode == "issue-ids-only"
     assert cfg.routine_id == "trig_test"
@@ -218,7 +218,7 @@ def test_assert_ready_lets_shadow_mode_run_without_a_routine_or_url(tmp_path):
 
 def test_assert_ready_requires_a_target_repo(tmp_path):
     cfg = load_config(
-        write(tmp_path, VALID.replace("target_repo: example-org/example-repo", 'target_repo: ""'))
+        write(tmp_path, VALID.replace("target_repo: acme-tools/checkout", 'target_repo: ""'))
     )
 
     with pytest.raises(ConfigError, match="target_repo"):
@@ -230,7 +230,7 @@ AUTOFIX = textwrap.dedent(
     autofix:
       enabled: true
       projects:
-        - scanners
+        - checkout
       min_confidence: high
       min_fixability: medium
       exclude_paths:
@@ -247,7 +247,7 @@ def test_load_config_reads_the_autofix_section(tmp_path):
     cfg = load_config(write(tmp_path, VALID + AUTOFIX))
 
     assert cfg.autofix_enabled is True
-    assert cfg.autofix_projects == ("scanners",)
+    assert cfg.autofix_projects == ("checkout",)
     assert cfg.autofix_min_fixability == "medium"
     assert cfg.autofix_exclude_paths == ("infra/**",)
     assert cfg.autofix_daily_pr_cap == 5

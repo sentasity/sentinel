@@ -7,7 +7,7 @@
       "short_id": "CHECKOUT-4B2",
       "status": "investigated",
       "release_investigated": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
-      "root_cause": "capture_intent raises PaymentIntentTimeout when the gateway poll passes its deadline, but submit_order wraps the call in a bare except that treats every exception as retryable and reports the capture as sent.",
+      "root_cause": "submit_order wraps capture_intent in a bare except, so the gateway timeout is retried silently and the capture is reported as sent.",
       "confidence": "high",
       "fixability": "high",
       "evidence": [

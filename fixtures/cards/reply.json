@@ -18,7 +18,7 @@
     },
     {
       "type": "TextBlock",
-      "text": "capture\\_intent raises PaymentIntentTimeout when the gateway poll passes its deadline, but submit\\_order wraps the call in a bare except that treats every exception as retryable and reports the capture as sent.",
+      "text": "submit\\_order wraps capture\\_intent in a bare except, so the gateway timeout is retried silently and the capture is reported as sent.",
       "wrap": true,
       "spacing": "Medium"
     },

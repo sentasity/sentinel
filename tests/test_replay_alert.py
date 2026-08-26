@@ -16,14 +16,14 @@ STORED_ROW = {
     "project": "processing",
     "level": "error",
     "title": "CloudWatch object count fetch failed for account 000000000000",
-    "web_url": "https://sentry.io/organizations/example-org/issues/7690791246/",
+    "web_url": "https://sentry.io/organizations/acme-tools/issues/7690791246/",
     "release": "c2ed90e9a67748516780e30c7fd7f0306d954882",
     "conversation_id": "19:chan@thread.tacv2;messageid=1787634131941",
     "message_id": "1787634131941",
 }
 
 
-def build(row=None, org="example-org"):
+def build(row=None, org="acme-tools"):
     return replay_alert.build_payload(row or STORED_ROW, environment="prod", org=org)
 
 
@@ -45,7 +45,7 @@ def test_the_payload_carries_a_resolvable_issue_api_url():
     alert = parse_alert(build())
 
     assert alert.issue_api_url == (
-        "https://sentry.io/api/0/organizations/example-org/issues/7690791246/"
+        "https://sentry.io/api/0/organizations/acme-tools/issues/7690791246/"
     )
 
 

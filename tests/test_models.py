@@ -17,17 +17,17 @@ def test_parse_alert_extracts_core_fields():
     # this URL verbatim, so the fixture carrying the wrong one would have hidden
     # a broken short-id lookup.
     assert alert.issue_api_url == (
-        "https://sentry.io/api/0/organizations/example-org/issues/1000000007/"
+        "https://sentry.io/api/0/organizations/acme-tools/issues/1000000007/"
     )
     assert alert.web_url.startswith(
-        "https://sentry.io/organizations/example-org/issues/1000000007/"
+        "https://sentry.io/organizations/acme-tools/issues/1000000007/"
     )
     assert alert.environment == "staging"
     assert alert.level == "error"
-    assert alert.culprit == "__main__ in <module>"
+    assert alert.culprit == "checkout.services.payments in capture_intent"
     assert alert.release == "efa4bbfc4e79761e3542990fc090df1bc22ec47f"
-    assert alert.rule_name == "[Backend API] New Issue - Staging"
-    assert alert.title.startswith("AlertRelayMigrationSmokeTest")
+    assert alert.rule_name == "[Checkout] New Issue - Staging"
+    assert alert.title.startswith("PaymentIntentTimeout")
 
 
 def test_parse_alert_lowercases_level():
