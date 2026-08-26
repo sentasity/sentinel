@@ -1,0 +1,44 @@
+/* Mermaid branding. Loaded after theme.css so it can read the tokens defined
+ * there. Node fills are the raised surface on a steel stroke; edges are muted;
+ * amber is reserved for the one element a diagram wants to emphasise and is
+ * never a default node colour. */
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid .node rect,
+.mermaid .node polygon,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .cluster rect {
+  fill: var(--sl-color-gray-6) !important;
+  stroke: var(--sl-color-gray-5) !important;
+}
+
+.mermaid .node .label,
+.mermaid .cluster .label,
+.mermaid span.nodeLabel,
+.mermaid p {
+  color: var(--sl-color-text) !important;
+  fill: var(--sl-color-text) !important;
+}
+
+.mermaid .edgePath .path,
+.mermaid .flowchart-link {
+  stroke: var(--sl-color-gray-4) !important;
+}
+.mermaid marker path {
+  fill: var(--sl-color-gray-4) !important;
+  stroke: var(--sl-color-gray-4) !important;
+}
+
+/* Mermaid's own edge-label background is transparent (set in mermaidConfig), so
+ * the chip is drawn here and follows the theme. */
+.mermaid .edgeLabel,
+.mermaid .edgeLabel p {
+  background-color: var(--sl-color-bg) !important;
+  color: var(--sl-color-gray-3) !important;
+  fill: var(--sl-color-bg) !important;
+}
