@@ -1,4 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="32" height="32">
-  <mask id="k"><path fill="#fff" d="M21,11 C18.5,8 16.5,6.5 14.5,6 C14.5,9.5 15.5,13.5 17.5,17 C18.6,14.7 19.8,12.6 21,11 Z"/><path fill="#fff" d="M43,11 C45.5,8 47.5,6.5 49.5,6 C49.5,9.5 48.5,13.5 46.5,17 C45.4,14.7 44.2,12.6 43,11 Z"/><path fill="#fff" d="M32,8 C20,8 11.5,16 10.5,27 C9.5,38.5 17,49.5 32,56 Z"/><path fill="#fff" d="M32,8 C44,8 52.5,16 53.5,27 C54.5,38.5 47,49.5 32,56 Z"/><circle fill="#000" cx="22" cy="31" r="5.46"/><circle fill="#000" cx="42" cy="31" r="5.46"/></mask>
-  <rect width="64" height="64" fill="#ffffff" mask="url(#k)"/>
-</svg>
