@@ -34,6 +34,7 @@ export default defineConfig({
     }),
     starlight({
       title: 'Sentinel',
+      favicon: '/favicon.ico',
       description:
         'Unattended investigation of Sentry issues, with optional autofix pull requests.',
       logo: {
