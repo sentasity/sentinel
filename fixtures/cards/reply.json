@@ -1,0 +1,72 @@
+{
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "type": "AdaptiveCard",
+  "version": "1.4",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Automated investigation: CHECKOUT-4B2",
+      "weight": "Bolder",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "Confidence: high · Fixability: high · Release: 79bad4b79fb0",
+      "isSubtle": true,
+      "wrap": true,
+      "spacing": "Small"
+    },
+    {
+      "type": "TextBlock",
+      "text": "capture\\_intent raises PaymentIntentTimeout when the gateway poll passes its deadline, but submit\\_order wraps the call in a bare except that treats every exception as retryable and reports the capture as sent.",
+      "wrap": true,
+      "spacing": "Medium"
+    },
+    {
+      "type": "TextBlock",
+      "text": "**Next step:** mirror refund\\_intent's explicit PaymentIntentTimeout branch in submit\\_order",
+      "wrap": true
+    },
+    {
+      "type": "Container",
+      "id": "details",
+      "isVisible": false,
+      "spacing": "Medium",
+      "items": [
+        {
+          "type": "TextBlock",
+          "text": "Evidence",
+          "weight": "Bolder",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "- src/checkout/services/payments.py:184 in capture\\_intent the deadline branch raises but submit\\_order swallows it",
+          "wrap": true,
+          "spacing": "Small"
+        },
+        {
+          "type": "TextBlock",
+          "text": "Assumptions",
+          "weight": "Bolder",
+          "wrap": true
+        },
+        {
+          "type": "TextBlock",
+          "text": "- the 8s gateway ceiling is a product decision, not a bug",
+          "wrap": true,
+          "spacing": "Small"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.ToggleVisibility",
+      "title": "Details",
+      "targetElements": [
+        "details"
+      ]
+    }
+  ]
+}
