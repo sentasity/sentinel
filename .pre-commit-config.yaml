@@ -1,0 +1,30 @@
+# Local gate, ahead of CI. Anything pushed to this repository is published,
+# including a branch that never merges, so the checks that matter most run
+# before content leaves the machine. CI runs the same two checks as a
+# backstop for clones that never ran `pre-commit install`, which is also why
+# neither check here may drift from its CI twin: gitleaks is pinned to the
+# same version secret-scan.yml installs, and the tree test is the same file
+# tests.yml runs.
+#
+# One-time setup, per clone:
+#
+#   pre-commit install
+#
+# This covers the deterministic gates only. The disclosure scan
+# (disclosure-scan.yml) still runs in CI, because judging prose needs a
+# reader, and a hook can be skipped with --no-verify; nothing here replaces
+# it.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: public-tree
+        name: public-tree invariants (tests/test_public_tree.py)
+        entry: .venv/bin/python -m pytest -q tests/test_public_tree.py
+        language: system
+        pass_filenames: false
+        always_run: true

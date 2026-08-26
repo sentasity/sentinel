@@ -10,7 +10,10 @@ Sentry alert receiver and unattended investigation engine. Start with [README.md
 
 Run it before every push. CI runs the same suite on 3.12 and 3.13 plus a
 gitleaks scan (`.github/workflows/`), but it is a backstop, not the place to
-find out. Deploys are manual `cdk deploy`, see [infra/README.md](infra/README.md).
+find out. `pre-commit install` (once per clone) runs gitleaks and the
+public-tree test on every commit; keep it installed, since a pushed branch on
+a public repo is published even if it never merges. Deploys are manual
+`cdk deploy`, see [infra/README.md](infra/README.md).
 
 The documentation site is a separate Node project:
 
