@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Write the receiver's SecureString parameters into SharedServices-Prod.
+# Write the receiver's SecureString parameters into the target AWS account.
 #
 # Values are read from the environment, never from arguments, so nothing lands
 # in shell history or a process listing. Run once per environment, and again

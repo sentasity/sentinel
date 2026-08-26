@@ -34,11 +34,11 @@ SECRET_KEYS = (
 # constant rather than a config knob: the whole investigation pipeline checks
 # out the event's release SHA, and a per-developer environment has none.
 #
-# `backend/scripts/dev_deploy.py` in the product repo leaves SENTRY_RELEASE
-# unset on purpose (setting it forced a full CFN update across 14+ Lambdas and
-# the C7n/Prowler TaskDefs on every commit), so dev events arrive with
-# `release=""` while CI sets it for prod and staging. Measured 2026-08-13:
-# 57 of 57 prod and staging issues carry a 40-char SHA; 0 of 24 dev issues do.
+# The usual cause is a dev deploy path that leaves SENTRY_RELEASE unset on
+# purpose, because stamping it would force a full infrastructure update on every
+# commit. Those events arrive with `release=""` while CI sets it for prod and
+# staging, so the two environments look the same until the gate reads the
+# release.
 #
 # Adding a dev environment here would not degrade gracefully. It would check
 # out nothing, or worse, a stale SHA that happens to exist, and investigate the

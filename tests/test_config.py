@@ -152,10 +152,8 @@ def test_get_secret_reads_a_decrypted_ssm_parameter():
 
 
 # Dev environments are excluded because their releases are not resolvable, not
-# as a matter of taste. `backend/scripts/dev_deploy.py` in the product repo
-# deliberately leaves SENTRY_RELEASE unset, so every per-developer event carries
-# `release=""`, while CI sets it for prod and staging. Measured 2026-08-13:
-# 57/57 prod+staging issues carry a 40-char SHA, 0/24 dev issues do.
+# as a matter of taste. A dev deploy path that leaves SENTRY_RELEASE unset gives
+# every per-developer event `release=""`, while CI sets it for prod and staging.
 
 
 def test_assert_ready_refuses_a_developer_environment(tmp_path):
