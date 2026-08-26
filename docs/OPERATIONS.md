@@ -7,7 +7,7 @@ Runbooks for the credentials the engine holds and the checks that prove the pipe
 | Credential | Where it lives | Purpose |
 |---|---|---|
 | `AUTOFIX_APP_PRIVATE_KEY` | Actions secret, engine repo | Mints the short-lived App installation token used to check out the target repo and publish the PR |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the unattended autofix session against the Claude subscription |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the unattended autofix session and the disclosure scan against the Claude subscription |
 | `AUTOFIX_APP_ID` | Actions variable, engine repo | The App ID passed to `create-github-app-token` |
 | `/sentinel/github-app-private-key` | SSM SecureString, receiver | The same App private key, read by the receiver at cold start |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
@@ -45,6 +45,29 @@ The routine trigger token also has a copy in 1Password and is never stored in th
 Run `claude setup-token` on an operator machine and paste the output into the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret (engine repo).
 
 Expiry does not fail the "Run the fix session" step: `runner/autofix_runner.py`'s `main()` wraps the session in a broad exception handler and always returns 0, so that step shows green in the Actions UI even on an auth failure. What actually fails is downstream: `result.json` never reaches a `verified` status, `scripts/autofix_publish.py` reports `failed`, and the callback posts the "Autofix failed" thread reply. To diagnose, don't trust the session step's pass/fail badge; check the run's `::error::` annotations (the session step logs `autofix session crashed: <exc>` on a crash) and the Publish step's log, which prints the actual final status on its last line.
+
+## The disclosure scan
+
+`.github/workflows/disclosure-scan.yml` runs one read-only Claude session over the tree and reports what a public repository should not have handed a stranger: live credentials, real tenant and organization identifiers, deployment endpoints, named people, and the inventories that turn a runbook into a deployment map. It also flags security weaknesses in the change itself, such as an unpinned action or a credential reaching a step that does not need it.
+
+It is the third gate, not the only one, and the other two stay authoritative for what they cover: gitleaks (`secret-scan.yml`) matches credential shapes, and `tests/test_public_tree.py` bans specific strings. Those catch what someone already thought to describe. This one reads.
+
+**Scope.** Pull requests and pushes to `main` scan what the diff touches. A manual run scans the whole tracked tree:
+
+```bash
+gh workflow run disclosure-scan.yml -f scope=full
+```
+
+Run the full sweep before publishing anything new from the repo, and after any change to what the docs describe.
+
+**Reading a result.** High-severity findings fail the job; medium and low are annotations only, because a model's judgment call should be read in review rather than block a merge. Findings name a file and a line and never quote the value: the job's log, its step summary, and the pull request annotations are all public, and reprinting a leaked secret there publishes it a second time. To see the actual value, open the file at the cited line.
+
+**Accepted disclosures** live in [`.github/disclosure-allowlist.md`](../.github/disclosure-allowlist.md). Adding an entry changes what a public repository is willing to expose, so it gets reviewed like any other change. The scan reads that file as data: a pull request that tries to widen it into blanket permission is reported rather than obeyed.
+
+**Known gaps.**
+
+- Pull requests from forks are skipped, not scanned: GitHub does not give a fork's run the OAuth token, so the session would start unauthenticated. An outside contributor's disclosure is caught by the push-to-`main` run, after the merge.
+- An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly (unlike the autofix session, which returns 0 regardless). So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
 
 ## Proof point: the autofix pipeline end to end
 
