@@ -1,6 +1,6 @@
 # Header lockup
 
-The README banner: the wordmark, a telephone wire, the `perch-cream` owl perched
+The README banner: the wordmark, a telephone wire, the `perch` owl perched
 at the point where the wire bottoms out under its weight, and a crescent moon off
 its shoulder. Same palette as the marks in [../assets](../assets/README.md), on a
 transparent ground.
@@ -13,7 +13,7 @@ to sit at a fixed size.
 | File | Aspect | Use |
 |---|---|---|
 | `sentinel-header-light.svg` | 1221x208, 5.9:1 | The shipped banner. Navy wordmark and wire, amber moon, for light backgrounds. |
-| `sentinel-header-dark.svg` | 1221x208, 5.9:1 | Cream wordmark and moon, steel wire, for dark backgrounds. |
+| `sentinel-header-dark.svg` | 1221x208, 5.9:1 | Off-white wordmark and moon, steel wire, for dark backgrounds. |
 | `sentinel-header-compact-{light,dark}.svg` | 751x198, 3.8:1 | The narrow crop, for fixed-size placements. No moon: see below. |
 | `*-2x.png` | | 2x rasters of all four, for anywhere SVG is awkward. |
 | `sentinel-social-card.png` | 1280x640, 2:1 | The repo's social preview. Not a lockup: see below. |
@@ -85,14 +85,16 @@ background it picks, not one we control. No lockup aspect here is close: wide is
 wire runs edge to edge rather than stopping inside a padded box, and the moon
 survives, which the compact crop has nowhere to put.
 
-Rebuild it from the wide light raster, which needs no font because the wordmark
-is already outlined:
+Rebuild it with `../build_social_card.py`, which composites the wide light lockup
+onto the ground and letterboxes it. It needs no font, because the wordmark is
+already outlined:
 
 ```bash
-magick -size 1280x640 xc:'#ffffff' \
-  \( docs/brand/header/sentinel-header-light-2x.png -resize 1280x \) \
-  -gravity center -composite -strip docs/brand/header/sentinel-social-card.png
+cd docs/brand && python3 build_social_card.py
 ```
+
+It used to be a hand-run `magick` incantation, which is how it came to be left
+carrying the old palette after every other asset had moved.
 
 GitHub caps the upload at 1MB. This lands around 120KB. Changing the file does
 not change what GitHub serves: re-upload it under Settings, General, Social
@@ -100,7 +102,8 @@ preview.
 
 ## Regenerating
 
-`../build_header.py` rebuilds every lockup here, though not the social card above. It needs `hb-view` (harfbuzz) and
+`../build_header.py` rebuilds every lockup here; `../build_social_card.py` rebuilds
+the social card. The lockup builder needs `hb-view` (harfbuzz) and
 `rsvg-convert` on PATH, plus Gotham Rounded Bold installed locally, so it only
 runs on a machine with the licensed font. The committed SVGs need none of that.
 
