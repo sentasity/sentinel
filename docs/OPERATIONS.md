@@ -66,7 +66,7 @@ Run the full sweep before publishing anything new from the repo, and after any c
 
 **Known gaps.**
 
-- Pull requests from forks are skipped, not scanned: GitHub does not give a fork's run the OAuth token, so the session would start unauthenticated. An outside contributor's disclosure is caught by the push-to-`main` run, after the merge.
+- Pull requests from forks cannot be scanned: GitHub does not give a fork's run the OAuth token, so the session has nothing to authenticate with. The job fails such a run rather than skipping it, because GitHub records a skipped job as "skipped" and branch protection counts a skipped required check as satisfied, which would let a fork's pull request merge looking scanned when nothing read it. Review the change by hand, or re-run the scan from a branch in this repository; either way the scan of record is the push to `main` after the merge.
 - An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly (unlike the autofix session, which returns 0 regardless). So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
 
 ## Proof point: the autofix pipeline end to end

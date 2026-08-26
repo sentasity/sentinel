@@ -29,13 +29,9 @@ permissions:
 
 jobs:
   scan:
-    # A pull_request run from a fork is not given repository secrets, so the
-    # session would start with no auth and fail on every outside contribution.
-    # Skip those runs rather than failing them; the push-to-main run scans the
-    # merge result, which is the point at which the content actually becomes
-    # published. Flagged here because it is a real gap, not a detail: an
-    # outside contributor's disclosure is caught after the merge, not before.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # No job-level `if:` here, deliberately. See the first step: a job that
+    # excludes itself reports "skipped", and branch protection accepts a
+    # skipped required check as satisfied.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -44,6 +40,23 @@ jobs:
       # push to main would drop the only scan that commit ever gets.
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
+      # First, and before the checkout, so an unscannable run costs nothing.
+      #
+      # A fork's pull_request run is not given repository secrets, so the
+      # session cannot authenticate and this check cannot do its job. The
+      # obvious response, excluding the job with an `if:`, is wrong: GitHub
+      # records that as a "skipped" conclusion, and branch protection counts a
+      # skipped required check as satisfied. Making this a required check would
+      # then let a fork's pull request merge looking scanned when nothing read
+      # it. Failing is the honest signal, and it is what makes this check safe
+      # to require. The scan of record for such a change is the push to main
+      # after a maintainer has reviewed it by hand.
+      - name: Refuse to report on a pull request that cannot be scanned
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::this pull request comes from a fork, so GitHub withholds the OAuth token and the scan cannot run. Review the disclosure surface by hand, or re-run the scan from a branch in this repository, before merging."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -95,6 +108,7 @@ jobs:
           # backstop against a future tree that is not, where an unbounded
           # list would silently blow the session's context instead.
           MAX_FILES: 800
+          MAX_DIFF_BYTES: 200000
         run: |
           set -euo pipefail
           if [ "$SCOPE" = full ]; then
@@ -133,7 +147,16 @@ jobs:
           if [ -n "$BASE" ]; then
             git diff --no-color "$BASE" "$HEAD_SHA" > diff.full.patch
           fi
-          head -c 200000 diff.full.patch > diff.patch
+          head -c "$MAX_DIFF_BYTES" diff.full.patch > diff.patch
+
+          # The file cap warns when it drops files; this one has to as well.
+          # A tail dropped in silence is a stretch of the change nobody read,
+          # in a run that still reports clean.
+          DIFF_TOTAL=$(wc -c < diff.full.patch)
+          DIFF_KEPT=$(wc -c < diff.patch)
+          if [ "$DIFF_TOTAL" -gt "$DIFF_KEPT" ]; then
+            echo "::warning::diff truncated to ${DIFF_KEPT} of ${DIFF_TOTAL} bytes; the tail was not reviewed"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
