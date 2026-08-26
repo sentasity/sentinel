@@ -1,4 +1,4 @@
-config_version: 7
+config_version: 8
 paths:
   designs: docs/designs
   plans: docs/plans
@@ -11,7 +11,82 @@ execute:
   mode: inline
   parallel: false
   branch_check: true
+  auto_resolve_drift: false
+  max_parallel: 4          # concurrent implementer lanes (= worktrees); reviewers uncapped
+  worktree_confirm: true   # one-time pre-flight worktree confirmation
+  resume_on_dirty_tree: false
 audits:
   build_validator:
     command: .venv/bin/python -m pytest -q
     expect_zero_exit: true
+  default:
+  warnings:
+  optional: []
+
+storage:
+  backend: filesystem          # filesystem | notion  (default: filesystem, today's behavior)
+  notion:
+    root_page:  ""             # Notion page URL or id to provision under; share it with the MCP integration
+    designs_db: ""             # auto-filled on first Notion-mode run, then commit
+    plans_db:   ""             # auto-filled on first Notion-mode run, then commit
+
+mockups:
+  # Where mockup HTML files are written. Mockups are always local files, on every
+  # storage backend; a design's 95-visual-contract records each version's file:// URL.
+  # null on the filesystem backend  -> the design's own mockups/ subfolder (no prompt).
+  # null on the notion backend      -> /c-design asks once, and offers to persist the
+  #                                    answer here (config.local.yaml is the usual home,
+  #                                    since the path is machine-specific).
+  dir: null
+
+naming:
+  date_format: "YYYY-MM-DD"
+  slug_case: kebab
+
+status:
+  design: [draft, in-review, approved, completed, superseded, on-hold]
+  plan:   [draft, in-progress, implemented, completed, superseded, on-hold]
+
+frontmatter:
+  required: [title, created, updated, status, tags]
+
+worktree:
+  dir: .cadence/worktrees     # canonical home (relocated from execute.worktree_dir)
+  integrate: rebase-ff        # rebase-ff | merge-commit (relocated from execute.integrate)
+  merge_lock: true            # on by default; both /c-worktree and /c-execute acquire it
+  lock_stale_threshold: 600   # seconds; past this a held lock surfaces "steal it?" (never auto-steal)
+  hooks:                          # all null by default -> generic behavior; null hook = phase absent
+    provision:        null        # runs after `git worktree add`
+    provision_verify: null        # after provision: assert the env is usable; non-zero => surface + offer repair/remove/keep
+    port_assign:      null        # allocates a dev port for the worktree; MUST print the port to stdout
+    port_release:     null        # frees the worktree's port at cleanup
+    dev_server:       null        # starts the worktree's dev server (Sentasity-only in practice)
+    deploy_guard:     null        # exits non-zero if a deploy is not allowed from here (Sentasity-only)
+
+authoring:
+  max_parallel: 6          # concurrent doc-generator agents (no worktrees; cheap)
+  design_mode: ask         # ask | all-at-once | one-by-one | inline (standing default for /c-design)
+  plan_mode: ask           # ask | all-at-once | inline (standing default for /c-plan)
+
+advisors:
+  enabled: false
+  roster: []
+
+plain_english:
+  section_callout: true
+  always_write_00a: true
+  length_target: "400-700"
+
+oos:
+  require_rationale: true
+  require_wikilink: true
+
+validate:
+  reset_checkboxes_on_rerun: true
+  browser_driver: auto                     # auto | playwright | manual
+  browser_command: "npx playwright test"   # CLI test invocation Cadence delegates to
+  browser_env_preamble: null               # optional shell snippet run before the command; null = none
+
+find_bugs:
+  default_baseline: main
+  exclude: [node_modules, dist, build, __pycache__, target, .next, vendor]
