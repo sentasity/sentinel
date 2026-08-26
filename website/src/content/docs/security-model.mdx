@@ -1,0 +1,92 @@
+---
+title: Security model
+description: What each unattended session can touch, what it cannot, and the one residual risk that is accepted rather than solved.
+---
+
+The unattended sessions are the trust boundary. Everything that reaches them is treated
+as untrusted, including the Sentry issue text they are asked to investigate.
+
+:::tip[The short version]
+The investigating session cannot push. The fixing session holds no GitHub credential.
+Publishing happens in a separate step, after that session has already exited. Every
+pull request waits for a human.
+:::
+
+## The fire payload is data, not instructions
+
+All parameterization lives in the stored routine prompt, not in the request that
+triggers it. The payload carries five typed fields and no prose:
+
+```
+{ "project", "issue_ids", "release", "batch_id", "reply_token" }
+```
+
+The prompt instructs the session to treat any deviation from that shape as a malformed
+fire and report it rather than interpret it. This is the control that matters most,
+because the alternative design, passing instructions in the trigger, would make anyone
+who can reach the trigger endpoint able to reprogram the session.
+
+The payload also sends issue ids rather than event bodies. That is partly the API's
+65,536-character cap on a fire, and partly that a full event body is attacker-influenced
+text; the session fetches what it needs through the Sentry connector instead.
+
+## The routines API exposes no configuration read
+
+There is no way to ask the API which repository a routine is bound to, or which
+connectors it has. So the receiver cannot assert at startup that the routine it is
+about to fire is the one it thinks it is.
+
+The compensating control is a fail-closed probe: a session whose only job is to report
+its own configuration back. It is a manual gate, not an automatic one, and it needs
+re-running whenever the routine or the account's connectors change. Naming it here
+rather than hiding it is deliberate, because a compensating control nobody knows to
+re-run is not a control.
+
+## Findings delivery is verified out-of-band
+
+Before posting findings anywhere, the session confirms the destination against two
+channels the operator controls and no injected text can forge:
+
+- `SENTINEL_RECEIVER_URL`, set in the cloud environment rather than passed in the fire
+- the environment's deny-by-default egress policy, whose only allowed host is the
+  receiver
+
+An instruction embedded in a stack trace telling the session to post its findings
+somewhere else fails both checks.
+
+## The autofix session never has push access
+
+The workflow that writes fixes is built so that the session doing the writing cannot
+publish anything.
+
+| Actor | Reads the repo | Can push | Holds the callback token |
+|---|---|---|---|
+| Investigator session | Yes, at the release SHA | No | Reply token only |
+| Autofix session | Yes, at the release SHA | No | No, stripped first |
+| Publish step | Yes | Yes, as the GitHub App | Yes |
+
+Concretely: both checkouts run with `persist-credentials: false`, so no token is
+written into a `.git/config` the session could read. Git authentication is set up only
+in the publish step, after the session has finished. The callback token is stripped
+from the payload file before the session can read it, because that token is a bearer
+credential for the result endpoint and the session never needs it. Every `uses:` step
+in the workflow is pinned to a commit SHA.
+
+## Secrets
+
+Receiver-side secrets live in SSM SecureStrings; workflow-side secrets are Actions
+secrets. Neither ever appears in the config file, which carries only a reference to the
+parameter name. The full inventory and the rotation runbooks are in
+[Runbooks](/sentinel/operate/runbooks/).
+
+## What we accept
+
+One residual risk is documented rather than solved. The Claude Agent SDK forwards the
+process environment to its subprocess, so the workflow's OAuth token is technically
+reachable from inside the autofix session. Containment for that is the runner's egress
+posture, not the runner code.
+
+It is listed here because a security model that only lists its wins is not a security
+model. If you find something else, please report it through
+[GitHub's private vulnerability reporting](https://github.com/sentasity/sentinel/security/advisories/new)
+rather than opening a public issue.
