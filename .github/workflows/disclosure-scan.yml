@@ -1,0 +1,159 @@
+# A Claude session that reads this tree the way a stranger would, looking for
+# what a public repository should not have handed them.
+#
+# The two deterministic gates already here match patterns: gitleaks in
+# secret-scan.yml looks for credential shapes, and tests/test_public_tree.py
+# bans strings someone already thought to ban. Neither can express the failure
+# this job exists for, which is a runbook that narrates one real deployment.
+# No single token in such a document looks like a secret, and the document is
+# a map. Judging that needs reading, so this reads.
+#
+# It runs on the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN, the same secret
+# autofix.yml uses), not on metered API credits.
+name: disclosure-scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "full = every tracked text file; changed = only what the ref touches"
+        type: choice
+        options: [full, changed]
+        default: full
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    # A pull_request run from a fork is not given repository secrets, so the
+    # session would start with no auth and fail on every outside contribution.
+    # Skip those runs rather than failing them; the push-to-main run scans the
+    # merge result, which is the point at which the content actually becomes
+    # published. Flagged here because it is a real gap, not a detail: an
+    # outside contributor's disclosure is caught after the merge, not before.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: disclosure-scan-${{ github.ref }}
+      # Superseding a pull request's own earlier run is free; superseding a
+      # push to main would drop the only scan that commit ever gets.
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The changed-file scope diffs against the base commit, which a
+          # shallow clone does not have.
+          fetch-depth: 0
+          # Load-bearing: the session reads this workspace with Read, Glob,
+          # and Grep, and .git/config is inside it. A persisted credential
+          # would be part of the material under review. Nothing here pushes.
+          persist-credentials: false
+
+      - name: Choose the scope
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_SCOPE: ${{ inputs.scope }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          ZERO=0000000000000000000000000000000000000000
+          SCOPE=changed
+          BASE=""
+          case "$EVENT_NAME" in
+            workflow_dispatch) SCOPE="${INPUT_SCOPE:-full}" ;;
+            pull_request)      BASE="$PR_BASE_SHA" ;;
+            push)              BASE="$PUSH_BEFORE_SHA" ;;
+          esac
+          # A branch's first push reports an all-zero "before", and a force
+          # push can name a commit this clone no longer has. Neither leaves a
+          # diff to take, so widen to the whole tree: scanning nothing and
+          # reporting a pass is the one outcome this job must never produce.
+          if [ "$SCOPE" = changed ]; then
+            if [ -z "$BASE" ] || [ "$BASE" = "$ZERO" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+              echo "::notice::no usable base commit, widening to a full sweep"
+              SCOPE=full
+              BASE=""
+            fi
+          fi
+          echo "scope=$SCOPE" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+      - name: Collect what is in scope
+        env:
+          SCOPE: ${{ steps.scope.outputs.scope }}
+          BASE: ${{ steps.scope.outputs.base }}
+          HEAD_SHA: ${{ github.sha }}
+          # A full sweep of this repo is under 200 files. The cap is a
+          # backstop against a future tree that is not, where an unbounded
+          # list would silently blow the session's context instead.
+          MAX_FILES: 800
+        run: |
+          set -euo pipefail
+          if [ "$SCOPE" = full ]; then
+            git ls-files -z > candidates.zero
+          else
+            # ACMR: a file the diff deleted has nothing left to read.
+            git diff -z --name-only --diff-filter=ACMR "$BASE" "$HEAD_SHA" > candidates.zero
+          fi
+
+          # NUL-delimited throughout, so a path containing a space or a glob
+          # character is one entry rather than several. `grep -Iq ''` exits
+          # non-zero for a binary file and for an empty one, which is exactly
+          # the set with nothing to read.
+          : > files.all.txt
+          while IFS= read -r -d '' path; do
+            [ -f "$path" ] || continue
+            if grep -Iq '' -- "$path" 2>/dev/null; then
+              printf '%s\n' "$path" >> files.all.txt
+            fi
+          done < candidates.zero
+
+          head -n "$MAX_FILES" files.all.txt > files.txt
+          TOTAL=$(wc -l < files.all.txt)
+          KEPT=$(wc -l < files.txt)
+          if [ "$TOTAL" -gt "$KEPT" ]; then
+            echo "::warning::scope capped at ${KEPT} of ${TOTAL} files; the rest were not scanned"
+          fi
+          echo "::notice::disclosure scan scope=${SCOPE} files=${KEPT}"
+
+          # No pathspec on the diff, deliberately: passing the file list back
+          # to git would reintroduce the word-splitting and glob-expansion
+          # hazard the NUL-delimited loop above exists to avoid, and the
+          # whole-diff form needs no list. Written to a file, then capped, so
+          # `head` closing the pipe cannot fail the step under pipefail.
+          : > diff.full.patch
+          if [ -n "$BASE" ]; then
+            git diff --no-color "$BASE" "$HEAD_SHA" > diff.full.patch
+          fi
+          head -c 200000 diff.full.patch > diff.patch
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: runner/requirements.txt
+
+      - name: Run the scan
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          DISCLOSURE_SCOPE: ${{ steps.scope.outputs.scope }}
+          DISCLOSURE_FILES_FILE: ${{ github.workspace }}/files.txt
+          DISCLOSURE_DIFF_FILE: ${{ github.workspace }}/diff.patch
+          DISCLOSURE_ALLOWLIST_FILE: ${{ github.workspace }}/.github/disclosure-allowlist.md
+          DISCLOSURE_PROMPT_DIR: ${{ github.workspace }}/prompts
+          DISCLOSURE_WORKSPACE: ${{ github.workspace }}
+          # Optional, and empty unless the repository sets it: the session
+          # runs on whatever the subscription resolves to by default.
+          DISCLOSURE_MODEL: ${{ vars.DISCLOSURE_MODEL }}
+        run: |
+          pip install -r runner/requirements.txt
+          python -m runner.disclosure_runner
