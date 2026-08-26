@@ -40,38 +40,60 @@
   --sl-color-text: #dbe4ef;
   --sl-color-text-accent: #ddb377;
   --sl-color-text-invert: #131c2e;
+
+  /* The primary button's hover pair. It cannot be derived from accent-high alone:
+   * that token is a pale amber on the dark ground and a dark brown on paper, so the
+   * label has to flip with it. */
+  --sentinel-cta-hover-bg: #ddb377;
+  --sentinel-cta-hover-text: #131c2e;
+
+  /* Diagram strokes carry meaning, so they answer to the 3:1 non-text bar rather
+   * than to the surface scale. The hairline and surface tokens both sit near 1.2:1
+   * against their ground, which is right for a divider and wrong for an arrow. */
+  --sentinel-diagram-stroke: #546e8c;
+  --sentinel-diagram-edge: #8fa0b5;
 }
 
 :root[data-theme='light'] {
   --sl-color-white: #131c2e;
   --sl-color-gray-1: #24314a;
-  --sl-color-gray-2: #3a4a63;
-  --sl-color-gray-3: #5a6b80;
-  --sl-color-gray-4: #94a2b3;
-  --sl-color-gray-5: #e3dbcd;
-  --sl-color-gray-6: #f2ece0;
-  --sl-color-gray-7: #f7f2e8;
+  --sl-color-gray-2: #3d4d66;
+  --sl-color-gray-3: #5d6d84;
+  --sl-color-gray-4: #93a2b6;
+  --sl-color-gray-5: #d9e2ec;
+  --sl-color-gray-6: #e8eef6;
+  --sl-color-gray-7: #eef3f9;
   --sl-color-black: #ffffff;
   --sentinel-wordmark: #1b2741;
 
-  /* Brand amber measures 2.67:1 on the light paper ground, which fails AA for
-   * body text and even the 3:1 bar for large text and UI. Light mode uses a
-   * darkened amber that holds 5.40:1. An inaccessible accent is a worse brand
-   * failure than an off-by-a-shade one. */
-  --sl-color-accent-low: #f6ead6;
+  /* Brand amber measures 2.67:1 on a light ground, which fails AA for body text
+   * and even the 3:1 bar for large text and UI. Light mode uses a darkened amber
+   * that holds 5.54:1. An inaccessible accent is a worse brand failure than an
+   * off-by-a-shade one. */
+  --sl-color-accent-low: #f7edde;
   --sl-color-accent: #8a5a1e;
   --sl-color-accent-high: #6d4716;
 
-  --sl-color-bg: #faf4ec;
-  --sl-color-bg-nav: #faf4ec;
-  --sl-color-bg-sidebar: #faf4ec;
-  --sl-color-bg-inline-code: #ffffff;
-  --sl-color-hairline: #e3dbcd;
-  --sl-color-hairline-light: #e3dbcd;
-  --sl-color-hairline-shade: #e3dbcd;
+  --sl-color-bg: #f6f8fb;
+  --sl-color-bg-nav: #f6f8fb;
+  --sl-color-bg-sidebar: #f6f8fb;
+  --sl-color-bg-inline-code: #eef3f9;
+  --sl-color-hairline: #d9e2ec;
+  --sl-color-hairline-light: #d9e2ec;
+  --sl-color-hairline-shade: #d9e2ec;
   --sl-color-text: #24314a;
   --sl-color-text-accent: #8a5a1e;
   --sl-color-text-invert: #ffffff;
+
+  --sentinel-cta-hover-bg: #6d4716;
+  --sentinel-cta-hover-text: #f6f8fb;
+
+  --sentinel-diagram-stroke: #7f91a8;
+  --sentinel-diagram-edge: #5d6d84;
+
+  /* Light mode inverts the elevation direction. Dark mode lifts a surface by
+   * lightening it; on paper the equivalent move is to sink it, which is also what
+   * keeps the fixed-white Teams card readable as a separate object on top of it. */
 }
 
 /* Starlight has no heading-font token, so headings and the site title are
@@ -234,7 +256,10 @@ header.header img {
   background: var(--sl-color-white);
   color: var(--sl-color-bg);
 }
-.cta--primary:hover { background: var(--sl-color-accent-high); color: #131c2e; }
+.cta--primary:hover {
+  background: var(--sentinel-cta-hover-bg);
+  color: var(--sentinel-cta-hover-text);
+}
 .cta--ghost {
   color: var(--sl-color-text);
   border: 1px solid var(--sl-color-hairline);
@@ -278,8 +303,8 @@ main:has(.splash-grid) > .content-panel:first-child { display: none; }
   color: var(--sl-color-bg);
 }
 .sl-markdown-content a.cta--primary:hover {
-  background: var(--sl-color-accent-high);
-  color: #131c2e;
+  background: var(--sentinel-cta-hover-bg);
+  color: var(--sentinel-cta-hover-text);
 }
 .sl-markdown-content a.cta--ghost {
   color: var(--sl-color-text);

@@ -16,16 +16,16 @@ Runbooks for the credentials the engine holds and the checks that prove the pipe
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the autofix workflow presents to `/autofix-result`; scoped to a single dispatch, not reusable |
 
-The routine trigger token also has a copy in 1Password and is never stored in this repo.
+The routine trigger token is never stored in this repo; keep the only other copy in your password manager.
 
 ## Runbook: rotating the GitHub App private key
 
 1. Generate a second private key in the GitHub App settings. GitHub Apps allow two active keys at once, so this rotation is zero-downtime: the old key keeps authenticating while the new one rolls out.
 2. Update the key everywhere it lives, one place at a time:
-   - **1Password:** update the stored copy manually.
+   - **Your password manager:** update the stored copy manually.
    - **Actions secret** (mints the App installation token the workflow uses to check out the target repo and publish PRs):
      ```bash
-     gh secret set AUTOFIX_APP_PRIVATE_KEY --repo sentasity/sentinel < new-private-key.pem
+     gh secret set AUTOFIX_APP_PRIVATE_KEY --repo "$ENGINE_REPO" < new-private-key.pem
      ```
      (or via the repo's Settings > Secrets and variables > Actions in the web UI)
    - **SSM parameter** (read by the receiver at cold start). `scripts/put-parameters.sh` writes all five receiver secrets together and its `put()` helper hard-exits the moment any of them is unset, so it is not a safe tool for rotating this one key alone unless you also have the other four ready to supply in the same run. Update the parameter directly instead:
@@ -39,7 +39,7 @@ The routine trigger token also has a copy in 1Password and is never stored in th
      ```
 3. Confirm the new key is actually the one in place, not just that GitHub accepts requests (both keys stay valid until you delete one, so a dispatch succeeding proves nothing about which key was used):
    - SSM: `aws ssm get-parameter --name /sentinel/github-app-private-key --with-decryption --region us-east-1 --query Parameter.Value --output text`, and diff the output against the new key file.
-   - Actions secret: GitHub never returns a secret's value, so check `gh secret list --repo sentasity/sentinel` and confirm `AUTOFIX_APP_PRIVATE_KEY`'s `Updated` column reflects the change you just made.
+   - Actions secret: GitHub never returns a secret's value, so check `gh secret list --repo "$ENGINE_REPO"` and confirm `AUTOFIX_APP_PRIVATE_KEY`'s `Updated` column reflects the change you just made.
    - Run the proof point below (or wait for a real dispatch) and confirm the "Mint App installation token" step and the Publish step both succeed, i.e. a PR actually opens.
 4. Only once all three checks in step 3 pass, delete the old key from the App settings.
 
@@ -70,12 +70,13 @@ jq -n --arg sha "$RELEASE_SHA" '{
     "callback_url": "REPLACE_WITH_FUNCTION_URL/autofix-result",
     "callback_token": "proofpoint-invalid-token"
   }
-}' | gh api repos/sentasity/sentinel/dispatches --input -
+}' | gh api "repos/$ENGINE_REPO/dispatches" --input -
 ```
 
-Export `AUTOFIX_TARGET_OWNER`, `AUTOFIX_TARGET_NAME`, and `AUTOFIX_TARGET_BRANCH` to
-the same values the repository variables carry before running this; unset, they
-expand to an empty repository name and the `gh api` call fails.
+Export `ENGINE_REPO` (the `owner/name` of your own deployment of this engine) along
+with `AUTOFIX_TARGET_OWNER`, `AUTOFIX_TARGET_NAME`, and `AUTOFIX_TARGET_BRANCH`, set to
+the same values the repository variables carry. Unset, they expand to an empty
+repository name and the `gh api` call fails.
 
 `cited_files` must name a file that really exists in the target repo at that
 SHA: the workflow diffs exactly those paths to build the drift context, and a

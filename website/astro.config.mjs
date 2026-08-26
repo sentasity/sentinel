@@ -44,6 +44,12 @@ export default defineConfig({
       components: {
         Footer: './src/components/Footer.astro',
       },
+      // A docs site with no way to correct it reads as a brochure. Both of these are
+      // conventions readers of open-source documentation look for.
+      editLink: {
+        baseUrl: 'https://github.com/sentasity/sentinel/edit/main/website/',
+      },
+      lastUpdated: true,
       social: [
         {
           icon: 'github',

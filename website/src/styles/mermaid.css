@@ -1,7 +1,9 @@
 /* Mermaid branding. Loaded after theme.css so it can read the tokens defined
- * there. Node fills are the raised surface on a steel stroke; edges are muted;
- * amber is reserved for the one element a diagram wants to emphasise and is
- * never a default node colour. */
+ * there. A node is identified by its stroke rather than its fill, because the
+ * fill sits close to the page ground in both themes by design; the stroke and the
+ * edges therefore use dedicated tokens that clear the 3:1 non-text contrast bar.
+ * Amber is reserved for the one element a diagram wants to emphasise and is never
+ * a default node colour. */
 
 .mermaid svg {
   max-width: 100%;
@@ -14,7 +16,7 @@
 .mermaid .node ellipse,
 .mermaid .cluster rect {
   fill: var(--sl-color-gray-6) !important;
-  stroke: var(--sl-color-gray-5) !important;
+  stroke: var(--sentinel-diagram-stroke) !important;
 }
 
 .mermaid .node .label,
@@ -27,11 +29,11 @@
 
 .mermaid .edgePath .path,
 .mermaid .flowchart-link {
-  stroke: var(--sl-color-gray-4) !important;
+  stroke: var(--sentinel-diagram-edge) !important;
 }
 .mermaid marker path {
-  fill: var(--sl-color-gray-4) !important;
-  stroke: var(--sl-color-gray-4) !important;
+  fill: var(--sentinel-diagram-edge) !important;
+  stroke: var(--sentinel-diagram-edge) !important;
 }
 
 /* Mermaid's own edge-label background is transparent (set in mermaidConfig), so
