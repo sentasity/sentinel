@@ -9,7 +9,7 @@
   "first_seen": "2026-08-06T15:16:28.659Z",
   "last_seen": "2026-08-06T15:16:28.000Z",
   "frames": [
-    {"filename": "example_app/services/accounts.py", "function": "restore_session", "lineno": 229},
+    {"filename": "checkout/services/accounts.py", "function": "capture_intent", "lineno": 229},
     {"filename": "botocore/client.py", "function": "_api_call", "lineno": 606},
     {"filename": "botocore/context.py", "function": "wrapper", "lineno": 123},
     {"filename": "botocore/client.py", "function": "_make_api_call", "lineno": 1094}

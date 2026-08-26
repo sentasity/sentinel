@@ -27,8 +27,8 @@
             "platform": "native",
             "project": {
                 "id": "1000000000000003",
-                "name": "backend-api",
-                "slug": "backend-api",
+                "name": "checkout",
+                "slug": "checkout",
                 "platform": "python-fastapi"
             },
             "type": "default",
@@ -189,7 +189,7 @@
             "metadata": {
                 "value": "(psycopg2.errors.SyntaxError) syntax error at or near \":\"\nLINE 5: ...                             shareable_accounts = :shareable...\n                                                             ^\n\n[SQL: \n                            UPDATE customer_credits\n                            SET sharing_enabled = %(sharing_enabled)s,\n                                credit_sharing_type = %(sharing_type)s,\n                                shareable_accounts = :shareable::jsonb,\n                                updated_at = NOW()\n                            WHERE payer_account_id = %(payer)s\n                              AND credit_id = %(credit_id)s\n                            ]\n[parameters: {'sharing_enabled': True, 'sharing_type': 'DISABLED', 'payer': '100000000001', 'credit_id': '10000000001'}]\n(Background on this error at: https://sqlalche.me/e/20/f405)",
                 "type": "ProgrammingError",
-                "filename": "example_app/handlers/orchestrator/handler.py",
+                "filename": "checkout/handlers/orchestrator/handler.py",
                 "function": "_refresh_sharing_from_payer_view",
                 "in_app_frame_mix": "mixed",
                 "sdk": {
@@ -260,8 +260,8 @@
             "platform": "native",
             "project": {
                 "id": "1000000000000006",
-                "name": "scanners",
-                "slug": "scanners",
+                "name": "checkout",
+                "slug": "checkout",
                 "platform": "python"
             },
             "type": "default",
