@@ -68,15 +68,49 @@ MAX_TURNS = 80
 # dropped before anything is printed. This job's log, its step summary, and
 # the pull request it annotates are all public, so a value smuggled into an
 # "excerpt" or "value" field would republish exactly what the finding is
-# complaining about, in a place with no history to rewrite. The prompt says
-# not to quote values; this is the half that does not depend on the model
-# having listened.
+# complaining about, in a place with no history to rewrite.
+#
+# This covers the fields nobody prints. The three that are free text and do get
+# printed, title, why, and fix, are covered by SECRET_SHAPES below. Between
+# them, "never quote the value" does not depend on the model having listened.
 FINDING_KEYS = ("file", "line", "severity", "kind", "title", "why", "fix")
 
 # Severities that do not fail the check. Anything unrecognized is read as
 # "high", so a typo or an invented severity can never downgrade a finding.
 SOFT_SEVERITIES = ("medium", "low")
 FIELD_MAX_CHARS = 300
+
+# Shapes that must never be printed, whatever the session intended.
+#
+# The FINDING_KEYS whitelist above stops a value smuggled into an extra field,
+# but title, why, and fix are free text and are printed, so without this the
+# whole "never quote the value" guarantee rests on the model's compliance for
+# the one channel that actually reaches the public log. The scan raised this
+# against its own runner, and it was right: the comment on FINDING_KEYS claimed
+# a property only half the fields had.
+#
+# Tuned to redact rather than to detect. A false positive costs a reader one
+# trip to the cited file; a false negative republishes a secret.
+SECRET_SHAPES = re.compile(
+    r"""
+      -----BEGIN[A-Z ]*PRIVATE\ KEY-----      # any PEM private key header
+    | \b(?:AKIA|ASIA)[0-9A-Z]{16}\b           # AWS access key id
+    | \bgh[pousr]_[A-Za-z0-9]{20,}            # GitHub token
+    | \bsntry[su]_[A-Za-z0-9]{20,}            # Sentry auth token
+    | \bxox[abposr]-[A-Za-z0-9-]{10,}         # Slack token
+    | \beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}   # JWT
+    | op://\S+                                # 1Password secret reference
+    | arn:aws:\S*:\d{12}:\S*                  # ARN, account id and all
+    | \b\d{12}\b                              # bare AWS account id
+    | \b[0-9a-f]{32,}\b                       # hex ids, hashes, commit SHAs
+    | \b[A-Za-z0-9+/]{40,}={0,2}\b            # long opaque base64-ish runs
+    """,
+    re.VERBOSE,
+)
+
+# Named, not blank: a value that vanishes silently reads as prose that was
+# never there.
+REDACTED = "[redacted: secret-shaped]"
 
 FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 
@@ -86,13 +120,18 @@ MARKER_RE = re.compile(r"<<(SCOPE|FILE_LIST|DIFF|ALLOWLIST|SESSION_TOKEN)>>")
 
 
 def flat(text, limit: int = FIELD_MAX_CHARS) -> str:
-    """One capped single-line field, safe to print in the Actions log.
+    """One capped, redacted, single-line field, safe to print.
 
-    `::` is neutralized because every rendered field lands on a ::error:: or
-    ::warning:: line, outside the ::stop-commands:: guard the transcript uses,
-    where a finding could otherwise forge a workflow command.
+    Redaction runs on the whole flattened value before the cap, so a secret
+    cannot survive by sitting past the truncation point and then being pulled
+    back in by a shorter neighbouring field.
+
+    `::` is neutralized last because every rendered field lands on a ::error::
+    or ::warning:: line, outside the ::stop-commands:: guard the transcript
+    uses, where a finding could otherwise forge a workflow command.
     """
     value = " ".join(str(text if text is not None else "").split())
+    value = SECRET_SHAPES.sub(REDACTED, value)
     if len(value) > limit:
         value = value[: limit - 1] + "…"
     return value.replace("::", ":.:")

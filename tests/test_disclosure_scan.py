@@ -17,6 +17,7 @@ import yaml
 from runner.disclosure_runner import (
     DENIED_TOOLS,
     FINDING_KEYS,
+    REDACTED,
     SCAN_TOOLS,
     build_options_kwargs,
     build_task_prompt,
@@ -374,6 +375,79 @@ def test_a_field_carrying_the_value_never_reaches_the_output():
 
     assert set(out) == set(FINDING_KEYS)
     assert "sntrys_the_actual_secret" not in json.dumps(out)
+
+
+def fixture_secret(*parts: str) -> str:
+    """A secret-shaped test fixture, assembled at run time.
+
+    Written as one literal, several of these are flagged by GitHub push
+    protection and by this repo's own gitleaks job. That is the correct call on
+    their part: neither can tell a fabricated fixture from a live credential,
+    and a repo whose answer is to allowlist its way past the warning has taught
+    itself exactly the reflex this whole check exists to prevent. Joining the
+    parts here exercises the pattern under test against the complete string
+    without a matching literal ever reaching the tree.
+
+    None of these are real. Every one is either an all-repeating body or a
+    vendor's own published example.
+    """
+    return "".join(parts)
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        fixture_secret("gh", "p_", "a" * 36),
+        fixture_secret("AKIA", "IOSFODNN7EXAMPLE"),
+        fixture_secret("sntry", "s_", "a" * 32),
+        fixture_secret("xox", "b-1111111111-abcdefghijklmnop"),
+        fixture_secret("op:", "//Vault/item/credential"),
+        fixture_secret("arn:aws:iam:", ":123456789012:role/Deploy"),
+        "123456789012",
+        fixture_secret("eyJ", "hbGciOiJIUzI1NiJ9.", "eyJzdWIiOiIxIn0.", "dozjgNryP4J3jVmNHl0w5N"),
+        fixture_secret("-----BEGIN RSA ", "PRIVATE KEY-----"),
+        "d41d8cd98f00b204e9800998ecf8427e",
+    ],
+)
+def test_a_secret_shaped_string_is_redacted_from_a_printed_field(secret):
+    """title, why, and fix are free text and are printed, so the no-quoting
+    rule cannot rest on the model's compliance for exactly the channel that
+    reaches the public log. Raised by the scan against its own runner."""
+    out = normalize({"file": "docs/SETUP.md", "severity": "high", "why": f"it carries {secret}"})
+
+    assert secret not in out["why"]
+    assert REDACTED in out["why"]
+
+
+def test_ordinary_finding_prose_survives_redaction():
+    """Redaction that eats the explanation makes every finding unactionable."""
+    out = normalize(
+        {
+            "file": "docs/SETUP.md",
+            "severity": "high",
+            "title": "live organization slug in a setup step",
+            "why": "a stranger following this runbook would be pointed at the operator's real org",
+            "fix": "replace with a placeholder and say what it stands for",
+        }
+    )
+
+    for field in ("title", "why", "fix"):
+        assert REDACTED not in out[field]
+
+
+def test_a_secret_cannot_survive_by_sitting_past_the_length_cap():
+    """Redaction runs on the whole value, before truncation."""
+    padding = "a real deployment detail sits here. " * 20
+    out = normalize({"file": "a.md", "why": padding + "op://Vault/item/credential"})
+
+    assert "op://" not in out["why"]
+
+
+def test_the_summary_is_redacted_too(summary, capsys):
+    report({"summary": "found op://Vault/item/credential in the docs", "findings": []})
+
+    assert "op://" not in summary.read_text()
+    assert "op://" not in capsys.readouterr().out
 
 
 def test_an_unrecognized_severity_is_read_as_high():
