@@ -22,6 +22,12 @@ docs/brand/options/
 # this glob, so templates stay tracked.
 config/*.yaml
 
+# The private ban list tests/test_public_tree.py reads; mirrored into the
+# SENTINEL_BANNED_PATTERNS Actions secret. `*.local.*` above already covers
+# it, but tracking this file would publish the index it exists to withhold,
+# so it is named here too rather than left to one glob.
+config/banned.local.txt
+
 # documentation site build output
 website/node_modules/
 website/dist/

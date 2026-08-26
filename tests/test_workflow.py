@@ -238,8 +238,18 @@ def test_the_lambda_runtime_is_in_the_test_matrix():
 
 
 def test_the_test_job_needs_no_credentials():
-    """A suite that needs secrets cannot run on a fork's pull request."""
+    """A suite that needs secrets cannot run on a fork's pull request, where
+    GitHub withholds them. One step is allowed to read one: the private ban
+    list is a secret by design, so that step must be guarded to skip a fork's
+    run, and the suite must stay green without it."""
     doc = yaml.safe_load(TESTS_WORKFLOW.read_text())
 
     assert doc["permissions"] == {"contents": "read"}
-    assert "secrets." not in TESTS_WORKFLOW.read_text()
+    for step in doc["jobs"]["pytest"]["steps"]:
+        if "secrets." not in yaml.safe_dump(step):
+            continue
+        assert step["name"] == "Materialize the private ban list"
+        assert (
+            "github.event.pull_request.head.repo.full_name == github.repository"
+            in step["if"]
+        )

@@ -79,6 +79,11 @@ secrets. Neither ever appears in the config file, which carries only a reference
 parameter name. The full inventory and the rotation runbooks are in
 [Runbooks](/sentinel/operate/runbooks/).
 
+One non-credential is held the same way: the ban list `tests/test_public_tree.py`
+enforces splits its generic patterns, which are tracked, from the literals that would
+identify a real deployment, which live in an untracked local file mirrored by an
+Actions secret. A tracked ban list would be an index of everything it protects.
+
 ## The disclosure scan reads and nothing else
 
 A third unattended session sweeps the repository before anything is published from it,

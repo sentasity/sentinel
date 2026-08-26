@@ -36,6 +36,20 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
+      # The deployment-identifying ban patterns are a secret, not a tracked
+      # file: a public ban list is an index of what it protects. A fork's run
+      # is not given the secret and skips this step, so it tests the generic
+      # patterns only — the same posture a stranger's clone gets locally.
+      # Where the secret should exist, SENTINEL_REQUIRE_BANNED_LOCAL makes an
+      # empty or missing list fail the suite instead of narrowing it quietly.
+      - name: Materialize the private ban list
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          BANNED_PATTERNS: ${{ secrets.SENTINEL_BANNED_PATTERNS }}
+        run: |
+          printf '%s\n' "$BANNED_PATTERNS" > config/banned.local.txt
+          echo "SENTINEL_REQUIRE_BANNED_LOCAL=1" >> "$GITHUB_ENV"
+
       # No AWS credentials and no Docker: the CDK tests synthesize a template
       # in-process, and the receiver tests stub boto3. The real config is
       # untracked, so this runs against exactly what a stranger clones.
