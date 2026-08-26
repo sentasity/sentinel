@@ -44,7 +44,15 @@ function render(el: any): string {
           toggleTitleFor(el.id),
         )}</summary><div class="ac__body">${inner}</div></details>`;
       }
-      const cls = el.style === 'attention' ? 'ac__attention' : 'ac__body';
+      // receiver/cards.py's SEVERITY_STYLES uses three of Adaptive Cards'
+      // container styles for the severity banner. Each gets its own tint; a
+      // container with no style is just a padded region.
+      const banner: Record<string, string> = {
+        attention: 'ac__banner ac__banner--attention',
+        warning: 'ac__banner ac__banner--warning',
+        emphasis: 'ac__banner ac__banner--emphasis',
+      };
+      const cls = banner[el.style] ?? 'ac__body';
       return `<div class="${cls}">${inner}</div>`;
     }
     case 'ColumnSet':
@@ -77,7 +85,33 @@ function toggleTitleFor(id: string | undefined): string {
   return a?.title ?? 'Details';
 }
 
-const bodyHtml = (card.body ?? []).map(render).join('');
+// Teams gives the card a padded content region. The goldens put the title, the
+// FactSet, and the action at the card's top level rather than inside a Container,
+// so anything that is not itself a Container gets grouped into one here. Without
+// this the banner and the action are inset while the title and facts run flush to
+// the card's edge, which reads as broken padding against a rounded corner.
+function renderBody(elements: any[]): string {
+  const out: string[] = [];
+  let loose: any[] = [];
+  const flush = () => {
+    if (loose.length) {
+      out.push(`<div class="ac__body">${loose.map(render).join('')}</div>`);
+      loose = [];
+    }
+  };
+  for (const el of elements) {
+    if (el?.type === 'Container') {
+      flush();
+      out.push(render(el));
+    } else {
+      loose.push(el);
+    }
+  }
+  flush();
+  return out.join('');
+}
+
+const bodyHtml = renderBody(card.body ?? []);
 const actions: string[] = (card.actions ?? [])
   .filter((a: any) => a.type !== 'Action.ToggleVisibility')
   .map((a: any) => a.title);
@@ -109,19 +143,25 @@ const actions: string[] = (card.actions ?? [])
     line-height: 1.45;
     max-width: 34rem;
   }
-  .ac__attention {
-    background: #fce8e6;
+  .ac__banner {
     padding: 0.55rem 0.85rem;
     display: flex;
     align-items: center;
     gap: 0.6rem;
     font-weight: 700;
   }
+  .ac__banner--attention { background: #fce8e6; }
+  .ac__banner--warning { background: #fdf3e2; }
+  .ac__banner--emphasis { background: #eef0f2; }
   .ac__row { display: flex; align-items: center; gap: 0.6rem; width: 100%; }
   .ac__body { padding: 0.8rem 0.85rem 0.9rem; }
+  .ac__body > :last-child { margin-bottom: 0; }
+  /* Teams keeps the action inside the card's content region, so the two must not
+     each contribute a bottom padding. */
+  .ac__body:has(+ .ac__actions) { padding-bottom: 0; }
   .ac__text { margin: 0 0 0.6rem; }
   .ac__text--bolder { font-weight: 700; }
-  .ac__attention .ac__text { margin: 0; }
+  .ac__banner .ac__text { margin: 0; }
   .ac__facts {
     display: grid;
     grid-template-columns: auto 1fr;
