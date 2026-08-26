@@ -147,11 +147,19 @@ header.header img {
 
 /* The home hero carries the full wire-and-moon lockup. It needs width to work,
  * which is why it appears there and nowhere else on the site. */
+/* The wide lockup was drawn to run a full column width: the wire reaches both
+ * edges rather than stopping inside a padded box. Capping it would centre a
+ * short wire in a wide space, so it spans the whole content column. */
 .hero-lockup {
   display: block;
-  width: min(520px, 100%);
+  width: 100%;
   height: auto;
-  margin: 0 0 2.25rem;
+  margin: 0 0 2.75rem;
+}
+.hero-lockup svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .eyebrow {
   font-family: var(--sl-font-mono);
