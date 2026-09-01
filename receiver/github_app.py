@@ -46,6 +46,7 @@ class GitHubAppClient:
         self.app_id = app_id
         self.private_key_pem = private_key_pem
         self.session = requests.Session()
+        self._slug = ""  # lazily fetched; empty until the first successful fetch
 
     def _app_jwt(self) -> str:
         now = int(time.time())
@@ -99,3 +100,43 @@ class GitHubAppClient:
         except Exception as exc:  # noqa: BLE001 - auth/transport must classify, not crash
             LOG.error("autofix token mint failed for %s: %s", repo, exc)
             return None
+
+    def app_slug(self) -> str:
+        """The App's own slug; "<slug>[bot]" is the login its PRs carry.
+
+        Fetched once per container and cached; "" on failure, and a failure
+        is not cached so the next call retries.
+        """
+        if self._slug:
+            return self._slug
+        try:
+            got = self.session.get(
+                f"{API_BASE}/app",
+                headers=self._headers(self._app_jwt()),
+                timeout=TIMEOUT_SECONDS,
+            )
+            got.raise_for_status()
+            self._slug = str(got.json().get("slug") or "")
+        except Exception as exc:  # noqa: BLE001 - verification degrades, never crashes
+            LOG.error("app slug fetch failed: %s", exc)
+            return ""
+        return self._slug
+
+    def pr_author(self, repo: str, number: int) -> str:
+        """The login that authored PR `number` in `repo`; "" on any failure.
+
+        Read with a token downscoped to pull_requests:read: authorship
+        verification must not itself hold a write credential.
+        """
+        try:
+            token = self._installation_token(repo, {"pull_requests": "read"})["token"]
+            got = self.session.get(
+                f"{API_BASE}/repos/{repo}/pulls/{number}",
+                headers=self._headers(token),
+                timeout=TIMEOUT_SECONDS,
+            )
+            got.raise_for_status()
+            return str((got.json().get("user") or {}).get("login") or "")
+        except Exception as exc:  # noqa: BLE001 - verification degrades, never crashes
+            LOG.error("pr author fetch failed for %s#%s: %s", repo, number, exc)
+            return ""

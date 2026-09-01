@@ -91,3 +91,53 @@ def test_a_2xx_body_missing_the_token_key_returns_none_never_raises(encode):
     session.post.return_value = response(201, {})
 
     assert client_with(session).mint_autofix_token(REPO) is None
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_the_app_slug_is_fetched_once_and_cached(encode):
+    session = MagicMock()
+    session.get.return_value = response(200, {"slug": "acme-autofix"})
+    client = client_with(session)
+
+    assert client.app_slug() == "acme-autofix"
+    assert client.app_slug() == "acme-autofix"
+
+    assert session.get.call_count == 1
+    assert session.get.call_args.args[0] == "https://api.github.com/app"
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_failed_slug_fetch_returns_empty_and_is_not_cached(encode):
+    session = MagicMock()
+    session.get.side_effect = [OSError("reset"), response(200, {"slug": "acme-autofix"})]
+    client = client_with(session)
+
+    assert client.app_slug() == ""
+    assert client.app_slug() == "acme-autofix"
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_pr_author_reads_with_a_read_only_token(encode):
+    session = MagicMock()
+    session.get.side_effect = [
+        response(200, {"id": 77}),                        # installation lookup
+        response(200, {"user": {"login": "acme-autofix[bot]"}}),  # the PR
+    ]
+    session.post.return_value = response(201, {"token": "ghs_read"})
+
+    author = client_with(session).pr_author(REPO, 42)
+
+    assert author == "acme-autofix[bot]"
+    mint = session.post.call_args
+    assert mint.kwargs["json"]["permissions"] == {"pull_requests": "read"}
+    fetch = session.get.call_args_list[1]
+    assert fetch.args[0] == f"https://api.github.com/repos/{REPO}/pulls/42"
+    assert fetch.kwargs["headers"]["Authorization"] == "Bearer ghs_read"
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_pr_author_returns_empty_on_any_failure(encode):
+    session = MagicMock()
+    session.get.side_effect = OSError("reset")
+
+    assert client_with(session).pr_author(REPO, 42) == ""
