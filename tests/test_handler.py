@@ -1260,9 +1260,16 @@ def test_a_legitimate_underscored_pr_url_still_produces_a_working_link(
 
     assert response["statusCode"] == 200
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "https://github.com/" in reply
-    assert "(missing PR URL)" not in reply
-    assert reply.count("https://") == 1
+    # Pinned to the exact verified reply (with the underscore
+    # percent-encoded, same as safe_callback_url always does for display),
+    # not just "some link survived": a verification that read the encoded
+    # pr_url instead of the raw one would fail to match this underscored
+    # repo against PR_URL_RE, fall through to the unverified warning, and
+    # still contain a single "https://github.com/" with no
+    # "(missing PR URL)" in it, so a looser assertion here would not catch
+    # that regression.
+    encoded_url = handler.safe_callback_url(good_url, field="pr_url")
+    assert reply == f"Autofix PR opened: {encoded_url}"
 
 
 @patch("receiver.handler.github_client")
