@@ -160,9 +160,12 @@ def test_a_github_directory_citation_is_declined_regardless_of_config(tmp_path):
     payload = load_fixture("findings-payload-v2.json")
     payload["results"][0]["evidence"][0]["file"] = ".github/workflows/deploy.yml"
     doc = parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
-    body = (VALID + AUTOFIX).replace('exclude_paths:\n        - "infra/**"', "exclude_paths: []")
+    body = (VALID + AUTOFIX).replace('- "infra/**"', "")
+    assert body != VALID + AUTOFIX  # the substitution above must actually fire
+    cfg = cfg_enabled(tmp_path, body)
+    assert cfg.autofix_exclude_paths == ()  # so the decline below can't come from operator config
 
-    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path, body), store=open_store())
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg, store=open_store())
 
     assert not decision.passed
     assert ".github/workflows/deploy.yml" in decision.reason
