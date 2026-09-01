@@ -1,15 +1,15 @@
-"""GitHub App auth and repository_dispatch client for the autofix workflow.
+"""GitHub App auth: mints scoped installation tokens for autofix sessions.
 
-Modeled on receiver.routines.RoutineClient: never raises out of dispatch();
-outcomes classify, the caller decides. The App's installation token is
-minted per dispatch and never persisted.
+Modeled on receiver.routines.RoutineClient's posture: public methods never
+raise; a failure returns None and the caller decides. Tokens are minted per
+grant and never persisted.
 """
 
 from __future__ import annotations
 
-import enum
 import logging
 import time
+from dataclasses import dataclass
 
 import jwt
 import requests
@@ -23,17 +23,24 @@ TIMEOUT_SECONDS = 15
 # App JWTs may live at most 10 minutes; 8 leaves clock-skew margin.
 JWT_TTL_SECONDS = 8 * 60
 
+# The whole autofix permission grant. `workflows` is deliberately absent: a
+# workflow-file change pushed to a branch runs in CI, with access to the
+# repository's secrets, before any human reviews the PR. The gate's
+# forbidden-path check declines such findings early, but this scope is the
+# enforcement: a token minted from this dict cannot push one.
+AUTOFIX_PERMISSIONS = {"contents": "write", "pull_requests": "write"}
 
-class DispatchOutcome(enum.Enum):
-    """What a dispatch attempt did, from the caller's point of view."""
 
-    DISPATCHED = "dispatched"
-    RETRYABLE = "retryable"
-    REJECTED = "rejected"
+@dataclass(frozen=True)
+class MintedToken:
+    """One scoped installation token and when GitHub will kill it."""
+
+    token: str
+    expires_at: str  # ISO-8601, straight from the GitHub response
 
 
 class GitHubAppClient:
-    """Mints installation tokens and fires repository_dispatch as the App."""
+    """Mints installation tokens scoped to one repository."""
 
     def __init__(self, app_id: str, private_key_pem: str):
         self.app_id = app_id
@@ -56,8 +63,9 @@ class GitHubAppClient:
             "X-GitHub-Api-Version": API_VERSION,
         }
 
-    def _installation_token(self, repo: str) -> str:
-        """A one-hour token scoped to `repo`'s installation. Raises on failure."""
+    def _installation_token(self, repo: str, permissions: dict[str, str]) -> dict:
+        """Mint a token for `repo`'s installation, downscoped to exactly
+        `permissions` and to that one repository. Raises on failure."""
         app_jwt = self._app_jwt()
         lookup = self.session.get(
             f"{API_BASE}/repos/{repo}/installation",
@@ -68,34 +76,26 @@ class GitHubAppClient:
         minted = self.session.post(
             f"{API_BASE}/app/installations/{lookup.json()['id']}/access_tokens",
             headers=self._headers(app_jwt),
+            json={
+                "repositories": [repo.split("/", 1)[1]],
+                "permissions": permissions,
+            },
             timeout=TIMEOUT_SECONDS,
         )
         minted.raise_for_status()
-        return minted.json()["token"]
+        return minted.json()
 
-    def dispatch(self, repo: str, event_type: str, client_payload: dict) -> DispatchOutcome:
-        """Fire repository_dispatch on `repo`. Never raises.
+    def mint_autofix_token(self, repo: str) -> MintedToken | None:
+        """A one-hour token scoped to `repo` with AUTOFIX_PERMISSIONS.
 
-        GitHub caps client_payload at 10 top-level properties; the autofix
-        payload uses exactly 10, so any new field must replace one.
+        None on any failure. Never raises: minting happens inside the
+        findings-delivery path, where an exception would cost the reply.
         """
         try:
-            token = self._installation_token(repo)
-            fired = self.session.post(
-                f"{API_BASE}/repos/{repo}/dispatches",
-                headers=self._headers(token),
-                json={"event_type": event_type, "client_payload": client_payload},
-                timeout=TIMEOUT_SECONDS,
-            )
+            body = self._installation_token(repo, AUTOFIX_PERMISSIONS)
         except Exception as exc:  # noqa: BLE001 - auth/transport must classify, not crash
-            LOG.warning("dispatch transport or auth error: %s", exc)
-            return DispatchOutcome.RETRYABLE
-
-        if fired.status_code == 204:
-            return DispatchOutcome.DISPATCHED
-        if 500 <= fired.status_code < 600:
-            return DispatchOutcome.RETRYABLE
-        LOG.error(
-            "dispatch rejected: HTTP %s %s", fired.status_code, (fired.text or "")[:500]
+            LOG.error("autofix token mint failed for %s: %s", repo, exc)
+            return None
+        return MintedToken(
+            token=body["token"], expires_at=str(body.get("expires_at") or "")
         )
-        return DispatchOutcome.REJECTED
