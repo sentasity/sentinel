@@ -82,3 +82,12 @@ def test_a_transport_error_returns_none_never_raises(encode):
     session.get.side_effect = OSError("connection reset")
 
     assert client_with(session).mint_autofix_token(REPO) is None
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_2xx_body_missing_the_token_key_returns_none_never_raises(encode):
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(201, {})
+
+    assert client_with(session).mint_autofix_token(REPO) is None

@@ -93,9 +93,9 @@ class GitHubAppClient:
         """
         try:
             body = self._installation_token(repo, AUTOFIX_PERMISSIONS)
+            return MintedToken(
+                token=body["token"], expires_at=str(body.get("expires_at") or "")
+            )
         except Exception as exc:  # noqa: BLE001 - auth/transport must classify, not crash
             LOG.error("autofix token mint failed for %s: %s", repo, exc)
             return None
-        return MintedToken(
-            token=body["token"], expires_at=str(body.get("expires_at") or "")
-        )
