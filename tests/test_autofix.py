@@ -50,7 +50,7 @@ def test_a_confident_contained_finding_passes(tmp_path):
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
 
     assert decision.passed
-    assert decision.disposition == "Autofix: dispatching."
+    assert decision.disposition == "Autofix: attempting a fix in this session."
 
 
 def test_disabled_gate_declines_with_no_disposition_line(tmp_path):
@@ -152,3 +152,28 @@ def test_completion_replies_cover_every_callback_status():
 
     assert "https://pr" in completion_reply("pr_opened", pr_url="https://pr")
     assert "https://run" in completion_reply("failed", run_url="https://run")
+
+
+def test_a_github_directory_citation_is_declined_regardless_of_config(tmp_path):
+    # exclude_paths is emptied here on purpose: the decline must come from
+    # the hard-coded FORBIDDEN_PATHS, not from operator config.
+    payload = load_fixture("findings-payload-v2.json")
+    payload["results"][0]["evidence"][0]["file"] = ".github/workflows/deploy.yml"
+    doc = parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
+    body = (VALID + AUTOFIX).replace('exclude_paths:\n        - "infra/**"', "exclude_paths: []")
+
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path, body), store=open_store())
+
+    assert not decision.passed
+    assert ".github/workflows/deploy.yml" in decision.reason
+
+
+def test_the_pass_disposition_names_the_session_not_a_dispatch():
+    assert GateDecision(True).disposition == "Autofix: attempting a fix in this session."
+
+
+def test_the_failed_reply_no_longer_claims_a_workflow_ran():
+    text = completion_reply("failed", run_url="https://example.test/run")
+
+    assert "Workflow" not in text
+    assert "https://example.test/run" in text
