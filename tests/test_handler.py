@@ -639,64 +639,108 @@ def autofix_row():
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_passing_finding_dispatches_and_says_so_in_the_thread(
+def test_a_passing_finding_vends_a_token_and_says_so_in_the_thread(
     config, alert_store, bot_client, github_client, tmp_path
 ):
-    from receiver.github_app import DispatchOutcome
+    from receiver.github_app import MintedToken
+    from receiver.store import AlertStore
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
-    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    cfg = load_config(write(tmp_path, VALID + AUTOFIX))
+    config.return_value = cfg
     store = alert_store.return_value
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.dispatch.return_value = DispatchOutcome.DISPATCHED
+    github_client.return_value.mint_autofix_token.return_value = MintedToken(
+        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
+    )
 
     response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
     assert response["statusCode"] == 200
-    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
-    assert "Autofix: dispatching." in json.dumps(card)
+    assert response["headers"]["content-type"] == "application/json"
+    block = json.loads(response["body"])["autofix"]
+    # The key set is a contract with the session prompt, which reads these
+    # names verbatim, so pin the whole shape rather than the fields in use.
+    assert set(block) == {
+        "repo",
+        "base_branch",
+        "github_token",
+        "github_token_expires_at",
+        "callback_url",
+        "grants",
+    }
+    assert block["repo"] == cfg.target_repo
+    assert block["base_branch"] == cfg.autofix_base_branch
+    assert block["github_token"] == "ghs_vended"
+    assert block["github_token_expires_at"] == "2026-09-01T13:00:00Z"
+    assert block["callback_url"] == cfg.autofix_callback_url
+    assert github_client.return_value.mint_autofix_token.call_args.args == (
+        cfg.target_repo,
+    )
+
+    grant = block["grants"][0]
+    assert set(grant) == {
+        "issue_id",
+        "short_id",
+        "dispatch_id",
+        "callback_token",
+        "cited_files",
+    }
+    assert grant["issue_id"] == autofix_row()["issue_id"]
+    assert grant["short_id"] == "CHECKOUT-4B2"
+    assert grant["dispatch_id"]
+    assert grant["callback_token"]
+
     record = store.put_autofix_dispatch.call_args.args[0]
-    assert record["callback_token_hash"]
-    payload = github_client.return_value.dispatch.call_args.args[2]
-    assert payload["dispatch_id"] == record["dispatch_id"]
-    assert payload["release_sha"] == autofix_row()["release"]
-    assert payload["callback_token"] not in str(record)
+    assert record["dispatch_id"] == grant["dispatch_id"]
+    assert record["callback_token_hash"] == AlertStore.hash_token(grant["callback_token"])
+    # Only the hash is stored: the token itself lives in the response body
+    # and nowhere else, so a table read cannot replay a callback.
+    assert grant["callback_token"] not in str(record)
+
+    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
+    assert "attempting a fix in this session" in json.dumps(card)
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_declined_finding_appends_the_reason_line(
+def test_a_declined_finding_returns_a_null_autofix_block(
     config, alert_store, bot_client, github_client, tmp_path
 ):
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
-    config.return_value = load_config(
+    cfg = load_config(
         write(tmp_path, VALID + AUTOFIX.replace("- checkout", "- frontend"))
     )
+    # The substitution above is what drives the decline, and a no-op replace
+    # would leave this test quietly exercising the opted-in config instead.
+    assert cfg.autofix_projects == ("frontend",)
+    config.return_value = cfg
     store = alert_store.return_value
     store.advance.return_value = True
 
-    deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
+    assert json.loads(response["body"]) == {"autofix": None}
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix declined: project not opted in." in json.dumps(card)
-    github_client.return_value.dispatch.assert_not_called()
+    github_client.return_value.mint_autofix_token.assert_not_called()
+    store.put_autofix_dispatch.assert_not_called()
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_failed_dispatch_reports_decline_and_settles_the_record(
+def test_a_mint_failure_withdraws_the_grant_and_declines_in_the_thread(
     config, alert_store, bot_client, github_client, tmp_path, caplog
 ):
-    from receiver.github_app import DispatchOutcome
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
@@ -705,23 +749,63 @@ def test_a_failed_dispatch_reports_decline_and_settles_the_record(
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.dispatch.return_value = DispatchOutcome.REJECTED
+    github_client.return_value.mint_autofix_token.return_value = None
 
     with caplog.at_level(logging.ERROR):
-        deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+        response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
-    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
-    assert "Autofix declined: dispatch failed." in json.dumps(card)
+    assert json.loads(response["body"]) == {"autofix": None}
     store.advance_autofix.assert_called_once()
     assert store.advance_autofix.call_args.args[1:] == ("dispatched", "failed")
+    assert (
+        store.advance_autofix.call_args.args[0]
+        == store.put_autofix_dispatch.call_args.args[0]["dispatch_id"]
+    )
+    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
+    assert "could not mint a GitHub credential" in json.dumps(card)
+    # The thread must never read "attempting" when no credential exists, which
+    # is only true if the cards post after the mint, not before it.
+    assert "attempting a fix in this session" not in json.dumps(card)
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
 
 
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_failed_thread_post_still_returns_the_grant(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """A chat outage is not a reason to abandon the fix: the findings survived
+    validation, the credential exists, and the reply goes to the retry sweep."""
+    from receiver.github_app import MintedToken
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    github_client.return_value.mint_autofix_token.return_value = MintedToken(
+        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
+    )
+    bot_client.return_value.reply_card_in_thread.side_effect = BotError("teams down")
+
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+
+    block = json.loads(response["body"])["autofix"]
+    assert block["github_token"] == "ghs_vended"
+    assert len(block["grants"]) == 1
+    store.advance_autofix.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
 def test_a_disabled_gate_leaves_the_reply_untouched(
-    config, alert_store, bot_client, tmp_path
+    config, alert_store, bot_client, github_client, tmp_path
 ):
     from tests.test_config import VALID, write
     from receiver.config import load_config
@@ -730,10 +814,12 @@ def test_a_disabled_gate_leaves_the_reply_untouched(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix" not in json.dumps(card)
+    assert json.loads(response["body"]) == {"autofix": None}
+    github_client.return_value.mint_autofix_token.assert_not_called()
 
 
 @patch("receiver.handler.github_client")
@@ -763,7 +849,8 @@ def test_a_gate_crash_never_costs_the_findings_reply(
     bot_client.return_value.reply_card_in_thread.assert_called_once()
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix" not in json.dumps(card)
-    github_client.return_value.dispatch.assert_not_called()
+    assert json.loads(response["body"]) == {"autofix": None}
+    github_client.return_value.mint_autofix_token.assert_not_called()
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
 
 

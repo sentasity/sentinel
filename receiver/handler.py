@@ -28,11 +28,10 @@ from receiver.config import (
 from receiver.findings import (
     InvalidFindings,
     parse_findings,
-    render_reply,
     render_reply_card,
     reply_summary,
 )
-from receiver.github_app import DispatchOutcome, GitHubAppClient
+from receiver.github_app import GitHubAppClient
 from receiver.investigation import enqueue_investigation
 from receiver.models import InvalidAlertPayload, parse_alert
 from receiver.observability import (
@@ -125,6 +124,14 @@ def respond(status: int, body: str = "") -> dict:
         "statusCode": status,
         "headers": {"content-type": "text/plain"},
         "body": body,
+    }
+
+
+def respond_json(status: int, body: dict) -> dict:
+    return {
+        "statusCode": status,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(body),
     }
 
 
@@ -258,13 +265,13 @@ def handle_probe(event: dict) -> dict:
     return respond(200, "ok")
 
 
-def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
-    """Run the gate for one delivered result; dispatch on pass.
+def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
+    """Run the gate for one delivered result; stage a grant on pass.
 
-    Returns the disposition line for the thread reply ("" when silent).
-    "dispatching" is only ever posted after repository_dispatch succeeded,
-    so the thread never promises a run that was not started. Any failure in
-    here must not cost the findings reply itself; the caller guards it.
+    Returns (disposition line, grant dict or None). The grant is only
+    staged: the caller mints one GitHub token for the whole batch and
+    withdraws every staged grant if the mint fails, so the thread only
+    ever reads "attempting" once a credential actually exists.
     """
     cfg = config()
     decision = autofix.evaluate(result, doc, row, cfg=cfg, store=alert_store())
@@ -274,7 +281,7 @@ def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
                 "%s %s reason=%s",
                 AUTOFIX_DECLINED_MARKER, result.short_id, decision.reason,
             )
-        return decision.disposition
+        return decision.disposition, None
 
     dispatch_id = str(uuid.uuid4())
     callback_token = secrets.token_urlsafe(32)
@@ -291,32 +298,17 @@ def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
         },
         due_at=_autofix_deadline(),
     )
-    outcome = github_client().dispatch(
-        cfg.autofix_repo,
-        "autofix",
-        {
-            "dispatch_id": dispatch_id,
-            "sentry_issue_id": row["issue_id"],
-            "sentry_short_id": result.short_id,
-            "project": row["project"],
-            "environment": row["environment"],
-            "release_sha": row["release"],
-            "cited_files": sorted({e.file for e in result.evidence if e.file}),
-            "findings_md": reply_text[:40_000],
-            "callback_url": cfg.autofix_callback_url,
-            "callback_token": callback_token,
-        },
-    )
-    if outcome is not DispatchOutcome.DISPATCHED:
-        alert_store().advance_autofix(dispatch_id, "dispatched", "failed")
-        LOG.error(
-            "%s %s dispatch failed: %s",
-            AUTOFIX_FAILED_MARKER, result.short_id, outcome.value,
-        )
-        return "Autofix declined: dispatch failed."
-
     LOG.info("%s %s dispatch %s", AUTOFIX_DISPATCHED_MARKER, result.short_id, dispatch_id)
-    return decision.disposition
+    return decision.disposition, {
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "dispatch_id": dispatch_id,
+        "callback_token": callback_token,
+        "cited_files": sorted({e.file for e in result.evidence if e.file}),
+    }
+
+
+MINT_FAILED_DISPOSITION = "Autofix declined: could not mint a GitHub credential."
 
 
 def _autofix_deadline() -> str:
@@ -328,7 +320,16 @@ def _autofix_deadline() -> str:
 
 
 def deliver_findings(body, rows: list[dict]) -> dict:
-    """Validate one batch's findings and reply under each card."""
+    """Validate one batch's findings, reply under each card, and answer the
+    session with any autofix grants it has earned.
+
+    The response body is the vending channel: the session that POSTed these
+    findings is the one that will write the fix, and this response is the
+    only message the receiver can ever send it. Gates run first, then one
+    token is minted for the whole batch, then the cards post; that order
+    means a mint failure can still rewrite the disposition line before any
+    thread reads it.
+    """
     by_issue = {r["issue_id"]: r for r in rows}
     try:
         doc = parse_findings(
@@ -340,6 +341,8 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         LOG.error("%s %s", FINDINGS_REJECTED_MARKER, exc)
         return respond(400, "unusable findings")
 
+    cfg = config()
+    deliveries: list[dict] = []
     for result in doc.results:
         row = by_issue[result.issue_id]
         # Claim before posting: the deadline sweep targets the same transition
@@ -349,17 +352,38 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         ):
             LOG.info("row for %s already answered; skipping", result.short_id)
             continue
-
-        # The markdown rendering no longer posts to Teams; it is the
-        # `findings_md` the autofix workflow receives (redacted by its own
-        # renderer before it leaves this process).
-        text, _ = render_reply(result)
         try:
-            disposition = autofix_after_delivery(result, doc, row, text)
+            disposition, grant = autofix_grant(result, doc, row)
         except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
             LOG.error("%s %s gate crashed: %s", AUTOFIX_FAILED_MARKER, result.short_id, exc)
-            disposition = ""
-        card, redactions = render_reply_card(result, disposition)
+            disposition, grant = "", None
+        deliveries.append(
+            {"result": result, "row": row, "disposition": disposition, "grant": grant}
+        )
+
+    minted = None
+    if any(d["grant"] for d in deliveries):
+        minted = github_client().mint_autofix_token(cfg.target_repo)
+        if minted is None:
+            # Withdraw every staged grant: the dispatch records exist but no
+            # session will ever call back for them, and the disposition must
+            # not promise a fix that cannot start.
+            for d in deliveries:
+                if not d["grant"]:
+                    continue
+                alert_store().advance_autofix(
+                    d["grant"]["dispatch_id"], "dispatched", "failed"
+                )
+                LOG.error(
+                    "%s %s token mint failed; grant withdrawn",
+                    AUTOFIX_FAILED_MARKER, d["result"].short_id,
+                )
+                d["disposition"] = MINT_FAILED_DISPOSITION
+                d["grant"] = None
+
+    for d in deliveries:
+        result, row = d["result"], d["row"]
+        card, redactions = render_reply_card(result, d["disposition"])
         # Logged at render time, not post time: the count is a property of the
         # redaction pass, and a reply the sweep later retries from storage
         # must not lose it or count it twice.
@@ -377,11 +401,26 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             # stopping here would lose the reply for good. Hand it to the
             # sweep to retry instead, serialized: `pending_reply` is a string
             # column, and the sweep tells a stored card from legacy markdown
-            # by parsing it back.
+            # by parsing it back. The grant still returns to the session
+            # below: a chat outage must not cost the fix.
             schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
-            continue
 
-    return respond(200, "ok")
+    grants = [d["grant"] for d in deliveries if d["grant"]]
+    if not (minted and grants):
+        return respond_json(200, {"autofix": None})
+    return respond_json(
+        200,
+        {
+            "autofix": {
+                "repo": cfg.target_repo,
+                "base_branch": cfg.autofix_base_branch,
+                "github_token": minted.token,
+                "github_token_expires_at": minted.expires_at,
+                "callback_url": cfg.autofix_callback_url,
+                "grants": grants,
+            }
+        },
+    )
 
 
 def bearer_token(event: dict) -> str:
