@@ -57,7 +57,8 @@ that dies quietly and leaves an alert looking investigated when nothing happened
 A finding proceeds to autofix only when every one of these holds: confidence and
 fixability each clear their configured minimums, the project is on the allowlist, no
 cited file matches a forbidden or excluded path, no fix has already been attempted for
-that issue on that release, and the daily pull-request cap has budget left.
+that issue in that environment on that release, and the daily pull-request cap has
+budget left.
 
 When it does, the fix happens in the session that just reported the finding, not in a
 second one afterwards. The receiver mints a GitHub App installation token scoped to the

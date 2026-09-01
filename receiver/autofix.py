@@ -37,9 +37,12 @@ CALLBACK_STATUSES = (
 COMPLETION_REPLIES = {
     "pr_opened": "Autofix PR opened: {pr_url}",
     "aborted_drift": (
-        "Autofix skipped: develop has moved in ways that invalidate the diagnosis."
+        "Autofix skipped: the base branch has moved in ways that invalidate the "
+        "diagnosis."
     ),
-    "not_reproducible": "Autofix skipped: the root cause did not reproduce on develop.",
+    "not_reproducible": (
+        "Autofix skipped: the root cause did not reproduce on the base branch."
+    ),
     "declined_in_session": "Autofix skipped: the fix turned out larger than expected.",
     "failed": "Autofix failed. Details: {run_url}",
 }

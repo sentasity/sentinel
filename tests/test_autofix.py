@@ -154,6 +154,16 @@ def test_completion_replies_cover_every_callback_status():
     assert "https://run" in completion_reply("failed", run_url="https://run")
 
 
+def test_no_completion_reply_names_a_branch():
+    """The base branch is operator config, so a reply that hardcodes one name
+    tells every other deployment something false. These strings are read by a
+    human in a chat thread, so they describe the branch by its role instead."""
+    for status in CALLBACK_STATUSES:
+        text = completion_reply(status, pr_url="https://pr", run_url="https://run")
+        for branch in ("develop", "main", "master", "trunk"):
+            assert branch not in text.lower(), f"{status} reply names {branch!r}"
+
+
 def test_a_github_directory_citation_is_declined_regardless_of_config(tmp_path):
     # exclude_paths is emptied here on purpose: the decline must come from
     # the hard-coded FORBIDDEN_PATHS, not from operator config.

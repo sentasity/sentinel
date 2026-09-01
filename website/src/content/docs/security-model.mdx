@@ -7,10 +7,12 @@ The unattended sessions are the trust boundary. Everything that reaches them is 
 as untrusted, including the Sentry issue text they are asked to investigate.
 
 :::tip[The short version]
-The session decides nothing about whether a fix is allowed; the receiver does, on its
-own side of the wire. The credential it hands over is scoped to one repository, two
-permissions, and one hour, and it cannot push a workflow file. The only output is a
-pull request, and every pull request waits for a human.
+The operator's controls over whether a fix is allowed live in the receiver, out of the
+session's reach; the session supplies two of the gate's inputs, its own confidence and
+fixability ratings, and those are influenceable. The credential it is handed is scoped
+to one repository, two permissions, and one hour, and it cannot push a workflow file.
+It *can* push to any branch, so branch protection on the base branch is what makes
+review unavoidable, and every pull request waits for a human.
 :::
 
 ## The fire payload is data, not instructions
@@ -55,10 +57,13 @@ channels the operator controls and no injected text can forge:
 An instruction embedded in a stack trace telling the session to post its findings
 somewhere else fails both checks.
 
-Widening egress to reach GitHub is what the fix phase costs. Before it existed, the
-receiver was the only host the session could reach at all, and that was a containment
-property in its own right. It no longer is, so the controls below carry weight the
-egress policy used to share.
+The check is narrower than it may look, and the qualifier in that second bullet is
+load-bearing. The policy is deny-by-default over the hosts the operator controls; the
+environment still reaches whatever it defaults to reaching, and the investigation phase
+fetches the repository over the network before any of this. So the egress policy pins
+down where *findings* may be posted. It is not a general containment boundary, and the
+wider the set of GitHub endpoints the fix phase needs, the less of one it becomes. The
+controls below are what carry the weight.
 
 ## The session that writes the fix is the one that investigated
 
@@ -109,18 +114,27 @@ authenticated and behaving exactly as designed. There is no signature check that
 here, and treating one as though it did would be the more dangerous error.
 
 What contains it instead is everything downstream of the text: the token is scoped so a
-fix cannot reach beyond one repository or past the two permissions above; the only output
-is a pull request, so a protected base branch means nothing lands without review; and a
-human reads the pull request before it merges. The prompt also tells the session to treat
-code, repository docs, Sentry text, and command output as data and to say in the pull
-request body when it saw something that read like an instruction, which helps a reviewer
-but is not itself a control.
+fix cannot reach beyond one repository or past the two permissions above; branch
+protection on the base branch means nothing lands without review; and a human reads the
+pull request before it merges. The prompt also tells the session to treat code,
+repository docs, Sentry text, and command output as data and to say in the pull request
+body when it saw something that read like an instruction, which helps a reviewer but is
+not itself a control.
+
+The one gate input this text can reach is the finding's own confidence and fixability
+ratings, which the session supplies. Steering an investigation toward a diagnosis that
+looks confident and contained is the cheapest thing an injected instruction can attempt,
+and it is not something the receiver can second-guess: rating the finding is exactly the
+judgment the session was fired to make. What that buys an attacker is bounded, though. A
+flattering rating gets a finding *to* the gate; it does not get it past the operator
+controls below, which are evaluated on values the session never supplies.
 
 ### Operator controls live on the receiver
 
 Confidence and fixability are the session's own judgments and travel in the findings
-document. Every other input to the decision is an operator control, and each one is
-evaluated in the receiver rather than in the prompt:
+document, which is why the section above treats them as influenceable. Every *other*
+input to the decision is an operator control, and each one is evaluated in the receiver
+rather than in the prompt:
 
 - the kill switch that disables autofix entirely
 - the project allowlist
@@ -169,8 +183,16 @@ and legible rather than making the incorrect one impossible.
 
 The residual risk of the token itself is the same shape. It is a bearer credential that
 spends up to an hour inside a session whose context contains attacker-influenceable text.
-Its blast radius is bounded by the scope and the lifetime above, and by the fact that its
-only reachable outcome is a reviewable pull request. It is not zero.
+Its blast radius is bounded by the scope and the lifetime above, and no further: within
+that one repository, `contents: write` is repository-wide, so the token can push to any
+ref, the base branch included. Pushing a topic branch and opening a pull request is what
+the prompt instructs, not what the credential restricts.
+
+That is the gap branch protection fills, and it is the operator's job rather than
+something this engine can do for them. With the base branch protected, the token's
+reachable outcome really is a pull request somebody reviews. Without it, a session that
+departed from the prompt could write to the base branch directly, and none of the
+controls on this page would stop it.
 
 ### The callback is a capability, not an identity
 

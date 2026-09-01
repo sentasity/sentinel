@@ -95,14 +95,20 @@ Run the full sweep before publishing anything new from the repository, and after
 
 ## Reading autofix in the logs
 
-Four markers carry everything autofix says about itself, each at the front of the line it labels.
+These are the four markers to filter on. They cover the gate's decisions and every outcome that reaches a thread, but they are not everything autofix logs: see the unmarked lines below the table.
 
 | Marker | Means |
 |---|---|
 | `AUTOFIX_DECLINED` | The gate said no, with the reason on the same line. Not a fault: this is the normal outcome for most findings |
 | `AUTOFIX_DISPATCHED` | A grant was staged, with its dispatch id. Staging happens before the batch's token is minted, so a withdrawal line can still follow |
 | `AUTOFIX_FAILED` | Something went wrong: a mint failure, a crashed gate, a session reporting `failed`, or a callback deadline passing with nothing reported |
-| `AUTOFIX_UNVERIFIED` | A session reported a pull request the receiver could not confirm the App authored. Always accompanied by `AUTOFIX_FAILED` on the same line |
+| `AUTOFIX_UNVERIFIED` | A session reported a pull request the receiver could not confirm the App authored. Always accompanied by `AUTOFIX_FAILED`, which follows it on the same line |
+
+### The lines that carry no marker
+
+A filter built from the table above will miss several things, and one of them matters operationally. **Rejections at `/autofix-result` are unmarked warnings**: a request with no usable bearer token, one naming an unknown dispatch or presenting the wrong token, and one carrying a status outside the accepted set each log a plain `rejected autofix callback ...` warning. So repeated authentication failures against the callback endpoint, which is the shape a probe of that endpoint would take, produce nothing any of the four markers would catch. Search the callback route's own wording, not the markers, when that is the question.
+
+Also unmarked: a callback arriving for a dispatch the sweep already settled logs an `already settled; ignoring` notice at info, which is normal and means the deadline won a race. And a completion reply that cannot be posted to the thread carries the receiver's general delivery-failure marker rather than an autofix one, so a chat outage during an autofix reply is found under that marker. The App client's own failures (token mint, App slug fetch, pull-request author fetch) log with their own wording too, naming the repository and the underlying error.
 
 ### `AUTOFIX_UNVERIFIED`: treat the pull request as untrusted
 
