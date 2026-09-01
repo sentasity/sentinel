@@ -24,7 +24,7 @@ cd website && npm install && npm run dev
 Before pushing a change under `website/`, run its two checkers, which CI also runs:
 
 ```bash
-cd website && npx astro build && node --test scripts/ && node scripts/check-sidebar.mjs && node scripts/check-links.mjs
+cd website && npx astro build && node --test scripts/*.test.mjs && node scripts/check-sidebar.mjs && node scripts/check-links.mjs
 ```
 
 ## Docs discipline

@@ -134,15 +134,35 @@ Steps:
    .github/, report `declined_in_session` through f below and stop that
    grant.
 
-   For each grant:
-   a. If the grant's `cited_files` is empty there is nothing to diff and
-      nothing for b to read, so the defect cannot be confirmed at this
-      checkout: report `not_reproducible` through f and stop this grant.
-      Otherwise fetch and check out `base_branch` from that remote, and
-      diff those files between the release you investigated and this
-      checkout. If that drift undermines your diagnosed root cause, report
-      `aborted_drift` through f and stop this grant. Trivial or unrelated
-      churn in the same files is NOT drift; proceed.
+   Never write the token, or any command output that could contain it, into
+   a commit, a branch name, a PR title or body, the callback, or any file:
+   the remote URL you just configured carries the token, so `git remote -v`
+   and many git error messages echo it verbatim, which is why raw git output
+   must never be pasted anywhere. A PR body lives in the target repository
+   for good and may be public, so quote only what you have read and confirmed
+   is free of the token, and describe a git failure in your own words instead
+   of quoting it.
+
+   For each grant, one at a time. Every grant starts from a clean working
+   tree, with no exception and regardless of how the previous one ended.
+   Several paths below stop a grant with its edits still uncommitted, and
+   git carries uncommitted changes across a checkout, so a tree you did not
+   clean would put an abandoned, test-failing fix into the next grant's
+   branch and into the PR you open for it.
+
+   a. Clean the tree first, before reading anything and before any other
+      check in this step. Discard every tracked modification and remove
+      every untracked file: git reset --hard, then git clean -fd. Leave
+      ignored files alone (no -x), because this workspace's installed
+      dependencies live there and step d needs them.
+      Then, with the tree clean: if the grant's `cited_files` is empty there
+      is nothing to diff and nothing for b to read, so the defect cannot be
+      confirmed at this checkout: report `not_reproducible` through f and
+      stop this grant. Otherwise fetch and check out `base_branch` from that
+      remote, and diff those files between the release you investigated and
+      this checkout. If that drift undermines your diagnosed root cause,
+      report `aborted_drift` through f and stop this grant. Trivial or
+      unrelated churn in the same files is NOT drift; proceed.
    b. Re-verify the root cause at this checkout: read the cited files and
       confirm the diagnosed defect exists here. If it does not, report
       `not_reproducible` through f and stop this grant.

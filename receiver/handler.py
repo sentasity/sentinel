@@ -347,6 +347,38 @@ def _autofix_deadline() -> str:
     return when.isoformat().replace("+00:00", "Z")
 
 
+def _post_findings_reply(d: dict) -> None:
+    """Render one delivery's card and post it into its thread.
+
+    Split out of `deliver_findings` so its caller can guard exactly one row.
+    A `BotError` keeps its own handling here, because a failed post has a
+    retry path the caller's generic guard has no way to offer: the card is
+    already rendered and redacted, so it can be stored for the sweep.
+    """
+    result, row = d["result"], d["row"]
+    card, redactions = render_reply_card(result, d["disposition"])
+    # Logged at render time, not post time: the count is a property of the
+    # redaction pass, and a reply the sweep later retries from storage
+    # must not lose it or count it twice.
+    LOG.info("REDACTIONS_APPLIED %d for %s", redactions, result.short_id)
+    try:
+        bot_client().reply_card_in_thread(
+            row["conversation_id"],
+            row["message_id"],
+            card,
+            reply_summary(result.short_id),
+        )
+    except BotError as exc:
+        # The findings survived validation and redaction; only the post
+        # failed. `delivered` is terminal and out of the due index, so
+        # stopping here would lose the reply for good. Hand it to the
+        # sweep to retry instead, serialized: `pending_reply` is a string
+        # column, and the sweep tells a stored card from legacy markdown
+        # by parsing it back. The grant still returns to the session in the
+        # response: a chat outage must not cost the fix.
+        schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
+
+
 def deliver_findings(body, rows: list[dict]) -> dict:
     """Validate one batch's findings, reply under each card, and answer the
     session with any autofix grants it has earned.
@@ -411,28 +443,28 @@ def deliver_findings(body, rows: list[dict]) -> dict:
     # this back into that loop would put "attempting a fix" in a thread
     # before the credential it promises is known to exist.
     for d in deliveries:
-        result, row = d["result"], d["row"]
-        card, redactions = render_reply_card(result, d["disposition"])
-        # Logged at render time, not post time: the count is a property of the
-        # redaction pass, and a reply the sweep later retries from storage
-        # must not lose it or count it twice.
-        LOG.info("REDACTIONS_APPLIED %d for %s", redactions, result.short_id)
+        # Per row, not around the loop. Every row here has already advanced to
+        # `delivered`, which is terminal and out of the due index, so anything
+        # escaping this region leaves those threads permanently silent, and a
+        # guard around the whole loop would abandon every row after the one
+        # that failed rather than only that row. More than the post can raise
+        # something that is not a `BotError`: the chat client is built on
+        # first use in the container and reads its credential to do so, so a
+        # cold container meeting a throttled parameter store fails here rather
+        # than at post time; rendering the card is not exception-free by
+        # contract; and scheduling the retry is itself a conditional write
+        # that re-raises anything other than the condition failing. The stakes
+        # are higher than they were before the fix phase moved into the
+        # session: a credential has already been minted by this point and the
+        # grants are waiting in the response below, so losing the loop costs
+        # the session its fix as well as the remaining threads their replies.
         try:
-            bot_client().reply_card_in_thread(
-                row["conversation_id"],
-                row["message_id"],
-                card,
-                reply_summary(result.short_id),
+            _post_findings_reply(d)
+        except Exception as exc:  # noqa: BLE001 - one row must never cost the batch
+            LOG.error(
+                "%s findings reply for %s: %s",
+                DELIVERY_FAILURE_MARKER, d["result"].short_id, exc,
             )
-        except BotError as exc:
-            # The findings survived validation and redaction; only the post
-            # failed. `delivered` is terminal and out of the due index, so
-            # stopping here would lose the reply for good. Hand it to the
-            # sweep to retry instead, serialized: `pending_reply` is a string
-            # column, and the sweep tells a stored card from legacy markdown
-            # by parsing it back. The grant still returns to the session
-            # below: a chat outage must not cost the fix.
-            schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
 
     grants = [d["grant"] for d in deliveries if d["grant"]]
     if not (minted and grants):
@@ -548,7 +580,21 @@ def safe_callback_url(value: str, *, field: str) -> str:
 # The exact PR-URL shape the author check parses. Stricter than
 # CALLBACK_URL_RE on purpose: verification reads the RAW pr_url, before
 # safe_callback_url percent-encodes underscores, so repo names survive.
-PR_URL_RE = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)$")
+#
+# The digit run is bounded because the number is parsed with int(), and a
+# runtime that caps integer-string conversion raises on a long enough digit
+# run rather than returning a value. Reading the raw URL means
+# safe_callback_url's own length cap has not been applied here, so the bound
+# has to live in this pattern. Nine digits is far past any real pull-request
+# number and short enough that no conversion limit is in play, and an
+# over-long run now fails the match, which is the fail-closed answer this
+# function documents. Without the bound, a hostile callback body could turn a
+# check that promises to degrade to False into an unhandled exception out of
+# the callback route, and the thread would never get its completion reply.
+PR_URL_MAX_DIGITS = 9
+PR_URL_RE = re.compile(
+    rf"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d{{1,{PR_URL_MAX_DIGITS}}})$"
+)
 
 UNVERIFIED_REPLY = (
     "⚠️ Autofix reported a PR, but its author could not be verified as the "

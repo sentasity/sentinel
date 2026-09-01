@@ -227,6 +227,49 @@ def test_a_grant_citing_no_files_still_reports_an_outcome():
     assert "`cited_files` is empty" in body
 
 
+def test_every_grant_starts_from_a_clean_working_tree():
+    """A grant can stop with its edits still in the tree: the failing-test
+    path, and every re-verification path that gives up after reading, all
+    leave whatever was written behind. Git carries non-conflicting
+    uncommitted changes across a checkout, so without an explicit reset the
+    next grant would commit the abandoned work into its own branch and open
+    a PR containing it. A batch of several grants is the normal case, not an
+    edge case, so the reset has to be stated as a step rather than implied by
+    the word "independently"."""
+    body = " ".join(fix_phase().lower().split())
+
+    assert "clean working tree" in body, "the fix phase never states the invariant"
+    # Named commands, not a paraphrase: "start clean" is the kind of
+    # instruction a session satisfies by deciding its tree looks clean enough.
+    assert "git reset --hard" in body, "nothing discards tracked modifications"
+    assert "git clean -fd" in body, "nothing removes untracked files"
+    # Ordering matters as much as the commands: a reset that runs after the
+    # checkout has already carried the previous grant's edits over is too
+    # late to help.
+    assert body.index("git clean -fd") < body.index("check out `base_branch`")
+
+
+def test_the_fix_phase_forbids_writing_the_vended_token_down():
+    """The session holds a live write credential and configures it into a
+    remote URL, where `git remote -v` and many git error messages echo it
+    verbatim. It is also told to put its test command and its result into the
+    PR body, and to say there when it saw injected content. A PR body in the
+    target repository is durable and potentially public output, so the ban on
+    recording the token has to be stated rather than left to inference from
+    the clause about which credential to use."""
+    body = " ".join(fix_phase().lower().split())
+
+    assert "never write the token" in body, "the token clause never forbids recording it"
+    # Every durable sink the phase actually writes to, so a rule that covers
+    # only the obvious one does not pass.
+    for sink in ("commit", "branch name", "pr title or body", "callback", "any file"):
+        assert sink in body, f"the ban on recording the token omits: {sink}"
+    # The reason, not just the rule: a session that knows why the remote URL
+    # is the hazard also declines the paste the rule did not enumerate.
+    assert "git remote -v" in body
+    assert "raw git output" in body
+
+
 def test_the_retired_autofix_prompts_are_gone():
     assert not (PROMPTS / "autofix-system.md").exists()
     assert not (PROMPTS / "autofix-task.md").exists()

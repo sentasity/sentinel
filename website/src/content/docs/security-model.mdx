@@ -151,6 +151,35 @@ The same reasoning covers the caps' side effects: the dedupe and cap checks are
 conditional writes, spent as they pass, so a finding cannot be re-evaluated into a second
 attempt.
 
+### What a live reply token is worth
+
+The section above is accurate that those controls are evaluated on values the session
+never supplies, but it is worth being precise about which values *are* supplied. The
+gate reads the findings document, and the whole document arrives over one authenticated
+POST: the two ratings named above, and also each result's `status`, the document's
+`schema_version`, and the evidence file paths the path exclusions are matched against.
+Whoever holds a live reply token writes all of it. So the gate constrains the shape of a
+passing finding rather than proving one was investigated, and a document crafted to
+satisfy that shape earns what a genuine one earns.
+
+What it earns is what changed. A reply token used to buy a dispatch that started a
+workflow, which opened a pull request. It now buys the installation token itself, handed
+back in the HTTP response and directly usable for an hour for any `contents: write`
+operation in the target repository. That is a real change in what a stolen or leaked
+reply token is worth, and naming it matters more than the mitigations do: the scope,
+lifetime, and branch protection discussed above are what bound the credential once it is
+out of the receiver's hands.
+
+Four things bound how far such a token gets before that point. It is stored only as a
+hash, so reading the table yields nothing usable. It is live only while its own batch
+is: the lookup requires a row still awaiting findings and still inside its deadline,
+checked on the request rather than left to the once-a-minute sweep, and a batch that has
+already been answered gets an empty autofix block rather than a second set of grants. It
+can only earn grants for the issues in its own batch, because the findings document is
+validated against that batch's issue ids. And the dedupe and the daily pull-request cap
+are conditional writes, so how many grants any holder can extract is bounded by the
+operator's cap rather than by how many documents they are willing to write.
+
 ### Pull-request authorship is verified, and that is a detective control
 
 The session's runtime carries connectors of its own, and in a realistic deployment one of

@@ -151,7 +151,6 @@ def test_completion_replies_cover_every_callback_status():
         assert text
 
     assert "https://pr" in completion_reply("pr_opened", pr_url="https://pr")
-    assert "https://run" in completion_reply("failed", run_url="https://run")
 
 
 def test_no_completion_reply_names_a_branch():
@@ -189,4 +188,26 @@ def test_the_failed_reply_no_longer_claims_a_workflow_ran():
     text = completion_reply("failed", run_url="https://example.test/run")
 
     assert "Workflow" not in text
-    assert "https://example.test/run" in text
+    # The reply must not offer a link at all. Nothing sends `run_url`: the
+    # session's callback body carries a dispatch id, a status, and a PR URL,
+    # so a reply that interpolated one would render a placeholder every time.
+    # Passing a run URL here and asserting it is absent is the point: it
+    # proves the copy dropped the field rather than merely happening to have
+    # nothing to fill it with.
+    assert "https://example.test/run" not in text
+    assert "(link unavailable)" not in text
+    assert "Details" not in text
+
+
+def test_no_completion_reply_promises_a_link_it_cannot_supply():
+    """Every {placeholder} in a reply must be one a caller actually fills.
+
+    `pr_url` is supplied on the `pr_opened` path; `run_url` is not supplied by
+    anything, because the fix runs inside the investigating session rather
+    than in a separately addressable run. A reply that names a field nobody
+    sends renders its fallback text forever, which reads to the person in the
+    thread as a broken link rather than as an honest absence.
+    """
+    for status in CALLBACK_STATUSES:
+        text = completion_reply(status)
+        assert "(link unavailable)" not in text, f"{status} reply promises a run URL"

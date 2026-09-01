@@ -954,6 +954,93 @@ def test_a_failed_thread_post_still_returns_the_grant(
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
+def test_a_non_bot_error_on_one_row_still_answers_the_next_one(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """`BotError` is not the only thing this loop can raise. The chat client
+    is built on first use in the container and reads its credential to do so,
+    so a cold container meeting a throttled parameter store fails here; and
+    the retry the `BotError` path schedules is itself a conditional write that
+    re-raises anything but the condition failing. Every row is already
+    `delivered` by the time the loop runs, which is terminal and out of the
+    due index, so a guard that only understands `BotError` would leave every
+    row after the failing one silent forever. The grants are pending in the
+    response too, so losing the loop would also 5xx a session whose token has
+    already been minted."""
+    from receiver.github_app import MintedToken
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    github_client.return_value.mint_autofix_token.return_value = MintedToken(
+        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
+    )
+    bot_client.return_value.reply_card_in_thread.side_effect = [
+        RuntimeError("parameter store unreachable"),
+        None,
+    ]
+
+    with caplog.at_level(logging.ERROR):
+        response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    posts = bot_client.return_value.reply_card_in_thread.call_args_list
+    assert len(posts) == 2, "the first row's failure stopped the loop"
+    assert posts[1].args[1] == "msg-10"
+    block = json.loads(response["body"])["autofix"]
+    assert block["github_token"] == "ghs_vended"
+    assert [g["short_id"] for g in block["grants"]] == ["CHECKOUT-4B2", SECOND_SHORT_ID]
+    assert observability.DELIVERY_FAILURE_MARKER in caplog.text
+    # The generic path logs and moves on rather than scheduling a retry: it
+    # cannot know the card survived rendering, so it has nothing to store for
+    # the sweep to send. Only the `BotError` path returns a row to `fired`.
+    transitions = [c.args[3:5] for c in store.advance.call_args_list]
+    assert transitions == [("fired", "delivered"), ("fired", "delivered")]
+
+
+@patch("receiver.handler.render_reply_card")
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_card_render_that_raises_costs_only_its_own_row(
+    config, alert_store, bot_client, github_client, render, tmp_path, caplog
+):
+    """Rendering is not exception-free by contract, and it happens before the
+    post, so a row can be lost without the chat client ever being reached.
+    The row after it must still get its reply."""
+    from receiver.github_app import MintedToken
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    github_client.return_value.mint_autofix_token.return_value = MintedToken(
+        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
+    )
+    render.side_effect = [ValueError("unrenderable finding"), ({"card": "ok"}, 0)]
+
+    with caplog.at_level(logging.ERROR):
+        response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    posts = bot_client.return_value.reply_card_in_thread.call_args_list
+    assert len(posts) == 1, "the surviving row never got its reply"
+    assert posts[0].args[1] == "msg-10"
+    block = json.loads(response["body"])["autofix"]
+    assert len(block["grants"]) == 2
+    assert observability.DELIVERY_FAILURE_MARKER in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
 def test_a_disabled_gate_leaves_the_reply_untouched(
     config, alert_store, bot_client, github_client, tmp_path
 ):
@@ -1126,8 +1213,14 @@ def test_a_failed_callback_logs_the_autofix_failed_marker(alert_store, bot_clien
     route(callback_event(status="failed", run_url="https://run"))
 
     assert "AUTOFIX_FAILED" in caplog.text
+    # `run_url` stays a read-and-log field, so a caller that ever does send
+    # one still leaves it in the operator's logs.
+    assert "https://run" in caplog.text
+    # It does not reach the thread. The session's callback body has no run
+    # URL to give, so the reply says what happened without promising a link.
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "https://run" in reply
+    assert "https://run" not in reply
+    assert "(link unavailable)" not in reply
 
 
 def test_autofix_result_without_a_token_is_401():
@@ -1157,6 +1250,42 @@ def test_a_malicious_pr_url_is_rejected_not_relayed_into_the_reply(alert_store, 
     # even need the missing target-repo config: the warning reply, not the
     # normal completion text, is what a reader sees.
     assert reply == handler.UNVERIFIED_REPLY.format(pr_url="(missing PR URL)")
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_pathological_pr_number_reads_as_unverified_not_as_a_crash(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """`verified_pr_author` promises both lookups degrade to False and never
+    to an exception, and the security page tells an evaluator the same thing.
+    Verification reads the raw URL, so the callback route's own length cap is
+    not in play, and parsing an unbounded digit run with int() raises once it
+    passes the runtime's integer-string conversion limit. That exception would
+    escape the callback route as a 5xx and leave the thread with no completion
+    reply at all, which is the one outcome this pipeline is built to avoid."""
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    repo = config.return_value.target_repo
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
+
+    huge = f"https://github.com/{repo}/pull/{'9' * 6000}"
+    response = route(callback_event(pr_url=huge))
+
+    assert response["statusCode"] == 200
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply.startswith("⚠️ Autofix reported a PR")
+    # The bound lives in the pattern, so the URL never reaches a lookup at
+    # all: nothing is asked of GitHub on behalf of a forged number.
+    github_client.return_value.pr_author.assert_not_called()
 
 
 @patch("receiver.handler.github_client")
