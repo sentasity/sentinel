@@ -404,7 +404,12 @@ def test_findings_with_an_unknown_token_is_401():
 
 
 def test_findings_for_an_already_delivered_batch_is_200_with_no_repost():
-    """A session retrying its POST must not double-post the thread reply."""
+    """A session retrying its POST must not double-post the thread reply.
+
+    Every 200 from this route carries the same JSON shape, because the
+    session parses the body rather than reading a status code: a plain-text
+    "ok" here would be a parse error on exactly the retry path.
+    """
     store = MagicMock()
     store.claim_batch.return_value = (BatchState.DELIVERED, [])
 
@@ -414,6 +419,8 @@ def test_findings_for_an_already_delivered_batch_is_200_with_no_repost():
         response = handler.lambda_handler(findings_request("tok"), None)
 
     assert response["statusCode"] == 200
+    assert response["headers"]["content-type"] == "application/json"
+    assert json.loads(response["body"]) == {"autofix": None}
     deliver.assert_not_called()
 
 
@@ -622,17 +629,58 @@ def test_the_probe_route_is_reached_before_the_findings_route():
 from receiver.handler import deliver_findings
 
 
-def autofix_row():
+def autofix_row(issue_id="1000000007", short_id="CHECKOUT-4B2", message_id="msg-9"):
     return {
-        "issue_id": "1000000007",
+        "issue_id": issue_id,
         "environment": "staging",
         "release": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
         "batch_id": "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42",
         "project": "checkout",
-        "short_id": "CHECKOUT-4B2",
+        "short_id": short_id,
         "conversation_id": "conv-1",
-        "message_id": "msg-9",
+        "message_id": message_id,
     }
+
+
+SECOND_ISSUE_ID = "1000000011"
+SECOND_SHORT_ID = "CHECKOUT-9C1"
+
+
+def two_passing_results():
+    """The v2 fixture with a second passing result in the same project.
+
+    Every other autofix test runs a one-result batch, which cannot tell a
+    single mint for the batch from one mint per grant, nor a withdrawal loop
+    that settles every staged grant from one that settles only the first.
+    """
+    payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
+    second = copy.deepcopy(payload["results"][0])
+    second["issue_id"] = SECOND_ISSUE_ID
+    second["short_id"] = SECOND_SHORT_ID
+    second["root_cause"] = (
+        "reserve_stock returns before the ledger write commits, so a cancelled "
+        "order leaves the reservation held."
+    )
+    second["evidence"] = [
+        {
+            "file": "src/checkout/services/inventory.py",
+            "symbol": "reserve_stock",
+            "line": 92,
+            "note": "the commit happens after the early return",
+        }
+    ]
+    second["next_step"] = "commit the ledger write before reserve_stock returns"
+    payload["results"].append(second)
+    return payload
+
+
+def two_autofix_rows():
+    return [
+        autofix_row(),
+        autofix_row(
+            issue_id=SECOND_ISSUE_ID, short_id=SECOND_SHORT_ID, message_id="msg-10"
+        ),
+    ]
 
 
 @patch("receiver.handler.github_client")
@@ -766,6 +814,108 @@ def test_a_mint_failure_withdraws_the_grant_and_declines_in_the_thread(
     # The thread must never read "attempting" when no credential exists, which
     # is only true if the cards post after the mint, not before it.
     assert "attempting a fix in this session" not in json.dumps(card)
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_one_batch_mints_one_token_for_every_grant_it_vends(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """One token covers the batch. Minting per grant would hand the session
+    several credentials for one repository and multiply the audit trail."""
+    from receiver.github_app import MintedToken
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    github_client.return_value.mint_autofix_token.return_value = MintedToken(
+        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
+    )
+
+    response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    block = json.loads(response["body"])["autofix"]
+    assert github_client.return_value.mint_autofix_token.call_count == 1
+    assert [g["short_id"] for g in block["grants"]] == ["CHECKOUT-4B2", SECOND_SHORT_ID]
+    assert len({g["dispatch_id"] for g in block["grants"]}) == 2
+    assert len({g["callback_token"] for g in block["grants"]}) == 2
+    assert bot_client.return_value.reply_card_in_thread.call_count == 2
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_mint_failure_withdraws_every_staged_grant_not_just_the_first(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """A withdrawal that stops at the first record would leave the rest
+    promising a fix in the thread while holding a token that never existed.
+    The first settle is made to raise, since one throttled conditional update
+    must not cost the remaining withdrawals either."""
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    store.advance_autofix.side_effect = [RuntimeError("throttled"), True]
+    github_client.return_value.mint_autofix_token.return_value = None
+
+    with caplog.at_level(logging.ERROR):
+        response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    assert json.loads(response["body"]) == {"autofix": None}
+    settled = [c.args[0] for c in store.advance_autofix.call_args_list]
+    staged = [c.args[0]["dispatch_id"] for c in store.put_autofix_dispatch.call_args_list]
+    assert settled == staged
+    cards = [c.args[2] for c in bot_client.return_value.reply_card_in_thread.call_args_list]
+    assert len(cards) == 2
+    for card in cards:
+        assert "could not mint a GitHub credential" in json.dumps(card)
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_crash_while_minting_never_costs_the_findings_replies(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """Building the GitHub client reads the App private key, so an infra blip
+    raises before any mint is attempted. Every row is already `delivered` by
+    then, which is terminal and out of the due index, so letting that escape
+    would leave both threads silent forever instead of merely unfixed."""
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+    github_client.side_effect = RuntimeError("parameter store unreachable")
+
+    with caplog.at_level(logging.ERROR):
+        response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"autofix": None}
+    cards = [c.args[2] for c in bot_client.return_value.reply_card_in_thread.call_args_list]
+    assert len(cards) == 2
+    for card in cards:
+        assert "could not mint a GitHub credential" in json.dumps(card)
+    assert store.advance_autofix.call_count == 2
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
 
 

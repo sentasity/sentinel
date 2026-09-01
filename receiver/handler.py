@@ -311,6 +311,33 @@ def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
 MINT_FAILED_DISPOSITION = "Autofix declined: could not mint a GitHub credential."
 
 
+def withdraw_grants(staged: list[dict]) -> None:
+    """Undo every grant staged for a batch whose token never arrived.
+
+    The dispatch records exist but no session will ever call back for them,
+    and the disposition must not promise a fix that cannot start. Each settle
+    is its own best effort: one throttled conditional update must not cost
+    the remaining withdrawals, and a record left at `dispatched` is still
+    settled later by the sweep's callback deadline.
+    """
+    for d in staged:
+        LOG.error(
+            "%s %s token mint failed; grant withdrawn",
+            AUTOFIX_FAILED_MARKER, d["result"].short_id,
+        )
+        try:
+            alert_store().advance_autofix(
+                d["grant"]["dispatch_id"], "dispatched", "failed"
+            )
+        except Exception as exc:  # noqa: BLE001 - one failed settle must not stop the rest
+            LOG.error(
+                "%s %s could not settle the withdrawn dispatch: %s",
+                AUTOFIX_FAILED_MARKER, d["result"].short_id, exc,
+            )
+        d["disposition"] = MINT_FAILED_DISPOSITION
+        d["grant"] = None
+
+
 def _autofix_deadline() -> str:
     """When the sweep may fail a dispatch that never called back."""
     when = datetime.now(timezone.utc) + timedelta(
@@ -362,25 +389,26 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         )
 
     minted = None
-    if any(d["grant"] for d in deliveries):
-        minted = github_client().mint_autofix_token(cfg.target_repo)
+    staged = [d for d in deliveries if d["grant"]]
+    if staged:
+        # Guarded for the same reason the gate above is, and more urgently:
+        # every row here has already advanced to `delivered`, which is
+        # terminal and out of the due index, so an exception escaping this
+        # block would leave each of those threads permanently silent rather
+        # than merely unfixed. `mint_autofix_token` never raises, but
+        # `github_client()` reads the App private key on first use, so an
+        # infrastructure blip raises before any mint is attempted.
+        try:
+            minted = github_client().mint_autofix_token(cfg.target_repo)
+        except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
+            LOG.error("%s token mint crashed: %s", AUTOFIX_FAILED_MARKER, exc)
         if minted is None:
-            # Withdraw every staged grant: the dispatch records exist but no
-            # session will ever call back for them, and the disposition must
-            # not promise a fix that cannot start.
-            for d in deliveries:
-                if not d["grant"]:
-                    continue
-                alert_store().advance_autofix(
-                    d["grant"]["dispatch_id"], "dispatched", "failed"
-                )
-                LOG.error(
-                    "%s %s token mint failed; grant withdrawn",
-                    AUTOFIX_FAILED_MARKER, d["result"].short_id,
-                )
-                d["disposition"] = MINT_FAILED_DISPOSITION
-                d["grant"] = None
+            withdraw_grants(staged)
 
+    # Posted last, after the mint has resolved: that is the whole reason the
+    # gate loop above stages grants instead of posting as it goes. Folding
+    # this back into that loop would put "attempting a fix" in a thread
+    # before the credential it promises is known to exist.
     for d in deliveries:
         result, row = d["result"], d["row"]
         card, redactions = render_reply_card(result, d["disposition"])
@@ -448,8 +476,14 @@ def handle_findings(event: dict) -> dict:
         LOG.warning("rejected findings for a batch past its deadline")
         return respond(401, "expired")
     if state is BatchState.DELIVERED:
+        # Same shape as every other 200 from this route: the session parses
+        # this body rather than reading the status code, and a retried POST
+        # is exactly when it would meet a body it cannot parse. There are no
+        # grants to re-vend, since the batch that earned them already got
+        # them. The 401s above stay plain text: an error carries nothing for
+        # the session to read.
         LOG.info("findings for an already-delivered batch; ignoring")
-        return respond(200, "ok")
+        return respond_json(200, {"autofix": None})
 
     try:
         body = raw_body(event)
