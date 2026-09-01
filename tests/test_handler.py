@@ -1031,18 +1031,30 @@ def dispatch_record(token="cb-token"):
     }
 
 
+@patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
-def test_a_pr_opened_callback_replies_with_the_link(alert_store, bot_client):
+@patch("receiver.handler.config")
+def test_a_pr_opened_callback_replies_with_the_link(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    repo = config.return_value.target_repo
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
 
-    response = route(callback_event())
+    good_url = f"https://github.com/{repo}/pull/42"
+    response = route(callback_event(pr_url=good_url))
 
     assert response["statusCode"] == 200
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert reply == "Autofix PR opened: https://pr"
+    assert reply == f"Autofix PR opened: {good_url}"
     assert store.advance_autofix.call_args.args == ("d-1", "dispatched", "pr_opened")
 
 
@@ -1141,15 +1153,28 @@ def test_a_malicious_pr_url_is_rejected_not_relayed_into_the_reply(alert_store, 
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
     assert "phish.example" not in reply
     assert "[Click to review]" not in reply
-    assert reply == "Autofix PR opened: (missing PR URL)"
+    # Not a github.com PR URL, so verification fails closed before it would
+    # even need the missing target-repo config: the warning reply, not the
+    # normal completion text, is what a reader sees.
+    assert reply == handler.UNVERIFIED_REPLY.format(pr_url="(missing PR URL)")
 
 
+@patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
-def test_a_legitimate_pr_url_survives_intact_and_stays_a_link(alert_store, bot_client):
+@patch("receiver.handler.config")
+def test_a_legitimate_pr_url_survives_intact_and_stays_a_link(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
 
     good_url = "https://github.com/acme-tools/checkout/pull/42"
     response = route(callback_event(pr_url=good_url))
@@ -1206,18 +1231,31 @@ def test_a_backslash_pr_url_is_neutralized_not_relayed(alert_store, bot_client):
     assert "\\" not in reply
 
 
+@patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
 def test_a_legitimate_underscored_pr_url_still_produces_a_working_link(
-    alert_store, bot_client
+    config, alert_store, bot_client, github_client, tmp_path
 ):
     """`_` is common in real GitHub repo/branch names and must not be
     rejected outright; percent-encoding keeps the link real and clickable."""
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    custom = VALID.replace(
+        "target_repo: acme-tools/checkout", "target_repo: acme-tools/check_out"
+    )
+    assert custom != VALID  # guards against a silently no-op substitution
+    config.return_value = load_config(write(tmp_path, custom))
+    repo = config.return_value.target_repo
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
 
-    good_url = "https://github.com/sentasity/my_repo/pull/42"
+    good_url = f"https://github.com/{repo}/pull/42"
     response = route(callback_event(pr_url=good_url))
 
     assert response["statusCode"] == 200
@@ -1225,3 +1263,80 @@ def test_a_legitimate_underscored_pr_url_still_produces_a_working_link(
     assert "https://github.com/" in reply
     assert "(missing PR URL)" not in reply
     assert reply.count("https://") == 1
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_pr_from_the_app_bot_gets_the_normal_completion_reply(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    repo = config.return_value.target_repo
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
+
+    route(callback_event(pr_url=f"https://github.com/{repo}/pull/42"))
+
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply.startswith("Autofix PR opened:")
+    github_client.return_value.pr_author.assert_called_once_with(repo, 42)
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_pr_not_authored_by_the_app_is_flagged_loudly(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    repo = config.return_value.target_repo
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    github_client.return_value.app_slug.return_value = "acme-autofix"
+    github_client.return_value.pr_author.return_value = "some-human"
+
+    with caplog.at_level(logging.ERROR):
+        route(callback_event(pr_url=f"https://github.com/{repo}/pull/42"))
+
+    assert any(observability.AUTOFIX_UNVERIFIED_MARKER in r.message for r in caplog.records)
+    # The unverified marker rides along with the existing failure marker so
+    # the alarm already wired to it fires without a second alarm to define.
+    assert any(observability.AUTOFIX_FAILED_MARKER in r.message for r in caplog.records)
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert "could not be verified" in reply
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_pr_in_the_wrong_repo_is_flagged_without_an_api_call(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+
+    with caplog.at_level(logging.ERROR):
+        route(callback_event(pr_url="https://github.com/evil/elsewhere/pull/1"))
+
+    assert any(observability.AUTOFIX_UNVERIFIED_MARKER in r.message for r in caplog.records)
+    github_client.return_value.app_slug.assert_not_called()
+    github_client.return_value.pr_author.assert_not_called()

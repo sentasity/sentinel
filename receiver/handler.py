@@ -38,6 +38,7 @@ from receiver.observability import (
     AUTOFIX_DECLINED_MARKER,
     AUTOFIX_DISPATCHED_MARKER,
     AUTOFIX_FAILED_MARKER,
+    AUTOFIX_UNVERIFIED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
     PROBE_LOG_LIMIT,
@@ -544,6 +545,31 @@ def safe_callback_url(value: str, *, field: str) -> str:
     return value
 
 
+# The exact PR-URL shape the author check parses. Stricter than
+# CALLBACK_URL_RE on purpose: verification reads the RAW pr_url, before
+# safe_callback_url percent-encodes underscores, so repo names survive.
+PR_URL_RE = re.compile(r"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)$")
+
+UNVERIFIED_REPLY = (
+    "⚠️ Autofix reported a PR, but its author could not be verified as the "
+    "autofix App. Review it with care before trusting it: {pr_url}"
+)
+
+
+def verified_pr_author(raw_pr_url: str) -> bool:
+    """True when the callback's PR is in the target repo AND authored by the
+    App bot. Both lookups degrade to False, never to an exception: the
+    callback body is untrusted, and this check must fail closed."""
+    match = PR_URL_RE.match(raw_pr_url)
+    if not match or match.group(1) != config().target_repo:
+        return False
+    slug = github_client().app_slug()
+    if not slug:
+        return False
+    number = int(match.group(2))
+    return github_client().pr_author(config().target_repo, number) == f"{slug}[bot]"
+
+
 def handle_autofix_result(event: dict) -> dict:
     """Accept the workflow's outcome and close the Teams thread.
 
@@ -581,7 +607,8 @@ def handle_autofix_result(event: dict) -> dict:
         LOG.warning("rejected autofix callback with status %r", status)
         return respond(400, "unusable status")
 
-    pr_url = safe_callback_url(str(body.get("pr_url") or ""), field="pr_url")
+    raw_pr_url = str(body.get("pr_url") or "")
+    pr_url = safe_callback_url(raw_pr_url, field="pr_url")
     run_url = safe_callback_url(str(body.get("run_url") or ""), field="run_url")
     if not alert_store().advance_autofix(
         record["dispatch_id"], "dispatched", status, extra={"pr_url": pr_url}
@@ -595,7 +622,24 @@ def handle_autofix_result(event: dict) -> dict:
             AUTOFIX_FAILED_MARKER, record.get("short_id", ""), run_url,
         )
 
-    reply = autofix.completion_reply(status, pr_url=pr_url, run_url=run_url)
+    if status == "pr_opened" and not verified_pr_author(raw_pr_url):
+        # Both markers land in this one line on purpose. The prompt tells the
+        # session to push only through the vended App token, but a prompt is
+        # guidance, not enforcement, so this line is the detective control
+        # for the case where that instruction was not followed. Carrying the
+        # existing failure marker alongside the new one means the alarm
+        # already wired to it fires here too, with no second alarm to define
+        # and keep in sync; the new marker is what tells a reader looking at
+        # the logs that this is specifically an authorship mismatch, not an
+        # ordinary autofix failure.
+        LOG.error(
+            "%s %s %s pr_url=%s",
+            AUTOFIX_UNVERIFIED_MARKER, AUTOFIX_FAILED_MARKER,
+            record.get("short_id", ""), pr_url,
+        )
+        reply = UNVERIFIED_REPLY.format(pr_url=pr_url or "(missing PR URL)")
+    else:
+        reply = autofix.completion_reply(status, pr_url=pr_url, run_url=run_url)
     try:
         bot_client().reply_in_thread(record["conversation_id"], record["message_id"], reply)
     except BotError as exc:

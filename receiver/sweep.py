@@ -324,7 +324,7 @@ def expire_overdue(*, store, bot) -> int:
     return expired
 
 
-AUTOFIX_TIMEOUT_REPLY = "Autofix failed: the fix run never reported back."
+AUTOFIX_TIMEOUT_REPLY = "Autofix failed: the fix session never reported back."
 
 
 def expire_autofix(*, store, bot) -> int:
