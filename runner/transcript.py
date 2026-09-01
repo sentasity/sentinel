@@ -127,8 +127,8 @@ def render_message(message) -> list:
 
     Dispatches on class name rather than isinstance so this module still
     imports without claude-agent-sdk installed: the SDK is a dependency of the
-    workflow, not of the tests, and run_session imports it lazily for that
-    same reason.
+    workflow, not of the tests, and each runner's own run_session imports it
+    lazily for that same reason.
     """
     kind = type(message).__name__
     if kind == "SystemMessage":
