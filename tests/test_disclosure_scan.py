@@ -125,8 +125,8 @@ def test_a_missing_base_commit_widens_to_a_full_sweep():
 
 
 def test_the_file_list_cannot_be_word_split_or_glob_expanded():
-    """Same hazard autofix.yml carries a guard for: a tracked path containing
-    a space or a wildcard must stay one entry."""
+    """A tracked path containing a space or a wildcard must stay one entry,
+    not be split or expanded by the shell that hands it to the session."""
     run = step("Collect what is in scope")["run"]
 
     assert "git ls-files -z" in run

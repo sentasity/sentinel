@@ -36,11 +36,12 @@ import secrets
 import sys
 from pathlib import Path
 
-# The transcript rendering is the same problem in both runners: stream every
+# The transcript rendering is the same problem in every runner: stream every
 # SDK message into the step log as a collapsible group, with workflow-command
 # parsing suspended inside each body because the bodies are untrusted. Sharing
-# it keeps one implementation of that guard rather than two that drift.
-from runner.autofix_runner import emit_section, render_message
+# it keeps one implementation of that guard rather than one per runner that
+# could drift from the others.
+from runner.transcript import emit_section, render_message
 
 # Read-only by construction. The session's job is to look, and a scan that can
 # edit the tree it is judging could be talked into editing the finding away.
