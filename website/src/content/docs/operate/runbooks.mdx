@@ -1,36 +1,45 @@
 ---
 title: Runbooks
-description: Credential inventory, rotation runbooks, and the checks that prove the pipeline still works.
+description: Credential inventory, rotation runbooks, what autofix needs to work, and how to read what it reports.
 ---
 
-Runbooks for the credentials the engine holds and the checks that prove the pipeline still works. Deploying the receiver itself is covered in [infra/README.md](https://github.com/sentasity/sentinel/blob/main/infra/README.md); the one-time Microsoft and Sentry setup lives in [Microsoft setup](/sentinel/deploy/microsoft/) and [Sentry setup](/sentinel/deploy/sentry/).
+Runbooks for the credentials the engine holds, what autofix needs on the GitHub side, and how to read what the pipeline reports about itself. Deploying the receiver itself is covered in [infra/README.md](https://github.com/sentasity/sentinel/blob/main/infra/README.md); the one-time Microsoft and Sentry setup lives in [Microsoft setup](/sentinel/deploy/microsoft/) and [Sentry setup](/sentinel/deploy/sentry/).
 
 ## Credential inventory
 
 | Credential | Where it lives | Purpose |
 |---|---|---|
-| `AUTOFIX_APP_PRIVATE_KEY` | Actions secret, engine repo | Mints the short-lived App installation token used to check out the target repo and publish the PR |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the unattended autofix session and the disclosure scan against the Claude subscription |
-| `AUTOFIX_APP_ID` | Actions variable, engine repo | The App ID passed to `create-github-app-token` |
-| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The same App private key, read by the receiver at cold start |
+| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The autofix App's private key, read by the receiver at cold start; it mints the scoped installation tokens vended to fix sessions |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the disclosure scan session against the Claude subscription |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
-| Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the autofix workflow presents to `/autofix-result`; scoped to a single dispatch, not reusable |
+| Vended installation tokens | Nowhere: minted per batch, returned in the `/findings` response, never stored | Lets the fix session push a branch and open a pull request; scoped to the target repo, `contents: write` and `pull_requests: write`, one hour |
+| Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the fix session presents to `/autofix-result`; scoped to a single dispatch, not reusable |
 | `SENTINEL_BANNED_PATTERNS` | Actions secret, engine repo | The deployment-identifying ban patterns `tests/test_public_tree.py` enforces; not a credential, but held like one because publishing the list would index what it protects |
 
 The routine trigger token is never stored in this repo; keep the only other copy in your password manager.
 
+## What the autofix App needs
+
+The receiver mints every autofix credential itself, so the App's configuration is the only thing standing between a passing gate and a pull request:
+
+- The App must be **installed on the target repository**, the one named by `target_repo`. Minting looks that installation up by repository, so an App installed on the organization but not on this repository fails at the lookup.
+- The installation must grant **contents: write** and **pull requests: write**. The receiver downscopes each minted token to exactly those two, and a token can never hold a permission the installation lacks, so a missing one produces a token that cannot push or cannot open the pull request.
+- Do **not** grant `workflows`. It is excluded from every minted token on purpose ([why](/sentinel/security-model/)), and granting it at the installation widens the App's own reach for no benefit here.
+- `autofix.app_id` in the config file must be the App's numeric id, and `/sentinel/github-app-private-key` must be one of that App's active private keys.
+
+## The routine's environment must reach GitHub
+
+The fix phase fetches the base branch, pushes a branch, and calls the pull-request API, all against GitHub, from inside the routine's cloud environment. That environment's egress policy has to permit reaching those endpoints or the fix phase cannot run at all. Investigation is unaffected either way, so the symptom is narrow and uniform: findings keep arriving and threads keep getting their replies, while every grant fails and no pull request ever opens. Read that pattern as an egress question before a code question.
+
+It is worth stating what the two phases need separately, because they are not the same. Investigation reads the repository at the release SHA, which the routine's own environment provides for the repository it is bound to. The fix phase additionally writes: it pushes to a branch and creates a pull request through the API. Widen the policy by exactly the endpoints that needs, rather than opening it generally. The narrower the policy stays, the more the out-of-band destination check in [the security model](/sentinel/security-model/) is actually worth.
+
 ## Runbook: rotating the GitHub App private key
 
 1. Generate a second private key in the GitHub App settings. GitHub Apps allow two active keys at once, so this rotation is zero-downtime: the old key keeps authenticating while the new one rolls out.
-2. Update the key everywhere it lives, one place at a time. Set `AWS_REGION` to the
-   region you deployed into first; `scripts/put-parameters.sh` and the receiver both
-   default to `us-east-1`, but nothing requires it.
+2. Update the key in both places it lives. Set `AWS_REGION` to the region you deployed
+   into first; `scripts/put-parameters.sh` and the receiver both default to `us-east-1`,
+   but nothing requires it.
    - **Your password manager:** update the stored copy manually.
-   - **Actions secret** (mints the App installation token the workflow uses to check out the target repo and publish PRs):
-     ```bash
-     gh secret set AUTOFIX_APP_PRIVATE_KEY --repo "$ENGINE_REPO" < new-private-key.pem
-     ```
-     (or via the repo's Settings > Secrets and variables > Actions in the web UI)
    - **SSM parameter** (read by the receiver at cold start). `scripts/put-parameters.sh` writes all five receiver secrets together and its `put()` helper hard-exits the moment any of them is unset, so it is not a safe tool for rotating this one key alone unless you also have the other four ready to supply in the same run. Update the parameter directly instead:
      ```bash
      aws ssm put-parameter \
@@ -40,17 +49,16 @@ The routine trigger token is never stored in this repo; keep the only other copy
        --overwrite \
        --region "$AWS_REGION"
      ```
-3. Confirm the new key is actually the one in place, not just that GitHub accepts requests (both keys stay valid until you delete one, so a dispatch succeeding proves nothing about which key was used):
+3. Confirm the new key is actually the one in place, not just that GitHub still accepts requests. Both keys stay valid until you delete one, so a successful mint proves nothing about which key produced it:
    - SSM: `aws ssm get-parameter --name /sentinel/github-app-private-key --with-decryption --region "$AWS_REGION" --query Parameter.Value --output text`, and diff the output against the new key file.
-   - Actions secret: GitHub never returns a secret's value, so check `gh secret list --repo "$ENGINE_REPO"` and confirm `AUTOFIX_APP_PRIVATE_KEY`'s `Updated` column reflects the change you just made.
-   - Run the proof point below (or wait for a real dispatch) and confirm the "Mint App installation token" step and the Publish step both succeed, i.e. a PR actually opens.
-4. Only once all three checks in step 3 pass, delete the old key from the App settings.
+   - The receiver caches its App client per container, so a warm Lambda keeps using the key it read at cold start. Wait for a cold start, or force one with a no-op config deploy, before reading anything into the next autofix outcome.
+4. Only once both checks in step 3 pass, delete the old key from the App settings.
 
 ## Runbook: renewing the Claude OAuth token
 
-Run `claude setup-token` on an operator machine and paste the output into the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret (engine repo).
+Run `claude setup-token` on an operator machine and paste the output into the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret (engine repo). It authenticates the disclosure scan; the investigation and fix sessions run as cloud routines and authenticate through the account the routine belongs to, not through this secret.
 
-Expiry does not fail the "Run the fix session" step: `runner/autofix_runner.py`'s `main()` wraps the session in a broad exception handler and always returns 0, so that step shows green in the Actions UI even on an auth failure. What actually fails is downstream: `result.json` never reaches a `verified` status, `scripts/autofix_publish.py` reports `failed`, and the callback posts the "Autofix failed" thread reply. To diagnose, don't trust the session step's pass/fail badge; check the run's `::error::` annotations (the session step logs `autofix session crashed: <exc>` on a crash) and the Publish step's log, which prints the actual final status on its last line.
+An expired token fails the disclosure scan loudly, which is the behaviour that section below describes.
 
 ## The disclosure scan
 
@@ -83,40 +91,39 @@ Run the full sweep before publishing anything new from the repository, and after
 **Known gaps.**
 
 - Pull requests from forks cannot be scanned: GitHub does not give a fork's run the OAuth token, so the session has nothing to authenticate with. The job fails such a run rather than skipping it, because GitHub records a skipped job as "skipped" and branch protection counts a skipped required check as satisfied, which would let a fork's pull request merge looking scanned when nothing read it. Review the change by hand, or re-run the scan from a branch in the repository itself; either way the scan of record is the push to the default branch after the merge.
-- An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly, unlike the autofix session, which returns 0 regardless. So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
+- An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly. So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
 
-## Proof point: the autofix pipeline end to end
+## Reading autofix in the logs
 
-Re-run this after any change to `.github/workflows/autofix.yml` to confirm the pipeline still fires end to end. It dispatches a real workflow run and, on success, opens a real PR, so don't run it casually.
+Four markers carry everything autofix says about itself, each at the front of the line it labels.
 
-```bash
-TARGET_REPO="$AUTOFIX_TARGET_OWNER/$AUTOFIX_TARGET_NAME"
-RELEASE_SHA=$(gh api "repos/$TARGET_REPO/commits/$AUTOFIX_TARGET_BRANCH" --jq .sha)
-jq -n --arg sha "$RELEASE_SHA" '{
-  "event_type": "autofix",
-  "client_payload": {
-    "dispatch_id": "proofpoint-manual",
-    "sentry_issue_id": "0",
-    "sentry_short_id": "PROOF-1",
-    "project": "example-project",
-    "environment": "staging",
-    "release_sha": $sha,
-    "cited_files": ["path/to/a/real/file.py"],
-    "findings_md": "Root cause: <one paragraph naming a file, a symbol, and a line range in the target repo>. Fix: <the concrete change to make>. Confidence high, fixability high.",
-    "callback_url": "REPLACE_WITH_FUNCTION_URL/autofix-result",
-    "callback_token": "proofpoint-invalid-token"
-  }
-}' | gh api "repos/$ENGINE_REPO/dispatches" --input -
-```
+| Marker | Means |
+|---|---|
+| `AUTOFIX_DECLINED` | The gate said no, with the reason on the same line. Not a fault: this is the normal outcome for most findings |
+| `AUTOFIX_DISPATCHED` | A grant was staged, with its dispatch id. Staging happens before the batch's token is minted, so a withdrawal line can still follow |
+| `AUTOFIX_FAILED` | Something went wrong: a mint failure, a crashed gate, a session reporting `failed`, or a callback deadline passing with nothing reported |
+| `AUTOFIX_UNVERIFIED` | A session reported a pull request the receiver could not confirm the App authored. Always accompanied by `AUTOFIX_FAILED` on the same line |
 
-Export `ENGINE_REPO` (the `owner/name` of your own deployment of this engine) along
-with `AUTOFIX_TARGET_OWNER`, `AUTOFIX_TARGET_NAME`, and `AUTOFIX_TARGET_BRANCH`, set to
-the same values the repository variables carry. Unset, they expand to an empty
-repository name and the `gh api` call fails.
+### `AUTOFIX_UNVERIFIED`: treat the pull request as untrusted
 
-`cited_files` must name a file that really exists in the target repo at that
-SHA: the workflow diffs exactly those paths to build the drift context, and a
-path that does not resolve produces an empty drift patch rather than an error.
+The receiver checks every reported pull request: the URL must parse, name the configured target repository, and resolve to a pull request whose author is the autofix App's own bot login. Anything else is unverified, and the thread gets a warning rather than a plain link.
+
+The line names the short id and the URL that was reported. What to do:
+
+1. **Treat the pull request as untrusted.** It was opened by something other than the App identity the pipeline is supposed to use, or in a repository other than the target, or by an identity the receiver could not read at all. Do not review it as a normal autofix pull request and do not merge it.
+2. **Close it.** If a fix is genuinely wanted, it should come back through the pipeline or be written by hand, not merged on the strength of a claim the receiver rejected.
+3. **Read the session transcript.** This is the part that matters, because the marker tells you the pipeline caught something without telling you what. The transcript shows which credential the session actually used and, if the pull request was opened under a person's identity, that a connector was used where the vended token was meant to be.
+4. **Rule out the boring causes before the alarming one.** A GitHub outage during the author lookup, or an App whose slug could not be fetched, both fail closed and report unverified. Those are noise; a pull request genuinely authored by someone else is not.
+
+The line carries `AUTOFIX_FAILED` too, so the alarm on that marker fires for this case as well and it does not need an alarm of its own.
+
+### `AUTOFIX_FAILED ... token mint failed`
+
+Minting is the one step between a passing gate and a session that can act. When it fails, every grant staged for that batch is withdrawn: the dispatch records settle as failed, and each thread's reply line reads `Autofix declined: could not mint a GitHub credential.` rather than promising a fix that has no credential to start with. The findings replies themselves are unaffected, which is the design: autofix failing must never cost a thread its investigation.
+
+One line per withdrawn grant appears in the log, each naming the short id. The mint failure's own cause is logged separately by the App client, naming the repository and the underlying error. Work through the App checklist above: the wrong `autofix.app_id`, a private key that no longer matches an active key, or an App not installed on the target repository all land here.
+
+If a batch instead reports a crash before minting was attempted, the cause is usually the App private key parameter being unreadable at cold start rather than GitHub itself.
 
 ## Runbook: replaying an alert the receiver has already seen
 

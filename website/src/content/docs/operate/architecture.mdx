@@ -3,7 +3,7 @@ title: Architecture reference
 description: The receiver, its routes, the investigation and autofix pipelines, and the infrastructure behind them.
 ---
 
-The engine is one Lambda (the receiver), one DynamoDB table, a one-minute EventBridge schedule, and two kinds of unattended Claude Code session: cloud routine sessions that investigate, and a GitHub Actions session that writes fixes. This document walks the pipeline end to end and then covers the security model that makes the unattended parts safe to run.
+The engine is one Lambda (the receiver), one DynamoDB table, a one-minute EventBridge schedule, and one kind of unattended Claude Code session: a cloud routine that investigates a batch of issues and, for the findings the receiver's gate approves, writes the fix as well. This document walks the pipeline end to end and then covers the security model that makes the unattended parts safe to run.
 
 ## The receiver
 
@@ -13,9 +13,9 @@ The engine is one Lambda (the receiver), one DynamoDB table, a one-minute EventB
 |---|---|---|
 | `POST /sentry` | Sentry | Issue alert webhook, HMAC-verified |
 | `POST /bot` | Azure Bot Service | Teams bot messages (JWT-verified) |
-| `POST /findings` | The investigator session | Findings document for a fired batch |
+| `POST /findings` | The investigator session | Findings document for a fired batch; the response vends any autofix grants it earned |
 | `POST /findings/probe` | The probe session | Configuration probe report |
-| `POST /autofix-result` | The autofix workflow | Outcome callback, capability-token auth |
+| `POST /autofix-result` | The same session's fix phase | Outcome callback, capability-token auth |
 | `GET /health` | Operators | Liveness |
 
 The same Lambda is also invoked directly (not over the URL) by the EventBridge rule that drives the sweep, so the scheduled path is not reachable from the internet.
@@ -40,11 +40,19 @@ State lives in one DynamoDB table (`receiver/store.py`): posted alert cards and 
 
 ## The autofix pipeline
 
-**Gate** (`autofix.py`). A finding proceeds to autofix when its confidence and fixability each clear the configured minimums, the project is on the allowlist (an empty allowlist opts in every project), no cited file matches an excluded path, and the daily autofix cap has budget left.
+Autofix runs inside the investigation session, not after it. The reason is a property of the runtime rather than a preference: the receiver can answer a session's request, but it cannot send a message to a session already running. The HTTP response to `POST /findings` is therefore the only channel it has, and everything the fix phase needs has to travel back down it.
 
-**Dispatch.** The receiver fires a `repository_dispatch` event at this repo carrying the finding, the release SHA, and a one-time callback token (stored hashed, scoped to the single dispatch).
+**Gate** (`autofix.py`). Evaluated per result as the findings are delivered. A finding proceeds to autofix when autofix is enabled, the project is on the allowlist (an empty allowlist opts in every project), the findings document is schema v2 or later, the result is `investigated`, its confidence and fixability each clear the configured minimums, no cited file matches a forbidden or excluded path, no fix has already been attempted for this issue in this environment on this release, and the daily pull-request cap has budget left. Checks run cheapest first and the first failure wins, so a decline names one reason and appends it to that finding's reply card. The single exception is autofix being switched off entirely, which says nothing at all: with the kill switch off, no thread carries an autofix line.
 
-**Workflow** (`.github/workflows/autofix.yml`). The workflow checks out the target repo at the release SHA and runs `runner/autofix_runner.py`: one unattended Claude Agent SDK session that judges drift against the current default branch, re-verifies the root cause, and writes the fix. The session holds no GitHub credential and never publishes. A separate publish step (`scripts/autofix_publish.py`) then verifies the result, opens the PR as the GitHub App identity, and calls back to `/autofix-result`, which posts the outcome into the Teams thread. Every PR waits for a human reviewer; nothing merges automatically.
+**Grant.** A passing finding stages a grant: a dispatch id, a one-time callback token (stored hashed, scoped to that single dispatch), and the files the finding cited. Grants are staged rather than posted immediately, because the credential they promise does not exist yet.
+
+**Mint** (`github_app.py`). Once the whole batch is gated, the receiver mints one GitHub App installation token for `target_repo`, downscoped to that one repository and to `contents: write` plus `pull_requests: write`. GitHub gives it one hour. If minting fails, every staged grant is withdrawn and its reply line is rewritten before any thread reads it, so a thread never promises a fix that has no credential to start with.
+
+**Vend.** The `/findings` response then carries the repository, the base branch, the token and its expiry, the callback URL, and one entry per approved grant. Reply cards post last, after the mint has resolved.
+
+**Fix** (`prompts/investigator.md`, step 7). The same session works each grant independently: check out the base branch through a remote authenticated with the vended token only, diff the cited files against the release it investigated and abort if that drift invalidates the diagnosis, re-verify the root cause at this checkout, write the fix and a test that fails without it, run the narrowest relevant test command, then push a branch named after the short id and the dispatch id and open a pull request against the base branch. Every path through that phase reports to `/autofix-result` exactly once, including the paths that stop early.
+
+**Verify and close.** On a `pr_opened` callback the receiver checks that the pull request lives in `target_repo` and was authored by the App's own bot login. Verified, the outcome posts into the Teams thread; unverified, the thread gets a warning instead and the log carries an authorship-mismatch marker. A grant that never calls back is failed by the sweep once its hour is up, so a session that dies mid-fix still closes its thread. Every pull request waits for a human reviewer; nothing merges automatically.
 
 
 ## Security model

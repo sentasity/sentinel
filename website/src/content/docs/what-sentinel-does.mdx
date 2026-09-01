@@ -7,7 +7,7 @@ Sentinel watches a Sentry project. When a new or regressed issue fires, it posts
 alert card to Microsoft Teams and then hands the issue to an unattended Claude Code
 session, which checks the repository out at the release the error came from and works
 out what went wrong. The findings come back as a reply in the same Teams thread. If a
-finding is confident enough, a separate workflow can write the fix and open a pull
+finding is confident enough, that same session goes on to write the fix and open a pull
 request.
 
 ## The problem it solves
@@ -33,8 +33,9 @@ today.
    out the target repository at the release SHA, investigates each issue, and posts a
    findings document back, which the receiver renders as a threaded reply.
 4. **Autofix.** A finding whose confidence and fixability both clear their configured
-   minimums can dispatch a GitHub Actions workflow. An unattended session writes the
-   fix; a separate publish step opens the pull request.
+   minimums earns a grant, returned in the reply to that findings document along with a
+   GitHub credential scoped to one repository for one hour. The same session writes the
+   fix and opens the pull request with it.
 
 See [How it works](/sentinel/how-it-works/) for the same pipeline with its gates and
 failure handling, or [See it work](/sentinel/evidence/) for the artifacts it produces.
@@ -42,7 +43,8 @@ failure handling, or [See it work](/sentinel/evidence/) for the artifacts it pro
 ## What it will not do
 
 Nothing merges automatically. Every pull request waits for a human reviewer, and the
-session that writes a fix holds no credential that could push one.
+credential a session gets to open one cannot reach past a single repository, two
+permissions, and an hour. It notably cannot push a workflow file.
 
 Both of the aggressive behaviours ship switched off. A new deployment starts in
 `shadow` mode, which runs the whole gate and records what it would have fired without
