@@ -94,5 +94,8 @@ autofix:
   exclude_paths: []
   daily_pr_cap: 5
   app_id: "REPLACE_WITH_APP_ID"
-  repo: REPLACE_WITH_OWNER/ENGINE_REPO
+  # The branch fixes are written against and PRs target. The fix lands in
+  # target_repo (above); there is no separate dispatch repository since the
+  # fix session runs inside the investigation routine.
+  base_branch: REPLACE_WITH_DEFAULT_BRANCH
   callback_url: "REPLACE_WITH_FUNCTION_URL/autofix-result"
