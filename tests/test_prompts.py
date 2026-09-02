@@ -108,9 +108,38 @@ def test_no_sentence_lets_the_session_push_without_naming_the_vended_token():
 def test_the_prompt_names_the_vended_token_as_the_only_push_path():
     body = fix_phase()
 
-    assert "x-access-token" in body
     assert "`github_token`" in body
     assert "only credential" in body
+    # The mechanism, not just the rule. `gh auth setup-git` keeps the
+    # credential in the environment and out of .git/config; a remote URL
+    # carrying the token would put it back on disk for the whole checkout.
+    assert "gh auth setup-git" in body
+    assert "GH_TOKEN" in body
+
+
+def test_the_prompt_never_tells_the_session_to_put_the_token_in_a_url():
+    """git writes a remote URL into .git/config in plaintext, so a token
+    embedded there outlives the command that set it and is echoed by
+    `git remote -v`. The workflow this phase replaced set
+    persist-credentials: false for exactly that reason, and the fix phase
+    must not reintroduce the pattern."""
+    body = fix_phase()
+
+    assert "x-access-token" not in body, (
+        "the fix phase puts the token back into a remote URL"
+    )
+    assert "Never put the token in a remote URL" in body
+
+
+def test_the_fix_phase_fails_closed_when_the_credential_helper_is_missing():
+    """Without a named fallback, a session that cannot run `gh auth
+    setup-git` improvises, and every route it could improvise either writes
+    the token to a file or reaches for the ambient connector. Reporting
+    `failed` is the only outcome that is neither."""
+    body = " ".join(fix_phase().split())
+
+    assert "If `gh` is unavailable or `gh auth setup-git` fails" in body
+    assert "Do not reach for another way to authenticate" in body
 
 
 # The keys receiver.handler.deliver_findings puts in the /findings response,
@@ -250,13 +279,13 @@ def test_every_grant_starts_from_a_clean_working_tree():
 
 
 def test_the_fix_phase_forbids_writing_the_vended_token_down():
-    """The session holds a live write credential and configures it into a
-    remote URL, where `git remote -v` and many git error messages echo it
-    verbatim. It is also told to put its test command and its result into the
-    PR body, and to say there when it saw injected content. A PR body in the
-    target repository is durable and potentially public output, so the ban on
+    """The session holds a live write credential in its environment. It is
+    also told to put its test command and its result into the PR body, and to
+    say there when it saw injected content. A PR body in the target
+    repository is durable and potentially public output, so the ban on
     recording the token has to be stated rather than left to inference from
-    the clause about which credential to use."""
+    the clause about which credential to use. Keeping the token out of the
+    remote URL keeps it off disk but not out of command output."""
     body = " ".join(fix_phase().lower().split())
 
     assert "never write the token" in body, "the token clause never forbids recording it"
@@ -264,10 +293,10 @@ def test_the_fix_phase_forbids_writing_the_vended_token_down():
     # only the obvious one does not pass.
     for sink in ("commit", "branch name", "pr title or body", "callback", "any file"):
         assert sink in body, f"the ban on recording the token omits: {sink}"
-    # The reason, not just the rule: a session that knows why the remote URL
+    # The reason, not just the rule: a session that knows why echoed output
     # is the hazard also declines the paste the rule did not enumerate.
-    assert "git remote -v" in body
     assert "raw git output" in body
+    assert "still live in this session's environment" in body
 
 
 def test_the_retired_autofix_prompts_are_gone():
@@ -317,6 +346,18 @@ def test_the_probe_asks_all_four_questions():
 
     for phrase in ("git rev-parse head", "connector", "environment", "/health"):
         assert phrase in body, f"the probe prompt never covers: {phrase}"
+
+
+def test_the_probe_checks_what_the_fix_phase_depends_on():
+    """The fix phase needs GitHub reachable and `gh` present, and it
+    authenticates through `gh` so no credential lands on disk. Both failures
+    present identically from outside: investigations keep working and every
+    fix attempt reports a failure. The probe is the cheap way to tell them
+    apart before turning autofix on."""
+    body = probe().lower()
+
+    assert "api.github.com" in body
+    assert "gh --version" in body
 
 
 def test_the_probe_never_reads_the_repository():

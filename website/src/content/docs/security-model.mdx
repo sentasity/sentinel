@@ -85,7 +85,18 @@ where the credential arrives some safer way.
 | Scope | one repository, the configured `target_repo` |
 | Permissions | `contents: write` and `pull_requests: write`, nothing else |
 | Lifetime | one hour, set by GitHub when the token is minted |
-| Storage | none: minted per batch, returned once, never written down |
+| Storage | none on either side: minted per batch, returned once, never persisted by the receiver or written to disk by the session |
+
+The session holds the token in an environment variable and authenticates git through a
+credential helper, so it is never written to a file. That is a deliberate choice rather
+than an incidental one. Embedding a token in a remote URL is the obvious way to do this,
+and it is the wrong one: git records a remote URL in `.git/config` in plaintext, where it
+outlives the command that set it, survives for the whole checkout, and is echoed back by
+`git remote -v` and by many git error messages. The prompt therefore tells the session to
+export the token, run `gh auth setup-git` once, and add a remote carrying no credential.
+If that helper is unavailable the session reports the grant failed rather than
+improvising, because every route it could improvise either writes the token to a file or
+reaches for a credential that is not the vended one.
 
 `workflows` is absent deliberately. A workflow file pushed to a branch runs in CI, with
 access to the repository's secrets, before any human reviews the pull request that

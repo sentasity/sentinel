@@ -124,24 +124,38 @@ Steps:
    it.
 
    The `github_token` is the only credential you may use with GitHub, for
-   fetching, pushing, and the PR API alike. Configure it as the remote,
-   `https://x-access-token:<github_token>@github.com/<repo>.git`, and use
-   that remote for every git operation in this phase. Never push, open a
-   PR, or comment through any other identity, connector, stored credential,
-   or cached login, even where one is available here: work that arrives
-   under a person's name misrepresents who wrote it. The token deliberately
-   cannot push workflow files, so if your fix would touch anything under
-   .github/, report `declined_in_session` through f below and stop that
-   grant.
+   fetching, pushing, and the PR API alike. Hold it in an environment
+   variable, never in a URL and never in a file: export it as GH_TOKEN,
+   then run `gh auth setup-git` once, which teaches git to ask `gh` for a
+   credential at the moment it needs one and to read it from that variable.
+   Add the target as a plain remote, `https://github.com/<repo>.git`, with
+   no credential in it, and use `gh` for the PR API so one variable serves
+   both. Never put the token in a remote URL: git writes a remote URL into
+   .git/config in plaintext, where it outlives the command that set it and
+   is echoed by `git remote -v`.
+
+   If `gh` is unavailable or `gh auth setup-git` fails, stop that grant and
+   report `failed` through f below. Do not reach for another way to
+   authenticate. Every alternative route either puts the token in a file or
+   uses a credential that is not the vended one, and both are the outcomes
+   this clause exists to prevent.
+
+   Never push, open a PR, or comment through any other identity, connector,
+   stored credential, or cached login, even where one is available here:
+   work that arrives under a person's name misrepresents who wrote it. The
+   token deliberately cannot push workflow files, so if your fix would touch
+   anything under .github/, report `declined_in_session` through f below and
+   stop that grant.
 
    Never write the token, or any command output that could contain it, into
-   a commit, a branch name, a PR title or body, the callback, or any file:
-   the remote URL you just configured carries the token, so `git remote -v`
-   and many git error messages echo it verbatim, which is why raw git output
-   must never be pasted anywhere. A PR body lives in the target repository
-   for good and may be public, so quote only what you have read and confirmed
-   is free of the token, and describe a git failure in your own words instead
-   of quoting it.
+   a commit, a branch name, a PR title or body, the callback, or any file.
+   Keeping it out of the remote URL keeps it off disk, but it is still live
+   in this session's environment, so anything that prints the environment,
+   and any tool error that quotes back what it was given, can echo it
+   verbatim: that is why raw git output must never be pasted anywhere. A PR
+   body lives in the target repository for good and may be public, so quote
+   only what you have read and confirmed is free of the token, and describe
+   a git failure in your own words instead of quoting it.
 
    For each grant, one at a time. Every grant starts from a clean working
    tree, with no exception and regardless of how the previous one ended.
@@ -158,11 +172,12 @@ Steps:
       Then, with the tree clean: if the grant's `cited_files` is empty there
       is nothing to diff and nothing for b to read, so the defect cannot be
       confirmed at this checkout: report `not_reproducible` through f and
-      stop this grant. Otherwise fetch and check out `base_branch` from that
-      remote, and diff those files between the release you investigated and
-      this checkout. If that drift undermines your diagnosed root cause,
-      report `aborted_drift` through f and stop this grant. Trivial or
-      unrelated churn in the same files is NOT drift; proceed.
+      stop this grant. Otherwise fetch and check out `base_branch` from the
+      plain remote you added above, and diff those files between the release
+      you investigated and this checkout. If that drift undermines your
+      diagnosed root cause, report `aborted_drift` through f and stop this
+      grant. Trivial or unrelated churn in the same files is NOT drift;
+      proceed.
    b. Re-verify the root cause at this checkout: read the cited files and
       confirm the diagnosed defect exists here. If it does not, report
       `not_reproducible` through f and stop this grant.
@@ -182,12 +197,12 @@ Steps:
       does, and iterating until the token expires reports nothing at all.
    e. Create a branch named autofix/<the short id, lowercased>-<the first
       8 characters of the dispatch id>, commit the fix and its test, and
-      push that branch with the `github_token` remote. Open a PR against
-      `base_branch` through the GitHub API with the same token: title
-      "Autofix <short id>: <one-line summary>", body carrying the root
-      cause (two or three sentences), what changed and why it is
-      contained, and the test command you ran with the passing result it
-      produced. Write that body for a reviewer.
+      push that branch to that remote, authenticated by the `github_token`
+      you exported. Open a PR against `base_branch` with `gh`, which reads
+      the same variable: title "Autofix <short id>: <one-line summary>",
+      body carrying the root cause (two or three sentences), what changed
+      and why it is contained, and the test command you ran with the
+      passing result it produced. Write that body for a reviewer.
    f. Report the outcome: `pr_opened` when e opened a PR, otherwise the
       status named by the step that stopped this grant. POST to
       `callback_url` with the headers
