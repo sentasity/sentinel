@@ -13,6 +13,7 @@ cdk.out/
 .cadence/worktrees/
 teams-app/*.zip
 docs/superpowers/
+.superpowers/
 
 # brand exploration scratch; the adopted marks live in docs/brand/assets/
 docs/brand/options/

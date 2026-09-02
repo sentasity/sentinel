@@ -46,13 +46,15 @@ that decides what happens next.
 ## 3. The fix
 
 With `autofix.enabled` on, a finding at high confidence and high fixability clears the
-gate, so the receiver dispatches the workflow. An unattended session judges drift
-against the current default branch, re-verifies the root cause, and writes the change.
-A separate publish step then opens the pull request as the GitHub App and reports the
-outcome back into the same thread.
+gate, so the receiver answers the findings POST with a grant and a GitHub App
+installation token scoped to the target repository. The same session then judges drift
+against the base branch, re-verifies the root cause, writes the change and a test for
+it, opens the pull request as the App, and reports the outcome back into the same
+thread.
 
-Nothing merges automatically. The session that wrote the fix holds no credential that
-could push it, and the pull request waits for a human exactly like any other.
+Nothing merges automatically. The token can write contents and open pull requests in
+one repository for one hour and nothing else, and the pull request waits for a human
+exactly like any other.
 
 ## Severity variants
 

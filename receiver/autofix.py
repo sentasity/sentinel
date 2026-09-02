@@ -12,8 +12,16 @@ from receiver.findings import Findings, Result
 # Ranks for the two gate signals; shared shape with findings.CONFIDENCES.
 LEVELS = {"low": 0, "medium": 1, "high": 2}
 
-# How long the workflow has to call back before the sweep fails the dispatch.
-# The workflow's own timeout is 30 minutes; the margin covers queue time.
+# Paths no finding may cite, regardless of operator config. A workflow-file
+# change pushed to a branch runs in CI with the repository's secrets before
+# any human reviews the PR. The minted token cannot push one anyway
+# (github_app.AUTOFIX_PERMISSIONS grants no `workflows`), so this check is
+# the early, legible decline rather than the enforcement.
+FORBIDDEN_PATHS = (".github/*",)
+
+# How long the session's fix phase has to call back before the sweep fails
+# the grant. Matches the vended installation token's one-hour lifetime: a
+# fix that outlives its credential has failed anyway.
 CALLBACK_DEADLINE_SECONDS = 3600
 
 # Statuses the workflow may report; the callback route validates against
@@ -29,16 +37,31 @@ CALLBACK_STATUSES = (
 COMPLETION_REPLIES = {
     "pr_opened": "Autofix PR opened: {pr_url}",
     "aborted_drift": (
-        "Autofix skipped: develop has moved in ways that invalidate the diagnosis."
+        "Autofix skipped: the base branch has moved in ways that invalidate the "
+        "diagnosis."
     ),
-    "not_reproducible": "Autofix skipped: the root cause did not reproduce on develop.",
+    "not_reproducible": (
+        "Autofix skipped: the root cause did not reproduce on the base branch."
+    ),
     "declined_in_session": "Autofix skipped: the fix turned out larger than expected.",
-    "failed": "Autofix failed. Workflow run: {run_url}",
+    # No link, deliberately. The fix now runs inside the investigating session
+    # rather than in a separate run with an addressable URL, and the callback
+    # body the session sends carries a dispatch id, a status, and a PR URL and
+    # nothing else. Promising details and then rendering a placeholder is worse
+    # than saying only what is true: the detail lives in the session transcript
+    # and in the receiver's own failure marker, neither of which is a link this
+    # reply can offer.
+    "failed": "Autofix failed. No pull request was opened.",
 }
 
 
 def completion_reply(status: str, *, pr_url: str = "", run_url: str = "") -> str:
-    """The thread reply one callback status earns."""
+    """The thread reply one callback status earns.
+
+    `run_url` is still accepted, and still read and logged by the callback
+    route, so a future caller that does have a run URL is not a signature
+    change. No reply string interpolates it today.
+    """
     return COMPLETION_REPLIES[status].format(
         pr_url=pr_url or "(missing PR URL)", run_url=run_url or "(link unavailable)"
     )
@@ -54,7 +77,7 @@ class GateDecision:
         """The one line appended to the findings reply. Empty means silent:
         with the global kill switch off, threads read exactly as today."""
         if self.passed:
-            return "Autofix: dispatching."
+            return "Autofix: attempting a fix in this session."
         if self.reason == "disabled":
             return ""
         return f"Autofix declined: {self.reason}."
@@ -88,8 +111,9 @@ def evaluate(
     if LEVELS[result.fixability] < LEVELS[cfg.autofix_min_fixability]:
         return GateDecision(False, f"fixability {result.fixability}")
 
+    excluded = FORBIDDEN_PATHS + tuple(cfg.autofix_exclude_paths)
     for item in result.evidence:
-        if any(fnmatch(item.file, pattern) for pattern in cfg.autofix_exclude_paths):
+        if any(fnmatch(item.file, pattern) for pattern in excluded):
             return GateDecision(False, f"excluded path {item.file}")
 
     if not store.claim_autofix_dedupe(

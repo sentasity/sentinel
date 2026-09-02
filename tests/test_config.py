@@ -235,7 +235,7 @@ AUTOFIX = textwrap.dedent(
         - "infra/**"
       daily_pr_cap: 5
       app_id: "1234567"
-      repo: sentasity/sentinel
+      base_branch: main
       callback_url: "https://example.test/autofix-result"
     """
 )
@@ -250,7 +250,7 @@ def test_load_config_reads_the_autofix_section(tmp_path):
     assert cfg.autofix_exclude_paths == ("infra/**",)
     assert cfg.autofix_daily_pr_cap == 5
     assert cfg.autofix_app_id == "1234567"
-    assert cfg.autofix_repo == "sentasity/sentinel"
+    assert cfg.autofix_base_branch == "main"
     assert cfg.autofix_callback_url == "https://example.test/autofix-result"
 
 
@@ -270,11 +270,25 @@ def test_assert_ready_rejects_a_bad_autofix_threshold(tmp_path):
         assert_ready(load_config(write(tmp_path, body)))
 
 
-def test_enabled_autofix_requires_app_id_repo_and_callback(tmp_path):
+def test_enabled_autofix_requires_app_id_and_callback(tmp_path):
     body = VALID + AUTOFIX.replace('app_id: "1234567"', 'app_id: ""')
 
     with pytest.raises(ConfigError, match="autofix.app_id"):
         assert_ready(load_config(write(tmp_path, body)))
+
+
+def test_enabled_autofix_requires_a_base_branch(tmp_path):
+    body = VALID + AUTOFIX.replace("base_branch: main", 'base_branch: ""')
+    assert body != VALID + AUTOFIX  # the substitution above must actually fire
+
+    with pytest.raises(ConfigError, match="autofix.base_branch"):
+        assert_ready(load_config(write(tmp_path, body)))
+
+
+def test_the_config_no_longer_has_a_dispatch_repo(tmp_path):
+    cfg = load_config(write(tmp_path, VALID + AUTOFIX))
+
+    assert not hasattr(cfg, "autofix_repo")
 
 
 def test_the_new_secret_key_is_registered(tmp_path):

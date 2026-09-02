@@ -81,3 +81,9 @@ PROBE_LOG_LIMIT = 4000
 AUTOFIX_DISPATCHED_MARKER = "AUTOFIX_DISPATCHED"
 AUTOFIX_DECLINED_MARKER = "AUTOFIX_DECLINED"
 AUTOFIX_FAILED_MARKER = "AUTOFIX_FAILED"
+
+# A pr_opened callback whose PR is not in the target repo or not authored by
+# the autofix App. The prompt tells the session the vended token is the only
+# push path; this marker is the detective control that catches the very
+# first time that instruction fails.
+AUTOFIX_UNVERIFIED_MARKER = "AUTOFIX_UNVERIFIED"

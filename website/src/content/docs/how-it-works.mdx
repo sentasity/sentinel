@@ -11,8 +11,9 @@ flowchart LR
     Receiver -->|card| Teams[Microsoft Teams]
     Receiver -->|fires| Routine[Unattended session]
     Routine -->|findings| Receiver
-    Receiver -->|dispatches| Autofix[GitHub Actions]
-    Autofix -->|pull request| Repo[Target repo]
+    Receiver -->|scoped token and grants| Routine
+    Routine -->|pull request| Repo[Target repo]
+    Routine -->|outcome| Receiver
 ```
 
 ## 1. Alert
@@ -55,16 +56,30 @@ that dies quietly and leaves an alert looking investigated when nothing happened
 
 A finding proceeds to autofix only when every one of these holds: confidence and
 fixability each clear their configured minimums, the project is on the allowlist, no
-cited file matches an excluded path, and the daily pull-request cap has budget left.
+cited file matches a forbidden or excluded path, no fix has already been attempted for
+that issue in that environment on that release, and the daily pull-request cap has
+budget left.
 
-When it does, the receiver dispatches a workflow carrying the finding, the release SHA,
-and a one-time callback token. The workflow checks out the target repository, runs an
-unattended session that judges drift against the current default branch and writes the
-fix, and then a separate publish step opens the pull request as the GitHub App. The
-outcome is reported back into the Teams thread.
+When it does, the fix happens in the session that just reported the finding, not in a
+second one afterwards. The receiver mints a GitHub App installation token scoped to the
+target repository, good for an hour and for nothing but writing contents and opening
+pull requests, and returns it in the response to the findings POST along with one grant
+per approved finding.
 
-The session that writes the fix and the step that publishes it are deliberately
-different things. [The security model](/sentinel/security-model/) explains why.
+The reason it travels that way is worth stating plainly, because it shapes everything
+else: the receiver can answer a session that calls it, but it cannot message a session
+that is already running. The response body is the only channel there is.
+
+The session then checks out the base branch, confirms the defect is still there and that
+the branch has not moved in ways that invalidate the diagnosis, writes the fix and a
+test that fails without it, pushes, and opens a pull request as the App. It reports the
+outcome back to the receiver, which verifies the pull request really was authored by the
+App before posting it into the Teams thread. A grant that never reports is failed into
+the thread once its hour is up.
+
+The gate stays on the receiver rather than moving into the session, and the token is
+narrower than the session's own reach. [The security model](/sentinel/security-model/)
+explains why both of those matter.
 
 ## The gates, in one table
 

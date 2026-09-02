@@ -108,7 +108,7 @@ class ReceiverConfig:
     autofix_exclude_paths: tuple[str, ...] = ()
     autofix_daily_pr_cap: int = 5
     autofix_app_id: str = ""
-    autofix_repo: str = ""
+    autofix_base_branch: str = ""
     autofix_callback_url: str = ""
 
     def secret_name(self, key: str) -> str:
@@ -167,7 +167,7 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         autofix_exclude_paths=tuple(autofix.get("exclude_paths") or ()),
         autofix_daily_pr_cap=int(autofix.get("daily_pr_cap") or 5),
         autofix_app_id=str(autofix.get("app_id") or ""),
-        autofix_repo=autofix.get("repo") or "",
+        autofix_base_branch=autofix.get("base_branch") or "",
         autofix_callback_url=autofix.get("callback_url") or "",
     )
 
@@ -241,7 +241,7 @@ def assert_ready(cfg: ReceiverConfig) -> None:
     if cfg.autofix_enabled:
         for name, value in (
             ("autofix.app_id", cfg.autofix_app_id),
-            ("autofix.repo", cfg.autofix_repo),
+            ("autofix.base_branch", cfg.autofix_base_branch),
             ("autofix.callback_url", cfg.autofix_callback_url),
         ):
             if not value:

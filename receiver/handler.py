@@ -28,17 +28,17 @@ from receiver.config import (
 from receiver.findings import (
     InvalidFindings,
     parse_findings,
-    render_reply,
     render_reply_card,
     reply_summary,
 )
-from receiver.github_app import DispatchOutcome, GitHubAppClient
+from receiver.github_app import GitHubAppClient
 from receiver.investigation import enqueue_investigation
 from receiver.models import InvalidAlertPayload, parse_alert
 from receiver.observability import (
     AUTOFIX_DECLINED_MARKER,
     AUTOFIX_DISPATCHED_MARKER,
     AUTOFIX_FAILED_MARKER,
+    AUTOFIX_UNVERIFIED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
     PROBE_LOG_LIMIT,
@@ -125,6 +125,14 @@ def respond(status: int, body: str = "") -> dict:
         "statusCode": status,
         "headers": {"content-type": "text/plain"},
         "body": body,
+    }
+
+
+def respond_json(status: int, body: dict) -> dict:
+    return {
+        "statusCode": status,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps(body),
     }
 
 
@@ -258,13 +266,13 @@ def handle_probe(event: dict) -> dict:
     return respond(200, "ok")
 
 
-def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
-    """Run the gate for one delivered result; dispatch on pass.
+def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
+    """Run the gate for one delivered result; stage a grant on pass.
 
-    Returns the disposition line for the thread reply ("" when silent).
-    "dispatching" is only ever posted after repository_dispatch succeeded,
-    so the thread never promises a run that was not started. Any failure in
-    here must not cost the findings reply itself; the caller guards it.
+    Returns (disposition line, grant dict or None). The grant is only
+    staged: the caller mints one GitHub token for the whole batch and
+    withdraws every staged grant if the mint fails, so the thread only
+    ever reads "attempting" once a credential actually exists.
     """
     cfg = config()
     decision = autofix.evaluate(result, doc, row, cfg=cfg, store=alert_store())
@@ -274,7 +282,7 @@ def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
                 "%s %s reason=%s",
                 AUTOFIX_DECLINED_MARKER, result.short_id, decision.reason,
             )
-        return decision.disposition
+        return decision.disposition, None
 
     dispatch_id = str(uuid.uuid4())
     callback_token = secrets.token_urlsafe(32)
@@ -291,32 +299,44 @@ def autofix_after_delivery(result, doc, row: dict, reply_text: str) -> str:
         },
         due_at=_autofix_deadline(),
     )
-    outcome = github_client().dispatch(
-        cfg.autofix_repo,
-        "autofix",
-        {
-            "dispatch_id": dispatch_id,
-            "sentry_issue_id": row["issue_id"],
-            "sentry_short_id": result.short_id,
-            "project": row["project"],
-            "environment": row["environment"],
-            "release_sha": row["release"],
-            "cited_files": sorted({e.file for e in result.evidence if e.file}),
-            "findings_md": reply_text[:40_000],
-            "callback_url": cfg.autofix_callback_url,
-            "callback_token": callback_token,
-        },
-    )
-    if outcome is not DispatchOutcome.DISPATCHED:
-        alert_store().advance_autofix(dispatch_id, "dispatched", "failed")
-        LOG.error(
-            "%s %s dispatch failed: %s",
-            AUTOFIX_FAILED_MARKER, result.short_id, outcome.value,
-        )
-        return "Autofix declined: dispatch failed."
-
     LOG.info("%s %s dispatch %s", AUTOFIX_DISPATCHED_MARKER, result.short_id, dispatch_id)
-    return decision.disposition
+    return decision.disposition, {
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "dispatch_id": dispatch_id,
+        "callback_token": callback_token,
+        "cited_files": sorted({e.file for e in result.evidence if e.file}),
+    }
+
+
+MINT_FAILED_DISPOSITION = "Autofix declined: could not mint a GitHub credential."
+
+
+def withdraw_grants(staged: list[dict]) -> None:
+    """Undo every grant staged for a batch whose token never arrived.
+
+    The dispatch records exist but no session will ever call back for them,
+    and the disposition must not promise a fix that cannot start. Each settle
+    is its own best effort: one throttled conditional update must not cost
+    the remaining withdrawals, and a record left at `dispatched` is still
+    settled later by the sweep's callback deadline.
+    """
+    for d in staged:
+        LOG.error(
+            "%s %s token mint failed; grant withdrawn",
+            AUTOFIX_FAILED_MARKER, d["result"].short_id,
+        )
+        try:
+            alert_store().advance_autofix(
+                d["grant"]["dispatch_id"], "dispatched", "failed"
+            )
+        except Exception as exc:  # noqa: BLE001 - one failed settle must not stop the rest
+            LOG.error(
+                "%s %s could not settle the withdrawn dispatch: %s",
+                AUTOFIX_FAILED_MARKER, d["result"].short_id, exc,
+            )
+        d["disposition"] = MINT_FAILED_DISPOSITION
+        d["grant"] = None
 
 
 def _autofix_deadline() -> str:
@@ -327,8 +347,49 @@ def _autofix_deadline() -> str:
     return when.isoformat().replace("+00:00", "Z")
 
 
+def _post_findings_reply(d: dict) -> None:
+    """Render one delivery's card and post it into its thread.
+
+    Split out of `deliver_findings` so its caller can guard exactly one row.
+    A `BotError` keeps its own handling here, because a failed post has a
+    retry path the caller's generic guard has no way to offer: the card is
+    already rendered and redacted, so it can be stored for the sweep.
+    """
+    result, row = d["result"], d["row"]
+    card, redactions = render_reply_card(result, d["disposition"])
+    # Logged at render time, not post time: the count is a property of the
+    # redaction pass, and a reply the sweep later retries from storage
+    # must not lose it or count it twice.
+    LOG.info("REDACTIONS_APPLIED %d for %s", redactions, result.short_id)
+    try:
+        bot_client().reply_card_in_thread(
+            row["conversation_id"],
+            row["message_id"],
+            card,
+            reply_summary(result.short_id),
+        )
+    except BotError as exc:
+        # The findings survived validation and redaction; only the post
+        # failed. `delivered` is terminal and out of the due index, so
+        # stopping here would lose the reply for good. Hand it to the
+        # sweep to retry instead, serialized: `pending_reply` is a string
+        # column, and the sweep tells a stored card from legacy markdown
+        # by parsing it back. The grant still returns to the session in the
+        # response: a chat outage must not cost the fix.
+        schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
+
+
 def deliver_findings(body, rows: list[dict]) -> dict:
-    """Validate one batch's findings and reply under each card."""
+    """Validate one batch's findings, reply under each card, and answer the
+    session with any autofix grants it has earned.
+
+    The response body is the vending channel: the session that POSTed these
+    findings is the one that will write the fix, and this response is the
+    only message the receiver can ever send it. Gates run first, then one
+    token is minted for the whole batch, then the cards post; that order
+    means a mint failure can still rewrite the disposition line before any
+    thread reads it.
+    """
     by_issue = {r["issue_id"]: r for r in rows}
     try:
         doc = parse_findings(
@@ -340,6 +401,8 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         LOG.error("%s %s", FINDINGS_REJECTED_MARKER, exc)
         return respond(400, "unusable findings")
 
+    cfg = config()
+    deliveries: list[dict] = []
     for result in doc.results:
         row = by_issue[result.issue_id]
         # Claim before posting: the deadline sweep targets the same transition
@@ -349,39 +412,76 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         ):
             LOG.info("row for %s already answered; skipping", result.short_id)
             continue
-
-        # The markdown rendering no longer posts to Teams; it is the
-        # `findings_md` the autofix workflow receives (redacted by its own
-        # renderer before it leaves this process).
-        text, _ = render_reply(result)
         try:
-            disposition = autofix_after_delivery(result, doc, row, text)
+            disposition, grant = autofix_grant(result, doc, row)
         except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
             LOG.error("%s %s gate crashed: %s", AUTOFIX_FAILED_MARKER, result.short_id, exc)
-            disposition = ""
-        card, redactions = render_reply_card(result, disposition)
-        # Logged at render time, not post time: the count is a property of the
-        # redaction pass, and a reply the sweep later retries from storage
-        # must not lose it or count it twice.
-        LOG.info("REDACTIONS_APPLIED %d for %s", redactions, result.short_id)
-        try:
-            bot_client().reply_card_in_thread(
-                row["conversation_id"],
-                row["message_id"],
-                card,
-                reply_summary(result.short_id),
-            )
-        except BotError as exc:
-            # The findings survived validation and redaction; only the post
-            # failed. `delivered` is terminal and out of the due index, so
-            # stopping here would lose the reply for good. Hand it to the
-            # sweep to retry instead, serialized: `pending_reply` is a string
-            # column, and the sweep tells a stored card from legacy markdown
-            # by parsing it back.
-            schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
-            continue
+            disposition, grant = "", None
+        deliveries.append(
+            {"result": result, "row": row, "disposition": disposition, "grant": grant}
+        )
 
-    return respond(200, "ok")
+    minted = None
+    staged = [d for d in deliveries if d["grant"]]
+    if staged:
+        # Guarded for the same reason the gate above is, and more urgently:
+        # every row here has already advanced to `delivered`, which is
+        # terminal and out of the due index, so an exception escaping this
+        # block would leave each of those threads permanently silent rather
+        # than merely unfixed. `mint_autofix_token` never raises, but
+        # `github_client()` reads the App private key on first use, so an
+        # infrastructure blip raises before any mint is attempted.
+        try:
+            minted = github_client().mint_autofix_token(cfg.target_repo)
+        except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
+            LOG.error("%s token mint crashed: %s", AUTOFIX_FAILED_MARKER, exc)
+        if minted is None:
+            withdraw_grants(staged)
+
+    # Posted last, after the mint has resolved: that is the whole reason the
+    # gate loop above stages grants instead of posting as it goes. Folding
+    # this back into that loop would put "attempting a fix" in a thread
+    # before the credential it promises is known to exist.
+    for d in deliveries:
+        # Per row, not around the loop. Every row here has already advanced to
+        # `delivered`, which is terminal and out of the due index, so anything
+        # escaping this region leaves those threads permanently silent, and a
+        # guard around the whole loop would abandon every row after the one
+        # that failed rather than only that row. More than the post can raise
+        # something that is not a `BotError`: the chat client is built on
+        # first use in the container and reads its credential to do so, so a
+        # cold container meeting a throttled parameter store fails here rather
+        # than at post time; rendering the card is not exception-free by
+        # contract; and scheduling the retry is itself a conditional write
+        # that re-raises anything other than the condition failing. The stakes
+        # are higher than they were before the fix phase moved into the
+        # session: a credential has already been minted by this point and the
+        # grants are waiting in the response below, so losing the loop costs
+        # the session its fix as well as the remaining threads their replies.
+        try:
+            _post_findings_reply(d)
+        except Exception as exc:  # noqa: BLE001 - one row must never cost the batch
+            LOG.error(
+                "%s findings reply for %s: %s",
+                DELIVERY_FAILURE_MARKER, d["result"].short_id, exc,
+            )
+
+    grants = [d["grant"] for d in deliveries if d["grant"]]
+    if not (minted and grants):
+        return respond_json(200, {"autofix": None})
+    return respond_json(
+        200,
+        {
+            "autofix": {
+                "repo": cfg.target_repo,
+                "base_branch": cfg.autofix_base_branch,
+                "github_token": minted.token,
+                "github_token_expires_at": minted.expires_at,
+                "callback_url": cfg.autofix_callback_url,
+                "grants": grants,
+            }
+        },
+    )
 
 
 def bearer_token(event: dict) -> str:
@@ -409,8 +509,14 @@ def handle_findings(event: dict) -> dict:
         LOG.warning("rejected findings for a batch past its deadline")
         return respond(401, "expired")
     if state is BatchState.DELIVERED:
+        # Same shape as every other 200 from this route: the session parses
+        # this body rather than reading the status code, and a retried POST
+        # is exactly when it would meet a body it cannot parse. There are no
+        # grants to re-vend, since the batch that earned them already got
+        # them. The 401s above stay plain text: an error carries nothing for
+        # the session to read.
         LOG.info("findings for an already-delivered batch; ignoring")
-        return respond(200, "ok")
+        return respond_json(200, {"autofix": None})
 
     try:
         body = raw_body(event)
@@ -471,6 +577,45 @@ def safe_callback_url(value: str, *, field: str) -> str:
     return value
 
 
+# The exact PR-URL shape the author check parses. Stricter than
+# CALLBACK_URL_RE on purpose: verification reads the RAW pr_url, before
+# safe_callback_url percent-encodes underscores, so repo names survive.
+#
+# The digit run is bounded because the number is parsed with int(), and a
+# runtime that caps integer-string conversion raises on a long enough digit
+# run rather than returning a value. Reading the raw URL means
+# safe_callback_url's own length cap has not been applied here, so the bound
+# has to live in this pattern. Nine digits is far past any real pull-request
+# number and short enough that no conversion limit is in play, and an
+# over-long run now fails the match, which is the fail-closed answer this
+# function documents. Without the bound, a hostile callback body could turn a
+# check that promises to degrade to False into an unhandled exception out of
+# the callback route, and the thread would never get its completion reply.
+PR_URL_MAX_DIGITS = 9
+PR_URL_RE = re.compile(
+    rf"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d{{1,{PR_URL_MAX_DIGITS}}})$"
+)
+
+UNVERIFIED_REPLY = (
+    "⚠️ Autofix reported a PR, but its author could not be verified as the "
+    "autofix App. Review it with care before trusting it: {pr_url}"
+)
+
+
+def verified_pr_author(raw_pr_url: str) -> bool:
+    """True when the callback's PR is in the target repo AND authored by the
+    App bot. Both lookups degrade to False, never to an exception: the
+    callback body is untrusted, and this check must fail closed."""
+    match = PR_URL_RE.match(raw_pr_url)
+    if not match or match.group(1) != config().target_repo:
+        return False
+    slug = github_client().app_slug()
+    if not slug:
+        return False
+    number = int(match.group(2))
+    return github_client().pr_author(config().target_repo, number) == f"{slug}[bot]"
+
+
 def handle_autofix_result(event: dict) -> dict:
     """Accept the workflow's outcome and close the Teams thread.
 
@@ -508,7 +653,8 @@ def handle_autofix_result(event: dict) -> dict:
         LOG.warning("rejected autofix callback with status %r", status)
         return respond(400, "unusable status")
 
-    pr_url = safe_callback_url(str(body.get("pr_url") or ""), field="pr_url")
+    raw_pr_url = str(body.get("pr_url") or "")
+    pr_url = safe_callback_url(raw_pr_url, field="pr_url")
     run_url = safe_callback_url(str(body.get("run_url") or ""), field="run_url")
     if not alert_store().advance_autofix(
         record["dispatch_id"], "dispatched", status, extra={"pr_url": pr_url}
@@ -522,7 +668,24 @@ def handle_autofix_result(event: dict) -> dict:
             AUTOFIX_FAILED_MARKER, record.get("short_id", ""), run_url,
         )
 
-    reply = autofix.completion_reply(status, pr_url=pr_url, run_url=run_url)
+    if status == "pr_opened" and not verified_pr_author(raw_pr_url):
+        # Both markers land in this one line on purpose. The prompt tells the
+        # session to push only through the vended App token, but a prompt is
+        # guidance, not enforcement, so this line is the detective control
+        # for the case where that instruction was not followed. Carrying the
+        # existing failure marker alongside the new one means the alarm
+        # already wired to it fires here too, with no second alarm to define
+        # and keep in sync; the new marker is what tells a reader looking at
+        # the logs that this is specifically an authorship mismatch, not an
+        # ordinary autofix failure.
+        LOG.error(
+            "%s %s %s pr_url=%s",
+            AUTOFIX_UNVERIFIED_MARKER, AUTOFIX_FAILED_MARKER,
+            record.get("short_id", ""), pr_url,
+        )
+        reply = UNVERIFIED_REPLY.format(pr_url=pr_url or "(missing PR URL)")
+    else:
+        reply = autofix.completion_reply(status, pr_url=pr_url, run_url=run_url)
     try:
         bot_client().reply_in_thread(record["conversation_id"], record["message_id"], reply)
     except BotError as exc:

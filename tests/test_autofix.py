@@ -50,7 +50,7 @@ def test_a_confident_contained_finding_passes(tmp_path):
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
 
     assert decision.passed
-    assert decision.disposition == "Autofix: dispatching."
+    assert decision.disposition == "Autofix: attempting a fix in this session."
 
 
 def test_disabled_gate_declines_with_no_disposition_line(tmp_path):
@@ -151,4 +151,63 @@ def test_completion_replies_cover_every_callback_status():
         assert text
 
     assert "https://pr" in completion_reply("pr_opened", pr_url="https://pr")
-    assert "https://run" in completion_reply("failed", run_url="https://run")
+
+
+def test_no_completion_reply_names_a_branch():
+    """The base branch is operator config, so a reply that hardcodes one name
+    tells every other deployment something false. These strings are read by a
+    human in a chat thread, so they describe the branch by its role instead."""
+    for status in CALLBACK_STATUSES:
+        text = completion_reply(status, pr_url="https://pr", run_url="https://run")
+        for branch in ("develop", "main", "master", "trunk"):
+            assert branch not in text.lower(), f"{status} reply names {branch!r}"
+
+
+def test_a_github_directory_citation_is_declined_regardless_of_config(tmp_path):
+    # exclude_paths is emptied here on purpose: the decline must come from
+    # the hard-coded FORBIDDEN_PATHS, not from operator config.
+    payload = load_fixture("findings-payload-v2.json")
+    payload["results"][0]["evidence"][0]["file"] = ".github/workflows/deploy.yml"
+    doc = parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
+    body = (VALID + AUTOFIX).replace('- "infra/**"', "")
+    assert body != VALID + AUTOFIX  # the substitution above must actually fire
+    cfg = cfg_enabled(tmp_path, body)
+    assert cfg.autofix_exclude_paths == ()  # so the decline below can't come from operator config
+
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg, store=open_store())
+
+    assert not decision.passed
+    assert ".github/workflows/deploy.yml" in decision.reason
+
+
+def test_the_pass_disposition_names_the_session_not_a_dispatch():
+    assert GateDecision(True).disposition == "Autofix: attempting a fix in this session."
+
+
+def test_the_failed_reply_no_longer_claims_a_workflow_ran():
+    text = completion_reply("failed", run_url="https://example.test/run")
+
+    assert "Workflow" not in text
+    # The reply must not offer a link at all. Nothing sends `run_url`: the
+    # session's callback body carries a dispatch id, a status, and a PR URL,
+    # so a reply that interpolated one would render a placeholder every time.
+    # Passing a run URL here and asserting it is absent is the point: it
+    # proves the copy dropped the field rather than merely happening to have
+    # nothing to fill it with.
+    assert "https://example.test/run" not in text
+    assert "(link unavailable)" not in text
+    assert "Details" not in text
+
+
+def test_no_completion_reply_promises_a_link_it_cannot_supply():
+    """Every {placeholder} in a reply must be one a caller actually fills.
+
+    `pr_url` is supplied on the `pr_opened` path; `run_url` is not supplied by
+    anything, because the fix runs inside the investigating session rather
+    than in a separately addressable run. A reply that names a field nobody
+    sends renders its fallback text forever, which reads to the person in the
+    thread as a broken link rather than as an honest absence.
+    """
+    for status in CALLBACK_STATUSES:
+        text = completion_reply(status)
+        assert "(link unavailable)" not in text, f"{status} reply promises a run URL"

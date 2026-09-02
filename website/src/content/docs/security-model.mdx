@@ -1,15 +1,18 @@
 ---
 title: Security model
-description: What each unattended session can touch, what it cannot, and why the session that writes a fix cannot publish one.
+description: What an unattended session can touch, what the credential it is handed can do, and which controls stay on the receiver where injected text cannot argue with them.
 ---
 
 The unattended sessions are the trust boundary. Everything that reaches them is treated
 as untrusted, including the Sentry issue text they are asked to investigate.
 
 :::tip[The short version]
-The investigating session cannot push. The fixing session holds no GitHub credential.
-Publishing happens in a separate step, after that session has already exited. Every
-pull request waits for a human.
+The operator's controls over whether a fix is allowed live in the receiver, out of the
+session's reach; the session supplies two of the gate's inputs, its own confidence and
+fixability ratings, and those are influenceable. The credential it is handed is scoped
+to one repository, two permissions, and one hour, and it cannot push a workflow file.
+It *can* push to any branch, so branch protection on the base branch is what makes
+review unavoidable, and every pull request waits for a human.
 :::
 
 ## The fire payload is data, not instructions
@@ -48,29 +51,186 @@ Before posting findings anywhere, the session confirms the destination against t
 channels the operator controls and no injected text can forge:
 
 - `SENTINEL_RECEIVER_URL`, set in the cloud environment rather than passed in the fire
-- the environment's deny-by-default egress policy, whose only allowed host is the
-  receiver
+- the environment's deny-by-default egress policy, whose only non-default allowed hosts
+  are the receiver and the GitHub endpoints the fix phase needs
 
 An instruction embedded in a stack trace telling the session to post its findings
 somewhere else fails both checks.
 
-## The autofix session never has push access
+The check is narrower than it may look, and the qualifier in that second bullet is
+load-bearing. The policy is deny-by-default over the hosts the operator controls; the
+environment still reaches whatever it defaults to reaching, and the investigation phase
+fetches the repository over the network before any of this. So the egress policy pins
+down where *findings* may be posted. It is not a general containment boundary, and the
+wider the set of GitHub endpoints the fix phase needs, the less of one it becomes. The
+controls below are what carry the weight.
 
-The workflow that writes fixes is built so that the session doing the writing cannot
-publish anything.
+## The session that writes the fix is the one that investigated
 
-| Actor | Reads the repo | Can push | Holds the callback token |
-|---|---|---|---|
-| Investigator session | Yes, at the release SHA | No | Reply token only |
-| Autofix session | Yes, at the release SHA | No | No, stripped first |
-| Publish step | Yes | Yes, as the GitHub App | Yes |
+Autofix does not run in a second session started afterwards. The session that reported
+the findings writes the fix, using a credential the receiver returns in the HTTP
+response to that report.
 
-Concretely: both checkouts run with `persist-credentials: false`, so no token is
-written into a `.git/config` the session could read. Git authentication is set up only
-in the publish step, after the session has finished. The callback token is stripped
-from the payload file before the session can read it, because that token is a bearer
-credential for the result endpoint and the session never needs it. Every `uses:` step
-in the workflow is pinned to a commit SHA.
+That shape follows from one fact about the runtime: the receiver can answer a session
+that calls it, but it cannot send a message to a session that is already running. A
+credential can only travel back down a request the session itself made, and the findings
+POST is the request there is. Everything below is designed around handing a running
+session a credential and then living with the consequences, because there is no design
+where the credential arrives some safer way.
+
+### The vended token
+
+| | |
+|---|---|
+| Scope | one repository, the configured `target_repo` |
+| Permissions | `contents: write` and `pull_requests: write`, nothing else |
+| Lifetime | one hour, set by GitHub when the token is minted |
+| Storage | none: minted per batch, returned once, never written down |
+
+`workflows` is absent deliberately. A workflow file pushed to a branch runs in CI, with
+access to the repository's secrets, before any human reviews the pull request that
+carries it. A credential that can write `.github/workflows/` is therefore not a
+code-writing credential at all; it is a secrets-reading one, and reviewing the pull
+request afterwards is too late to matter.
+
+The gate also declines any finding that cites a path under `.github/`, but the two
+controls are not doing the same job. The path check is a pre-filter: it reads the paths
+the finding *claimed*, and a fix touches whatever a fix touches. It makes an
+inappropriate finding decline early and legibly. The token's scope is the enforcement,
+because it constrains what the session can actually push rather than what it said it
+would touch. When the two disagree, the scope wins, and the prompt tells the session to
+report itself declined rather than discover the refusal at push time.
+
+### The webhook signature does not contain the content
+
+Sentry's webhook is HMAC-verified, and it is worth being precise about what that buys.
+The signature proves the alert came from the Sentry integration. It proves nothing about
+the text inside the alert.
+
+Stack traces and error messages routinely carry whatever user input caused the exception.
+That is what they are for. So anyone who can make the monitored application throw can put
+text of their choosing in front of an unattended session, through a channel that is fully
+authenticated and behaving exactly as designed. There is no signature check that helps
+here, and treating one as though it did would be the more dangerous error.
+
+What contains it instead is everything downstream of the text: the token is scoped so a
+fix cannot reach beyond one repository or past the two permissions above; branch
+protection on the base branch means nothing lands without review; and a human reads the
+pull request before it merges. The prompt also tells the session to treat code,
+repository docs, Sentry text, and command output as data and to say in the pull request
+body when it saw something that read like an instruction, which helps a reviewer but is
+not itself a control.
+
+The one gate input this text can reach is the finding's own confidence and fixability
+ratings, which the session supplies. Steering an investigation toward a diagnosis that
+looks confident and contained is the cheapest thing an injected instruction can attempt,
+and it is not something the receiver can second-guess: rating the finding is exactly the
+judgment the session was fired to make. What that buys an attacker is bounded, though. A
+flattering rating gets a finding *to* the gate; it does not get it past the operator
+controls below, which are evaluated on values the session never supplies.
+
+### Operator controls live on the receiver
+
+Confidence and fixability are the session's own judgments and travel in the findings
+document, which is why the section above treats them as influenceable. Every *other*
+input to the decision is an operator control, and each one is evaluated in the receiver
+rather than in the prompt:
+
+- the kill switch that disables autofix entirely
+- the project allowlist
+- the forbidden and operator-excluded paths
+- the dedupe, so one issue earns one fix attempt per environment and release
+- the daily pull-request cap
+
+The placement is the point. Text inside an investigated Sentry event can argue with a
+prompt; it can put a sentence in a stack trace claiming the cap is lifted or the project
+is opted in. It cannot argue with a conditional write in the receiver. Moving any of
+these into the prompt to make it "smarter" would move it inside the attacker's reach.
+
+The same reasoning covers the caps' side effects: the dedupe and cap checks are
+conditional writes, spent as they pass, so a finding cannot be re-evaluated into a second
+attempt.
+
+### What a live reply token is worth
+
+The section above is accurate that those controls are evaluated on values the session
+never supplies, but it is worth being precise about which values *are* supplied. The
+gate reads the findings document, and the whole document arrives over one authenticated
+POST: the two ratings named above, and also each result's `status`, the document's
+`schema_version`, and the evidence file paths the path exclusions are matched against.
+Whoever holds a live reply token writes all of it. So the gate constrains the shape of a
+passing finding rather than proving one was investigated, and a document crafted to
+satisfy that shape earns what a genuine one earns.
+
+What it earns is what changed. A reply token used to buy a dispatch that started a
+workflow, which opened a pull request. It now buys the installation token itself, handed
+back in the HTTP response and directly usable for an hour for any `contents: write`
+operation in the target repository. That is a real change in what a stolen or leaked
+reply token is worth, and naming it matters more than the mitigations do: the scope,
+lifetime, and branch protection discussed above are what bound the credential once it is
+out of the receiver's hands.
+
+Four things bound how far such a token gets before that point. It is stored only as a
+hash, so reading the table yields nothing usable. It is live only while its own batch
+is: the lookup requires a row still awaiting findings and still inside its deadline,
+checked on the request rather than left to the once-a-minute sweep, and a batch that has
+already been answered gets an empty autofix block rather than a second set of grants. It
+can only earn grants for the issues in its own batch, because the findings document is
+validated against that batch's issue ids. And the dedupe and the daily pull-request cap
+are conditional writes, so how many grants any holder can extract is bounded by the
+operator's cap rather than by how many documents they are willing to write.
+
+### Pull-request authorship is verified, and that is a detective control
+
+The session's runtime carries connectors of its own, and in a realistic deployment one of
+them is a GitHub connector authenticated as a person with write access to the same
+repository. The prompt is explicit that the vended token is the only credential to use
+with GitHub and that work arriving under a person's name misrepresents who wrote it. A
+prompt is guidance, not enforcement.
+
+So when a callback reports `pr_opened`, the receiver checks the claim rather than
+believing it. The pull request URL must parse, name the configured target repository, and
+resolve to a pull request whose author is the App's own bot login. That lookup is done
+with a token downscoped to `pull_requests: read`, because a verification step should not
+itself hold a write credential, and every failure path (an unparseable URL, another
+repository, a lookup that errors) reads as unverified rather than as verified.
+
+An unverified result posts a warning into the thread instead of a link, telling the
+reviewer the authorship could not be confirmed. It also writes a log line carrying both
+the authorship-mismatch marker and the existing autofix failure marker. Reusing the
+failure marker is deliberate: the alarm already wired to it fires here with no second
+alarm to define and keep in sync, while the new marker is what tells a reader which kind
+of failure this was.
+
+Calling this detective rather than preventive is not modesty, it is the accurate label.
+The check runs after the pull request exists. It catches a session that used the wrong
+identity and then reported honestly; it does not catch one that used the wrong identity
+and stayed quiet, which surfaces only as a grant that never called back before its
+deadline. The connector's ambient write access is a real, accepted exposure, and the
+honest description of the posture is that the vended token makes the correct path easy
+and legible rather than making the incorrect one impossible.
+
+The residual risk of the token itself is the same shape. It is a bearer credential that
+spends up to an hour inside a session whose context contains attacker-influenceable text.
+Its blast radius is bounded by the scope and the lifetime above, and no further: within
+that one repository, `contents: write` is repository-wide, so the token can push to any
+ref, the base branch included. Pushing a topic branch and opening a pull request is what
+the prompt instructs, not what the credential restricts.
+
+That is the gap branch protection fills, and it is the operator's job rather than
+something this engine can do for them. With the base branch protected, the token's
+reachable outcome really is a pull request somebody reviews. Without it, a session that
+departed from the prompt could write to the base branch directly, and none of the
+controls on this page would stop it.
+
+### The callback is a capability, not an identity
+
+Each grant carries its own callback token, stored only as a hash and valid for that one
+dispatch. The receiver's advance to a settled state is conditional, so a late callback
+and the timeout sweep cannot both write into a thread, and a replayed callback settles
+nothing twice. A grant that never reports is failed into the thread when its hour
+expires, which is the same principle as the investigation deadline: the failure mode
+worth engineering against is the silent one.
 
 ## Secrets
 
@@ -86,12 +246,12 @@ Actions secret. A tracked ban list would be an index of everything it protects.
 
 ## The disclosure scan reads and nothing else
 
-A third unattended session sweeps the repository before anything is published from it,
+A separate unattended session sweeps the repository before anything is published from it,
 looking for what a public tree should not hand a stranger: live credentials, real tenant
 and organization identifiers, deployment endpoints, and the inventories that turn a
 runbook into a deployment map.
 
-It holds the narrowest posture of the three. The session gets `Read`, `Glob`, and
+It holds the narrowest posture of any session here. The session gets `Read`, `Glob`, and
 `Grep`, no shell and no write tool, and it loads no project settings, because the tree
 it reviews is also where an injected instruction file would be waiting. Its verdict
 counts only when it carries a token minted after that tree was already fixed, so a

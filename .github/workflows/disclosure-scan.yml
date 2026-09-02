@@ -8,8 +8,8 @@
 # No single token in such a document looks like a secret, and the document is
 # a map. Judging that needs reading, so this reads.
 #
-# It runs on the Claude subscription (CLAUDE_CODE_OAUTH_TOKEN, the same secret
-# autofix.yml uses), not on metered API credits.
+# It runs on subscription auth (CLAUDE_CODE_OAUTH_TOKEN), not on metered API
+# credits.
 name: disclosure-scan
 
 on:

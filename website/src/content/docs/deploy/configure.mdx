@@ -25,7 +25,7 @@ the template is the source of truth.
 |---|---|---|
 | `trigger_mode` | `shadow` | `auto` fires on every eligible notification; `shadow` runs the gate and records what would have fired, firing nothing |
 | `environments` | `prod`, `staging` | "Name the ones you run here; the per-developer dev envs are best excluded: stale/unpushed release SHAs make release-checkout structurally wrong" |
-| `target_repo` | placeholder | "Repository the routine session investigates (must match the routine's repository binding; the startup assertion enforces this)" |
+| `target_repo` | placeholder | "Repository the routine session investigates (must match the routine's repository binding; the startup assertion enforces this)". Fixes land here too; there is no separate autofix repository |
 | `release_to_sha` | `identity` | "For many projects the release IS the commit SHA. Other projects may need a lookup" |
 | `caps.max_turns` | 50 | "Hard caps for an unattended session" |
 | `investigation.debounce_seconds` | 60 | How long a new issue waits, so related issues batch into one session |
@@ -39,8 +39,14 @@ the template is the source of truth.
 | `autofix.min_confidence` | `high` | Minimum finding confidence for a fix attempt |
 | `autofix.min_fixability` | `medium` | Minimum fixability for a fix attempt |
 | `autofix.projects` | `[]` | Allowlist; "an empty allowlist opts in every project" |
-| `autofix.exclude_paths` | `[]` | A cited path matching any of these vetoes the attempt |
+| `autofix.exclude_paths` | `[]` | A cited path matching any of these vetoes the attempt, on top of the paths under `.github/` that are always forbidden |
 | `autofix.daily_pr_cap` | 5 | Most pull requests opened in a day |
+| `autofix.app_id` | placeholder | The autofix GitHub App's numeric id; its private key is an SSM parameter, never config |
+| `autofix.base_branch` | placeholder | "The branch fixes are written against and PRs target. The fix lands in `target_repo` (above); there is no separate dispatch repository since the fix session runs inside the investigation routine" |
+| `autofix.callback_url` | placeholder | The receiver's `/autofix-result` route, where the fix session reports each grant's outcome |
+
+The last three are required only once `autofix.enabled` is true, and `assert_ready`
+refuses to deploy while any of them is still a placeholder.
 
 Note the ordering problem in `investigation.findings_url`: it is the receiver's own
 Function URL, which does not exist until the first deploy. That is precisely why
@@ -85,3 +91,8 @@ real traffic, then read what it recorded before letting it fire.
 Autofix is a second, separate switch. `autofix.enabled: true` should follow its own soak
 on findings you have read, because it is the one gate whose output lands in somebody
 else's repository.
+
+Two things outside this file have to be true before it can work: the autofix App must be
+installed on `target_repo` with contents and pull-requests write, and the routine's cloud
+environment must be allowed to reach GitHub. Both are covered in the
+[runbooks](/sentinel/operate/runbooks/).
