@@ -46,6 +46,13 @@ trigger_mode: shadow
 trigger:
   routine_id: REPLACE_WITH_ROUTINE_ID
   token_ref: routine-trigger-token
+  # The probe is its own routine, so it holds its own prompt and never
+  # displaces the investigator's. A trigger token authorises exactly one
+  # routine, so the probe needs its own token as well as its own id.
+  # Both are optional: leave them empty and only the probe runbook stops
+  # working, since nothing the receiver serves reads either one.
+  probe_routine_id: REPLACE_WITH_PROBE_ROUTINE_ID
+  probe_token_ref: probe-trigger-token
 
 investigation:
   debounce_seconds: 60

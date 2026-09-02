@@ -87,16 +87,22 @@ where the credential arrives some safer way.
 | Lifetime | one hour, set by GitHub when the token is minted |
 | Storage | none on either side: minted per batch, returned once, never persisted by the receiver or written to disk by the session |
 
-The session holds the token in an environment variable and authenticates git through a
-credential helper, so it is never written to a file. That is a deliberate choice rather
-than an incidental one. Embedding a token in a remote URL is the obvious way to do this,
-and it is the wrong one: git records a remote URL in `.git/config` in plaintext, where it
-outlives the command that set it, survives for the whole checkout, and is echoed back by
-`git remote -v` and by many git error messages. The prompt therefore tells the session to
-export the token, run `gh auth setup-git` once, and add a remote carrying no credential.
-If that helper is unavailable the session reports the grant failed rather than
-improvising, because every route it could improvise either writes the token to a file or
-reaches for a credential that is not the vended one.
+The session supplies the token to git through a credential helper that reads it from the
+environment, so it is never written to a file. That is a deliberate choice rather than an
+incidental one. Embedding a token in a remote URL is the obvious way to do this, and it is
+the wrong one: git records a remote URL in `.git/config` in plaintext, where it outlives
+the command that set it, survives for the whole checkout, and is echoed back by
+`git remote -v` and by many git error messages. The helper's own text goes in that file;
+the secret does not.
+
+The variable deliberately carries a name of its own rather than the conventional
+`GH_TOKEN` or `GITHUB_TOKEN`. A session's runtime may already hold credentials under
+those names belonging to a different identity, and git and most GitHub tooling read them
+unprompted, so reusing one would mean a command that omitted the token still succeeded,
+authenticated as somebody else, and pushed under their name. A distinct name makes that
+failure loud instead of silent. For the same reason the prompt names the GitHub tooling
+the session can actually see and forbids it explicitly: a prohibition that lists only the
+routes an author imagined leaves the convenient one open.
 
 `workflows` is absent deliberately. A workflow file pushed to a branch runs in CI, with
 access to the repository's secrets, before any human reviews the pull request that
