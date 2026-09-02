@@ -117,6 +117,20 @@ def test_the_prompt_names_the_vended_token_as_the_only_push_path():
     assert "AUTOFIX_GITHUB_TOKEN" in body
 
 
+def test_the_fix_phase_tells_the_session_not_to_hard_wrap_the_pr_body():
+    """GitHub renders a single newline in a pull request body as a real line
+    break, so hard-wrapped prose arrives as a ragged fixed-width column. The
+    instruction has to be explicit because this prompt file is itself
+    hard-wrapped, and a session imitates the shape of what it reads."""
+    body = " ".join(fix_phase().split())
+
+    assert "Do not hard-wrap the body" in body
+    # The reason, so a later edit does not drop it as a style nit.
+    assert "renders a single newline in a pull request body as a real line break" in body
+    # And the carve-out, or the session strips line breaks from command output.
+    assert "Code blocks, command output, and lists keep their own line breaks" in body
+
+
 def test_the_fix_phase_does_not_reuse_the_ambient_token_variable_names():
     """The routine's environment already carries GH_TOKEN and GITHUB_TOKEN
     belonging to a different identity, and git and the GitHub tools read
@@ -377,15 +391,34 @@ def test_the_probe_asks_all_four_questions():
 
 
 def test_the_probe_checks_what_the_fix_phase_depends_on():
-    """The fix phase needs GitHub reachable and `gh` present, and it
-    authenticates through `gh` so no credential lands on disk. Both failures
-    present identically from outside: investigations keep working and every
-    fix attempt reports a failure. The probe is the cheap way to tell them
-    apart before turning autofix on."""
+    """The fix phase assumes it can reach GitHub, that a credential it
+    supplies is the one GitHub sees, and that it can push a branch it just
+    created. Each of those failing looks identical from outside, since
+    investigations keep working while every fix reports a failure, so the
+    probe separates them before autofix is turned on."""
     body = probe().lower()
 
     assert "api.github.com" in body
-    assert "gh --version" in body
+    # An invalid bearer token distinguishes credentials reaching GitHub
+    # (401) from something substituting working ones (200). Nothing real is
+    # sent, which is what makes it safe to ask an unattended session to run.
+    assert "not-a-real-credential" in body
+    assert "git push --dry-run" in body
+    assert "gh_token" in body
+
+
+def test_the_probe_does_not_argue_for_its_own_trustworthiness():
+    """A prompt asserting it is not an injection is a tell rather than
+    evidence, and both channels here are operator configuration, so neither
+    proves legitimacy. What they rule out is content: text arriving as data
+    cannot set an environment variable, and prompt text is the channel this
+    system exposes to strangers. The prose has to claim that and not more."""
+    body = " ".join(probe().split())
+
+    assert "cannot establish its own trustworthiness by asserting it" in body
+    assert "came from configuration rather than from content" in body
+    for overclaim in ("neither can be forged", "smuggled in by an injected prompt"):
+        assert overclaim not in body, f"the probe still overclaims: {overclaim}"
 
 
 def test_the_probe_never_reads_the_repository():
