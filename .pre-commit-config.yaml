@@ -10,8 +10,8 @@
 #
 #   pre-commit install
 #
-# This covers the deterministic gates only. The disclosure scan
-# (disclosure-scan.yml) still runs in CI, because judging prose needs a
+# This covers the deterministic gates only. The disclosure review runs on
+# the pull request instead, because judging prose needs a
 # reader, and a hook can be skipped with --no-verify; nothing here replaces
 # it.
 repos:

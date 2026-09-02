@@ -1,9 +1,18 @@
-# CodeRabbit reviews pull requests as a second reader. The disclosure gates
-# in CI (gitleaks, the public-tree test, the disclosure scan) stay the checks
-# of record for leaks; the instruction below exists so a review comment never
-# becomes one itself.
+# CodeRabbit is the reading gate for disclosures. gitleaks and the
+# public-tree test still catch what can be matched or listed in advance;
+# this is what reads a change and catches what nobody described. It replaced
+# a dedicated scanning workflow, which had to hold a subscription credential
+# as a repository secret to do the same job.
+#
+# request_changes_workflow is what makes it a gate rather than a second
+# opinion. It blocks the merge until every comment is resolved, and
+# resolving one is a click, so a false positive costs a moment while an
+# unread finding costs whatever it was warning about. The previous
+# arrangement reported a passing check while leaving major findings
+# underneath, and they went unread.
 reviews:
   profile: chill
+  request_changes_workflow: true
   path_filters:
     # Generated: card fixtures come from scripts/preview_card.py and the
     # brand assets from docs/brand's generators. Review the generators.

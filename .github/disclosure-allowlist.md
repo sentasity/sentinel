@@ -1,6 +1,8 @@
 # Accepted disclosures
 
-What the [disclosure scan](workflows/disclosure-scan.yml) must not report.
+What the disclosure review must not report. CodeRabbit reads every pull
+request against the rules in `.coderabbit.yaml`; an entry here is a
+deliberate, reviewed decision that a named disclosure is acceptable.
 
 Everything here is a decision someone made on purpose, not an exception
 granted to turn a run green. If an entry stops being true, delete it rather

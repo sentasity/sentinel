@@ -399,12 +399,28 @@ def test_the_probe_checks_what_the_fix_phase_depends_on():
     body = probe().lower()
 
     assert "api.github.com" in body
-    # An invalid bearer token distinguishes credentials reaching GitHub
-    # (401) from something substituting working ones (200). Nothing real is
-    # sent, which is what makes it safe to ask an unattended session to run.
+    # An invalid bearer value distinguishes a header that survived the trip
+    # (401) from one something replaced with a working credential (200).
+    # Nothing real is sent, which is what makes it safe to ask an unattended
+    # session to run.
     assert "not-a-real-credential" in body
     assert "git push --dry-run" in body
     assert "gh_token" in body
+
+
+def test_the_probe_never_prints_a_token_value_into_its_transcript():
+    """An operator may set a real credential in GH_TOKEN or GITHUB_TOKEN,
+    and a run transcript is durable, so the probe classifies the variables
+    instead of echoing them. The four classifications answer the question
+    the check exists for without the value ever being written down."""
+    # Whitespace-normalised: the file is hard-wrapped, so a phrase the rule
+    # depends on can straddle a line break.
+    body = " ".join(probe().split())
+
+    assert "without printing either one" in body
+    assert "Never write the value itself into the transcript" in body
+    for classification in ("unset", "empty", "placeholder", "looks like a real credential"):
+        assert classification in body, f"the classification list omits: {classification}"
 
 
 def test_the_probe_does_not_argue_for_its_own_trustworthiness():
