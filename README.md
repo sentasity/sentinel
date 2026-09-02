@@ -34,8 +34,7 @@ The full component walkthrough is in the [architecture reference](https://sentas
 
 - [`receiver/`](receiver/) — the alert receiver Lambda: webhook handling, card rendering, the Teams bot client, the investigation pipeline, and the autofix gate
 - [`infra/`](infra/) — self-contained CDK v2 app that deploys the receiver
-- [`prompts/`](prompts/) — the stored prompts for the unattended sessions (investigator and its fix phase, configuration probe, disclosure scan)
-- [`runner/`](runner/) — the disclosure-scan session runner executed by the Actions workflow
+- [`prompts/`](prompts/) — the stored prompts for the unattended sessions (investigator and its fix phase, configuration probe)
 - [`config/`](config/) — per-target-project engine configuration
 - [`teams-app/`](teams-app/) — Teams app manifest and package for the notification bot
 - [`scripts/`](scripts/) — operational tooling: secret bootstrap, card preview, bot smoke test, Sentry rule migration

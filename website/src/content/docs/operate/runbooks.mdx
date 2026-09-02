@@ -10,7 +10,6 @@ Runbooks for the credentials the engine holds, what autofix needs on the GitHub 
 | Credential | Where it lives | Purpose |
 |---|---|---|
 | `/sentinel/github-app-private-key` | SSM SecureString, receiver | The autofix App's private key, read by the receiver at cold start; it mints the scoped installation tokens vended to fix sessions |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Actions secret, engine repo | Authenticates the disclosure scan session against the Claude subscription |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
 | Vended installation tokens | Nowhere: minted per batch, returned in the `/findings` response, never stored | Lets the fix session push a branch and open a pull request; scoped to the target repo, `contents: write` and `pull_requests: write`, one hour |
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the fix session presents to `/autofix-result`; scoped to a single dispatch, not reusable |
@@ -54,17 +53,19 @@ It is worth stating what the two phases need separately, because they are not th
    - The receiver caches its App client per container, so a warm Lambda keeps using the key it read at cold start. Wait for a cold start, or force one with a no-op config deploy, before reading anything into the next autofix outcome.
 4. Only once both checks in step 3 pass, delete the old key from the App settings.
 
-## Runbook: renewing the Claude OAuth token
+## The disclosure gates
 
-Run `claude setup-token` on an operator machine and paste the output into the `CLAUDE_CODE_OAUTH_TOKEN` Actions secret (engine repo). It authenticates the disclosure scan; the investigation and fix sessions run as cloud routines and authenticate through the account the routine belongs to, not through this secret.
+Three gates decide what this repository is willing to hand a stranger, and they cover different things.
 
-An expired token fails the disclosure scan loudly, which is the behaviour that section below describes.
+`tests/test_public_tree.py` bans specific strings, and gitleaks (`secret-scan.yml`) matches credential shapes. Both catch what someone already thought to describe, both are deterministic, and both run locally before anything is pushed for any clone that ran `pre-commit install` (see [CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md)). On a public repository every pushed branch is published, so that local hook is the only gate that fires before content becomes public; CI is the backstop for clones without it.
 
-## The disclosure scan
+The third gate reads. CodeRabbit reviews every pull request against the disclosure rules in [`.coderabbit.yaml`](https://github.com/sentasity/sentinel/blob/main/.coderabbit.yaml), which tell it to flag anything naming another repository's internals, a real organization or account identifier, a live endpoint, or a measurement taken against a live system, and to cite a file and line without ever quoting the value it is flagging. It also reports ordinary security weaknesses in the change, such as a credential reaching a step that does not need it.
 
-`.github/workflows/disclosure-scan.yml` runs one read-only Claude session over the tree and reports what a public repository should not have handed a stranger: live credentials, real tenant and organization identifiers, deployment endpoints, named people, and the inventories that turn a runbook into a deployment map. It also flags security weaknesses in the change itself, such as an unpinned action or a credential reaching a step that does not need it.
+It blocks the merge until its comments are resolved. That is deliberate, and it is the lesson of what it replaced: a dedicated scanning workflow that reported a passing check while leaving major findings underneath as annotations, which went unread. Resolving a false positive is a click, and a model reviewing prose for disclosure will produce some. An unread finding costs whatever it was warning about.
 
-It is the third gate, not the only one, and the other two stay authoritative for what they cover: gitleaks (`secret-scan.yml`) matches credential shapes, and `tests/test_public_tree.py` bans specific strings. Those catch what someone already thought to describe. This one reads.
+That workflow also had to hold a Claude subscription credential as a repository secret to do its reading, which put a long-lived personal credential somewhere every repository administrator could reach. Retiring it removed the last one.
+
+**What was lost.** The old scan could sweep the whole tracked tree on demand, not just a diff. CodeRabbit reviews changes, so untouched files are no longer re-read on a schedule, and the `path_filters` in [`.coderabbit.yaml`](https://github.com/sentasity/sentinel/blob/main/.coderabbit.yaml) exclude generated trees (`fixtures/`, `docs/brand/assets/`) from review entirely. Those are covered by their generators and by `tests/test_public_tree.py`, which still reads every tracked file for banned strings. So the accurate claim is narrower than "everything gets read": the tree was swept clean before the change, and every hand-written change outside those filters passes a reader on the way in.
 
 The banned strings themselves are split in two. Generic shapes live in the test file; the literals that identify a real deployment live in an untracked local file, `config/banned.local.txt`, because a tracked ban list is an index of everything it protects. CI materializes that file from the `SENTINEL_BANNED_PATTERNS` secret and sets `SENTINEL_REQUIRE_BANNED_LOCAL`, so a vanished secret fails the suite rather than quietly narrowing the scan. After editing the local file, mirror it back:
 
@@ -74,24 +75,7 @@ gh secret set SENTINEL_BANNED_PATTERNS < config/banned.local.txt
 
 A fork's pull request runs without the secret and tests the generic patterns only, which is the same posture a stranger's clone gets: the push to the default branch after the merge is where the full list applies.
 
-The deterministic gates also run locally, before anything is pushed, for any clone that ran `pre-commit install` (see [CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md)): gitleaks and the public-tree test on every commit. On a public repository every pushed branch is published, so the local hook is the only gate that fires before content becomes public; CI is the backstop for clones without it.
-
-**Scope.** Pull requests and pushes to the default branch scan what the diff touches. A manual run scans the whole tracked tree:
-
-```bash
-gh workflow run disclosure-scan.yml -f scope=full
-```
-
-Run the full sweep before publishing anything new from the repository, and after any change to what the docs describe.
-
-**Reading a result.** High-severity findings fail the job; medium and low are annotations only, because a model's judgment call should be read in review rather than block a merge. Findings name a file and a line and never quote the value: the job's log, its step summary, and the pull request annotations are all public, and reprinting a leaked secret there publishes it a second time. To see the actual value, open the file at the cited line.
-
-**Accepted disclosures** live in [`.github/disclosure-allowlist.md`](https://github.com/sentasity/sentinel/blob/main/.github/disclosure-allowlist.md). Adding an entry changes what a public repository is willing to expose, so it gets reviewed like any other change. The scan reads that file as data: a pull request that tries to widen it into blanket permission is reported rather than obeyed.
-
-**Known gaps.**
-
-- Pull requests from forks cannot be scanned: GitHub does not give a fork's run the OAuth token, so the session has nothing to authenticate with. The job fails such a run rather than skipping it, because GitHub records a skipped job as "skipped" and branch protection counts a skipped required check as satisfied, which would let a fork's pull request merge looking scanned when nothing read it. Review the change by hand, or re-run the scan from a branch in the repository itself; either way the scan of record is the push to the default branch after the merge.
-- An expired `CLAUDE_CODE_OAUTH_TOKEN` fails the job loudly. So does a session that ends without emitting a result block. Both are re-runnable; neither is ever reported as a pass, because a scan that did not run must not look like a scan that found nothing.
+**Accepted disclosures** live in [`.github/disclosure-allowlist.md`](https://github.com/sentasity/sentinel/blob/main/.github/disclosure-allowlist.md). Adding an entry changes what a public repository is willing to expose, so it gets reviewed like any other change.
 
 ## Reading autofix in the logs
 

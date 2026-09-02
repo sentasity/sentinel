@@ -52,7 +52,7 @@ session's transcript:
    Transcript only, like the connector list.
 4. Network: attempt a single HTTPS GET to REPLACE_WITH_FUNCTION_URL/health and
    report the status code, or the exact error if it fails.
-5. GitHub, transcript only. Four checks, none of which sends a real
+5. GitHub, transcript only. Five checks, none of which sends a real
    credential anywhere. Report each result exactly, including status codes
    and any error text.
 
@@ -60,11 +60,18 @@ session's transcript:
       on is on the record.
    b. `curl -sS -o /dev/null -w '%{http_code}' https://api.github.com/`
       with no credential, to separate reachability from authorisation.
-   c. `echo "${GH_TOKEN:-unset}"` and `echo "${GITHUB_TOKEN:-unset}"`.
-      Report the literal values. These are expected to be either unset or
-      a placeholder rather than a real token, and which one it is decides
-      whether a command that omits its own credential fails or silently
-      authenticates as somebody else.
+   c. Classify GH_TOKEN and GITHUB_TOKEN without printing either one.
+      For each, report exactly one of `unset`, `empty`, `placeholder` when
+      the value is the literal `proxy-injected`, or `looks like a real
+      credential` for anything else, and for that last case report only its
+      length. Never write the value itself into the transcript: an operator
+      may set a real token in these variables, and a transcript is durable.
+      Which of those four it is tells us a great deal about whether a
+      command that omits its own credential fails or silently
+      authenticates as somebody else, but it does not settle it: git also
+      reads credential helpers and GIT_ASKPASS, and an egress proxy can
+      supply credentials no variable mentions. Report the classification
+      as one signal rather than a verdict.
    d. Send a deliberately invalid credential and report only the status
       code. Put the fake value in a variable rather than inline, so this
       file carries no string shaped like a credential:
@@ -73,11 +80,14 @@ session's transcript:
         curl -sS -o /dev/null -w '%{http_code}' \
           -H "Authorization: Bearer $FAKE" https://api.github.com/user
 
-      A 401 means a caller's own credentials reach GitHub. A 200 means
-      something between this session and GitHub replaced them with working
-      ones, which would tell us a caller here cannot choose the identity it
-      acts as. Nothing about that request is sensitive: the token in it is
-      not a real one.
+      Only a 200 is conclusive. It means something between this session
+      and GitHub replaced the fake value with a working credential, which
+      would tell us a caller here cannot choose the identity it acts as. A
+      401 is not the opposite finding: GitHub answers 401 for a rejected
+      credential and for no credential alike, so a header that arrived
+      intact and a header something stripped on the way out look the same
+      from here. Report the code and leave it at that. Nothing about the
+      request is sensitive, because the value in it is not a credential.
    e. `git push --dry-run origin HEAD:refs/heads/probe-push-test`. A dry run
       negotiates with the remote and creates nothing. Report whether it
       would succeed, and any refusal verbatim. This checks whether a branch
