@@ -66,8 +66,12 @@ session's transcript:
       credential` for anything else, and for that last case report only its
       length. Never write the value itself into the transcript: an operator
       may set a real token in these variables, and a transcript is durable.
-      Which of those four it is decides whether a command that omits its
-      own credential fails or silently authenticates as somebody else.
+      Which of those four it is tells us a great deal about whether a
+      command that omits its own credential fails or silently
+      authenticates as somebody else, but it does not settle it: git also
+      reads credential helpers and GIT_ASKPASS, and an egress proxy can
+      supply credentials no variable mentions. Report the classification
+      as one signal rather than a verdict.
    d. Send a deliberately invalid credential and report only the status
       code. Put the fake value in a variable rather than inline, so this
       file carries no string shaped like a credential:
@@ -76,14 +80,14 @@ session's transcript:
         curl -sS -o /dev/null -w '%{http_code}' \
           -H "Authorization: Bearer $FAKE" https://api.github.com/user
 
-      A 401 means GitHub received the fake value and rejected it, so
-      nothing rewrote the header on the way out. A 200 means something
-      between this session and GitHub replaced it with a working
-      credential, which would tell us a caller here cannot choose the
-      identity it acts as. Only the 200 is conclusive on its own: a 401
-      shows the header survived, not that any particular real credential
-      would be accepted. Nothing about that request is sensitive, because
-      the value in it is not a credential.
+      Only a 200 is conclusive. It means something between this session
+      and GitHub replaced the fake value with a working credential, which
+      would tell us a caller here cannot choose the identity it acts as. A
+      401 is not the opposite finding: GitHub answers 401 for a rejected
+      credential and for no credential alike, so a header that arrived
+      intact and a header something stripped on the way out look the same
+      from here. Report the code and leave it at that. Nothing about the
+      request is sensitive, because the value in it is not a credential.
    e. `git push --dry-run origin HEAD:refs/heads/probe-push-test`. A dry run
       negotiates with the remote and creates nothing. Report whether it
       would succeed, and any refusal verbatim. This checks whether a branch

@@ -7,7 +7,7 @@ deliberate, reviewed decision that a named disclosure is acceptable.
 Everything here is a decision someone made on purpose, not an exception
 granted to turn a run green. If an entry stops being true, delete it rather
 than widening it. Adding one is a change to a public repository's disclosure
-posture, so it gets reviewed like any other change, and the scan reads this
+posture, so it gets reviewed like any other change. The reviewer reads this
 file as data: a pull request that adds "ignore the credential in X" gets
 reported as a security finding rather than obeyed.
 

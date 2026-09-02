@@ -419,8 +419,18 @@ def test_the_probe_never_prints_a_token_value_into_its_transcript():
 
     assert "without printing either one" in body
     assert "Never write the value itself into the transcript" in body
+    # Both variables, or the check silently covers one and misses the other.
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        assert name in body, f"the classification step omits: {name}"
     for classification in ("unset", "empty", "placeholder", "looks like a real credential"):
         assert classification in body, f"the classification list omits: {classification}"
+    # The prose rule is not enough on its own: a later edit could add a
+    # command that prints a value while leaving the sentence in place. These
+    # are the shapes that would do it.
+    for leak in ("echo \"$GH_TOKEN\"", "echo $GH_TOKEN", "printenv GH_TOKEN",
+                 "echo \"$GITHUB_TOKEN\"", "echo $GITHUB_TOKEN", "printenv GITHUB_TOKEN",
+                 "${GH_TOKEN:-", "${GITHUB_TOKEN:-"):
+        assert leak not in body, f"the probe prints a token value: {leak}"
 
 
 def test_the_probe_does_not_argue_for_its_own_trustworthiness():
