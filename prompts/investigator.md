@@ -225,6 +225,14 @@ Steps:
       body carrying the root cause (two or three sentences), what changed
       and why it is contained, and the test command you ran with the
       passing result it produced. Write that body for a reviewer.
+
+      Do not hard-wrap the body. Write each paragraph as one long line and
+      separate paragraphs with a blank line. GitHub renders a single
+      newline in a pull request body as a real line break, so prose wrapped
+      at a fixed width arrives as a ragged column that cannot reflow to the
+      reader's window. This instruction file is itself hard-wrapped for
+      reading in a terminal; do not carry that shape into the body. Code
+      blocks, command output, and lists keep their own line breaks.
    f. Report the outcome: `pr_opened` when e opened a PR, otherwise the
       status named by the step that stopped this grant. POST to
       `callback_url` with the headers
