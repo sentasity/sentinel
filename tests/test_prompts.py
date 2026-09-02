@@ -110,11 +110,36 @@ def test_the_prompt_names_the_vended_token_as_the_only_push_path():
 
     assert "`github_token`" in body
     assert "only credential" in body
-    # The mechanism, not just the rule. `gh auth setup-git` keeps the
-    # credential in the environment and out of .git/config; a remote URL
-    # carrying the token would put it back on disk for the whole checkout.
-    assert "gh auth setup-git" in body
-    assert "GH_TOKEN" in body
+    # The mechanism, not just the rule. A credential helper reading the
+    # environment keeps the token out of .git/config; a remote URL carrying
+    # it would put it back on disk for the whole checkout.
+    assert "credential.helper" in body
+    assert "AUTOFIX_GITHUB_TOKEN" in body
+
+
+def test_the_fix_phase_does_not_reuse_the_ambient_token_variable_names():
+    """The routine's environment already carries GH_TOKEN and GITHUB_TOKEN
+    belonging to a different identity, and git and the GitHub tools read
+    those names unprompted. Naming the vended token one of them would mean a
+    command that forgot the assignment authenticated as somebody else and
+    pushed under their name."""
+    body = fix_phase()
+
+    assert "AUTOFIX_GITHUB_TOKEN" in body
+    assert "Use AUTOFIX_GITHUB_TOKEN and no other name" in body
+    # The reason has to travel with the rule, or a later edit "simplifies"
+    # the variable back to the conventional name.
+    assert "belonging to a different identity" in body
+
+
+def test_the_fix_phase_forbids_the_github_tools_the_session_actually_has():
+    """A probe of the real environment found a GitHub MCP server loaded with
+    push and PR tools. A prohibition that names only `gh` would leave the
+    easier route open."""
+    body = fix_phase()
+
+    assert "GitHub MCP server" in body
+    assert "authenticate as the identity that configured them" in body
 
 
 def test_the_prompt_never_tells_the_session_to_put_the_token_in_a_url():
@@ -125,21 +150,24 @@ def test_the_prompt_never_tells_the_session_to_put_the_token_in_a_url():
     must not reintroduce the pattern."""
     body = fix_phase()
 
-    assert "x-access-token" not in body, (
-        "the fix phase puts the token back into a remote URL"
+    # `x-access-token` is legitimate as the credential helper's username
+    # field. What must not appear is credentials embedded in a URL, which is
+    # what puts the secret into .git/config.
+    assert "@github.com" not in body, (
+        "the fix phase puts credentials back into a remote URL"
     )
     assert "Never put the token in a remote URL" in body
 
 
-def test_the_fix_phase_fails_closed_when_the_credential_helper_is_missing():
-    """Without a named fallback, a session that cannot run `gh auth
-    setup-git` improvises, and every route it could improvise either writes
-    the token to a file or reaches for the ambient connector. Reporting
-    `failed` is the only outcome that is neither."""
+def test_the_fix_phase_fails_closed_rather_than_switching_credentials():
+    """Without a named fallback, a session whose push fails improvises, and
+    the easier routes all authenticate as the identity that configured them.
+    Reporting `failed` is the only outcome that does not push under somebody
+    else's name."""
     body = " ".join(fix_phase().split())
 
-    assert "If `gh` is unavailable or `gh auth setup-git` fails" in body
-    assert "Do not reach for another way to authenticate" in body
+    assert "If the push or the PR call fails for any reason" in body
+    assert "never retry it with a credential that is not the `github_token`" in body
 
 
 # The keys receiver.handler.deliver_findings puts in the /findings response,

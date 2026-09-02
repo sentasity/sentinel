@@ -124,21 +124,43 @@ Steps:
    it.
 
    The `github_token` is the only credential you may use with GitHub, for
-   fetching, pushing, and the PR API alike. Hold it in an environment
-   variable, never in a URL and never in a file: export it as GH_TOKEN,
-   then run `gh auth setup-git` once, which teaches git to ask `gh` for a
-   credential at the moment it needs one and to read it from that variable.
-   Add the target as a plain remote, `https://github.com/<repo>.git`, with
-   no credential in it, and use `gh` for the PR API so one variable serves
-   both. Never put the token in a remote URL: git writes a remote URL into
-   .git/config in plaintext, where it outlives the command that set it and
-   is echoed by `git remote -v`.
+   fetching, pushing, and the PR API alike. Keep it out of every file. Add
+   the target as a plain remote, `https://github.com/<repo>.git`, carrying
+   no credential, and teach git to ask the environment for one:
 
-   If `gh` is unavailable or `gh auth setup-git` fails, stop that grant and
-   report `failed` through f below. Do not reach for another way to
-   authenticate. Every alternative route either puts the token in a file or
-   uses a credential that is not the vended one, and both are the outcomes
-   this clause exists to prevent.
+     git config --local credential.helper \
+       '!f(){ echo username=x-access-token; echo "password=$AUTOFIX_GITHUB_TOKEN"; };f'
+
+   That writes the helper's text into .git/config and no secret, because the
+   token arrives from the environment when git runs the helper. Supply it on
+   each command that authenticates:
+
+     AUTOFIX_GITHUB_TOKEN=<the github_token> git push origin <branch>
+
+   Use AUTOFIX_GITHUB_TOKEN and no other name. This environment already
+   carries GH_TOKEN and GITHUB_TOKEN belonging to a different identity, and
+   git and every GitHub tool read those names on their own: reusing one
+   would mean a command that forgot the assignment silently authenticated as
+   somebody else and pushed under their name, which is the outcome this
+   whole clause exists to prevent.
+
+   Never put the token in a remote URL. Git writes a remote URL into
+   .git/config in plaintext, where it outlives the command that set it and
+   is echoed back by `git remote -v`.
+
+   For the PR API, call it directly with the same variable:
+
+     AUTOFIX_GITHUB_TOKEN=<the github_token> curl -sS -X POST \
+       -H "Authorization: Bearer $AUTOFIX_GITHUB_TOKEN" \
+       -H "Accept: application/vnd.github+json" \
+       https://api.github.com/repos/<repo>/pulls -d @<a file holding the JSON>
+
+   Do not reach for `gh`, a GitHub MCP server, or any other GitHub tool
+   loaded in this session, even though some are available and would be
+   easier. They authenticate as the identity that configured them, not as
+   the vended token. If the push or the PR call fails for any reason, stop
+   that grant and report `failed` through f below, and never retry it with
+   a credential that is not the `github_token`.
 
    Never push, open a PR, or comment through any other identity, connector,
    stored credential, or cached login, even where one is available here:
@@ -197,9 +219,9 @@ Steps:
       does, and iterating until the token expires reports nothing at all.
    e. Create a branch named autofix/<the short id, lowercased>-<the first
       8 characters of the dispatch id>, commit the fix and its test, and
-      push that branch to that remote, authenticated by the `github_token`
-      you exported. Open a PR against `base_branch` with `gh`, which reads
-      the same variable: title "Autofix <short id>: <one-line summary>",
+      push that branch to that remote, supplying the `github_token` as
+      AUTOFIX_GITHUB_TOKEN on the command. Open a PR against `base_branch`
+      with the same variable: title "Autofix <short id>: <one-line summary>",
       body carrying the root cause (two or three sentences), what changed
       and why it is contained, and the test command you ran with the
       passing result it produced. Write that body for a reviewer.

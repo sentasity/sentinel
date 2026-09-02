@@ -277,6 +277,36 @@ def test_enabled_autofix_requires_app_id_and_callback(tmp_path):
         assert_ready(load_config(write(tmp_path, body)))
 
 
+def test_the_probe_routine_is_configured_separately_from_the_investigator(tmp_path):
+    """A routine holds one prompt at a time, so the probe needs its own
+    routine, and a trigger token authorises exactly one routine, so it needs
+    its own token reference too."""
+    # VALID is textwrap.dedent'd, so `routine_id` sits at two spaces, not the
+    # six it shows at in the source literal. A search string with the wrong
+    # indent is a silent no-op, which the assertion below exists to catch.
+    body = VALID.replace(
+        "  routine_id: trig_test",
+        "  routine_id: trig_test\n  probe_routine_id: trig_probe",
+    )
+    assert "probe_routine_id" in body, "the probe id was never substituted in"
+
+    cfg = load_config(write(tmp_path, body))
+
+    assert cfg.probe_routine_id == "trig_probe"
+    assert cfg.probe_routine_id != cfg.routine_id
+    # Defaulted rather than required, so an existing config keeps working.
+    assert cfg.probe_token_ref == "probe-trigger-token"
+
+
+def test_an_absent_probe_routine_is_not_an_error(tmp_path):
+    """Nothing the receiver serves reads either value, so a deployment that
+    has not created a probe routine must still come up."""
+    cfg = load_config(write(tmp_path, VALID))
+
+    assert cfg.probe_routine_id == ""
+    assert_ready(cfg)
+
+
 def test_enabled_autofix_requires_a_base_branch(tmp_path):
     body = VALID + AUTOFIX.replace("base_branch: main", 'base_branch: ""')
     assert body != VALID + AUTOFIX  # the substitution above must actually fire

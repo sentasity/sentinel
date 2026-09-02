@@ -92,6 +92,11 @@ class ReceiverConfig:
     trigger_mode: str = "shadow"
     payload_mode: str = "issue-ids-only"
     routine_id: str = ""
+    # The probe is a separate routine with its own prompt and its own trigger
+    # token. Optional: the receiver never fires it, so an empty value costs
+    # only the probe runbook.
+    probe_routine_id: str = ""
+    probe_token_ref: str = "probe-trigger-token"
     findings_url: str = ""
     debounce_seconds: int = 60
     max_batch_issues: int = 8
@@ -154,6 +159,8 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         trigger_mode=raw.get("trigger_mode") or "shadow",
         payload_mode=raw.get("payload_mode") or "issue-ids-only",
         routine_id=str(trigger.get("routine_id") or ""),
+        probe_routine_id=str(trigger.get("probe_routine_id") or ""),
+        probe_token_ref=str(trigger.get("probe_token_ref") or "probe-trigger-token"),
         findings_url=investigation.get("findings_url") or "",
         debounce_seconds=int(investigation.get("debounce_seconds") or 60),
         max_batch_issues=int(investigation.get("max_batch_issues") or 8),

@@ -162,16 +162,19 @@ pasted with the placeholder left in place fails the check and posts nothing.
 
 The routines API exposes no configuration read, so the routine's repository binding and connector set can only be verified by firing a session that reports on itself (`prompts/probe.md`, reporting to `/findings/probe`; `scripts/probe_routine.py` fires it). Connector drift is not detected automatically: re-run the probe whenever the routine or the account's connectors change.
 
-**The routine holds one prompt at a time, so probing is a swap.** In normal operation the routine carries `prompts/investigator.md`. Firing `scripts/probe_routine.py` against it does *not* run the probe: the script sends `{"probe": true}`, the investigator sees a payload missing all five required fields (`project`, `issue_ids`, `release`, `batch_id`, `reply_token`), and correctly refuses to interpret it, reporting a malformed fire instead. That is the investigator behaving as designed, not a probe result.
+**Give the probe its own routine.** A routine holds one prompt at a time, so a single routine cannot be both. Create a second routine carrying `prompts/probe.md` and leave the first on `prompts/investigator.md`. Record the probe's id as `trigger.probe_routine_id` and put its trigger token in the parameter store under `trigger.probe_token_ref`, then:
 
-To actually run the probe:
+```bash
+scripts/probe_routine.py
+```
 
-1. Replace the routine's prompt with the contents of `prompts/probe.md`.
-2. Run `ROUTINE_ID=... ROUTINE_TRIGGER_TOKEN=... scripts/probe_routine.py`.
-3. Read the session transcript alongside the receiver's log group for the `/findings/probe` POST. The probe's pass condition is agreement between the two; a POST with no matching transcript proves nothing, which is why `handle_probe` can be unauthenticated.
-4. Restore `prompts/investigator.md` as the routine's prompt. Until you do, live alerts fire a probe session instead of an investigation.
+Read the session transcript alongside the receiver's log group for the `/findings/probe` POST. The probe's pass condition is agreement between the two: a POST with no matching transcript proves nothing, which is why `handle_probe` can be unauthenticated.
 
-Step 4 is the one that bites: leaving the probe prompt in place silently degrades every subsequent investigation.
+**A trigger token authorises exactly one routine.** The investigator's token cannot fire the probe, and the API answers with `401 Token is not authorized for this routine`, which names the routine and so reads like a wrong id when the id is fine. Each routine needs its own token recorded separately.
+
+**Running one routine instead of two costs you a swap, and the restore is the part that bites.** If you have not created a probe routine, probing means replacing the investigator's prompt with `prompts/probe.md`, firing `ROUTINE_ID=... ROUTINE_TRIGGER_TOKEN=... scripts/probe_routine.py`, reading the result, and then putting `prompts/investigator.md` back. Until you restore it, every live alert fires a probe session instead of an investigation, and those alerts get the deadline sweep's "did not report back" reply rather than findings. A second routine removes that window entirely, which is why it is the recommended shape.
+
+Firing the investigator's own routine with this script does *not* run a probe. The script sends `{"probe": true}`, the investigator sees a payload missing all five required fields (`project`, `issue_ids`, `release`, `batch_id`, `reply_token`), and correctly refuses to interpret it, reporting a malformed fire instead. That is the investigator behaving as designed, not a probe result.
 
 A malformed-fire report is still useful even though it is not a probe. It confirms the receiver URL the routine actually holds, that egress reaches that host, and that `/findings` rejects an unauthenticated POST, without touching the prompt at all. When all you need is "does the routine still point at the right receiver", fire the script and read the report rather than doing the swap.
 
