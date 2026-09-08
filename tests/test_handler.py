@@ -1293,3 +1293,66 @@ def test_a_terminal_status_advances_from_dispatched_and_replies(alert_store, bot
     assert store.advance_autofix.call_args == call("d-1", "dispatched", "aborted_drift")
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
     assert reply.startswith("Autofix skipped: the base branch has moved")
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_settle_that_raises_after_the_pull_request_exists_retries_and_reports_it(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """The pull request is real once GitHub returns a URL. A settle that
+    raises on the first try (a throttled or unavailable store) must not
+    cost the record a false `failed`; the retry that follows tells the
+    truth once it lands."""
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    url = "https://github.com/acme-tools/checkout/pull/42"
+    github_client.return_value.open_fix_pr.return_value = url
+    store.advance_autofix.side_effect = [True, RuntimeError("throttled"), True]
+
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    assert store.advance_autofix.call_args_list[1:] == [
+        call("d-1", "opening", "pr_opened", extra={"pr_url": url})
+    ] * 2
+    assert bot_client.return_value.reply_in_thread.call_count == 1
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply == f"Autofix PR opened: {url}"
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_settle_that_keeps_raising_still_tells_the_truth_about_the_pull_request(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """Both settle attempts fail. The record is left at `opening` for the
+    sweep, but the thread still gets the real link rather than the
+    sweep's later opening-timeout reply being the only thing the reader
+    sees, and nothing here ever calls the record `failed`."""
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    url = "https://github.com/acme-tools/checkout/pull/42"
+    github_client.return_value.open_fix_pr.return_value = url
+    store.advance_autofix.side_effect = [True, RuntimeError("down"), RuntimeError("down")]
+
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    assert bot_client.return_value.reply_in_thread.call_count == 1
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply == f"Autofix PR opened: {url}"
+    assert url in caplog.text
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+    assert not any(c.args[2] == "failed" for c in store.advance_autofix.call_args_list)

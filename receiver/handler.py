@@ -568,7 +568,11 @@ def open_fix(record: dict, body: dict) -> dict:
     and a failed record and no GitHub call. The claim moves the record to
     `opening` under a short deadline: the sweep cannot expire it under a
     receiver mid-sequence, and a receiver that dies mid-sequence still
-    gets its row failed loudly rather than stranded.
+    gets its row failed loudly rather than stranded. The one exception is
+    a record left at `opening` after GitHub already returned a pull
+    request URL: the sweep's opening-timeout reply is misleading there,
+    since a pull request exists, which is why `_settle_pr_opened` logs the
+    URL under `AUTOFIX_FAILED_MARKER` before giving up on the record.
     """
     cfg = config()
     short_id = record.get("short_id", "")
@@ -602,13 +606,52 @@ def open_fix(record: dict, body: dict) -> dict:
 
     # Stored raw, so a replay reads back the URL GitHub gave. Encoded only
     # for the thread, where markdown-significant characters would render
-    # as formatting instead of a link.
-    if alert_store().advance_autofix(
-        record["dispatch_id"], "opening", "pr_opened", extra={"pr_url": url}
-    ):
+    # as formatting instead of a link. The pull request exists once `url`
+    # is set, so a settle exception from here on must never let the crash
+    # guard in `handle_autofix_result` mark the record `failed`: one retry
+    # covers the common transient causes, and a double failure still tells
+    # the thread the truth and leaves the record at `opening` for the sweep
+    # to notice, rather than silently reporting a failure that did not
+    # happen.
+    settled = _settle_pr_opened(record, url, short_id=short_id)
+    if settled:
         pr_url = safe_callback_url(url, field="pr_url")
         post_completion(record, autofix.completion_reply("pr_opened", pr_url=pr_url))
     return respond_json(200, {"status": "pr_opened", "pr_url": url})
+
+
+def _settle_pr_opened(record: dict, url: str, *, short_id: str) -> bool:
+    """Advance `record` to `pr_opened`, retrying once on a store exception.
+
+    A lost conditional write (another writer settled first) returns False
+    with nothing logged and nothing posted, same as any other advance in
+    this module. A raised exception is different: the pull request already
+    exists, so it is retried once, and if the retry also raises, the thread
+    is told about the pull request directly rather than through the normal
+    `settled` path, since the record itself could not be advanced.
+    """
+    try:
+        return alert_store().advance_autofix(
+            record["dispatch_id"], "opening", "pr_opened", extra={"pr_url": url}
+        )
+    except Exception as exc:  # noqa: BLE001 - the pull request exists; the record must not say otherwise
+        LOG.error(
+            "%s %s could not settle pr_opened, retrying once: %s",
+            AUTOFIX_FAILED_MARKER, short_id, exc,
+        )
+    try:
+        return alert_store().advance_autofix(
+            record["dispatch_id"], "opening", "pr_opened", extra={"pr_url": url}
+        )
+    except Exception as exc:  # noqa: BLE001 - logged; the sweep is the backstop
+        LOG.error(
+            "%s %s record left at opening with pull request %s: %s",
+            AUTOFIX_FAILED_MARKER, short_id, url, exc,
+        )
+        post_completion(
+            record, autofix.completion_reply("pr_opened", pr_url=safe_callback_url(url, field="pr_url"))
+        )
+        return False
 
 
 def handle_autofix_result(event: dict) -> dict:
