@@ -102,18 +102,35 @@ PR_URL = f"https://github.com/{REPO}/pull/42"
 FILES = [("src/cart.py", "total = 0\n"), ("tests/test_cart.py", "def test_total(): ...\n")]
 
 
-def sequence(*, fail_get=None, fail_post=None, pull_body=None) -> MagicMock:
-    """A session answering the mint and the six-call sequence in order.
+def sequence(
+    *, fail_get=None, fail_post=None, pull_body=None, compare_status="behind", tree_body=None
+) -> MagicMock:
+    """A session answering the mint and the eight-call sequence in order.
 
-    GETs, zero-based: installation lookup, base ref, base commit. POSTs:
-    mint, one blob per file (two here), tree, commit, ref, pull.
-    `fail_get`/`fail_post` make that call answer 500; `pull_body` replaces
-    the final pull-request response body.
+    GETs, zero-based: installation lookup, base ref, compare, base commit,
+    base tree. POSTs: mint, one blob per file (two here), tree, commit,
+    ref, pull. `fail_get`/`fail_post` make that call answer 500; `pull_body`
+    replaces the final pull-request response body; `compare_status` is the
+    compare call's `status` field; `tree_body` replaces the base tree
+    listing's response body.
     """
     gets = [
         response(200, {"id": 77}),
         response(200, {"object": {"sha": "base-ref-sha"}}),
+        response(200, {"status": compare_status}),
         response(200, {"sha": BASE_SHA, "tree": {"sha": "tree-base"}}),
+        response(
+            200,
+            tree_body
+            if tree_body is not None
+            else {
+                "truncated": False,
+                "tree": [
+                    {"path": "src/cart.py", "mode": "100755", "type": "blob"},
+                    {"path": "tests/test_cart.py", "mode": "100644", "type": "blob"},
+                ],
+            },
+        ),
     ]
     posts = [
         response(201, MINT_BODY),
@@ -156,8 +173,11 @@ def test_open_fix_pr_runs_the_six_calls_in_order_and_returns_the_url(encode):
     assert [c.args[0] for c in session.get.call_args_list] == [
         f"{base}/installation",
         f"{base}/git/ref/heads/develop",
+        f"{base}/compare/develop...{BASE_SHA}",
         f"{base}/git/commits/{BASE_SHA}",
+        f"{base}/git/trees/tree-base",
     ]
+    assert session.get.call_args_list[4].kwargs["params"] == {"recursive": "1"}
     posts = session.post.call_args_list
     assert [c.args[0] for c in posts] == [
         "https://api.github.com/app/installations/77/access_tokens",
@@ -172,7 +192,7 @@ def test_open_fix_pr_runs_the_six_calls_in_order_and_returns_the_url(encode):
     assert posts[3].kwargs["json"] == {
         "base_tree": "tree-base",
         "tree": [
-            {"path": "src/cart.py", "mode": "100644", "type": "blob", "sha": "blob-1"},
+            {"path": "src/cart.py", "mode": "100755", "type": "blob", "sha": "blob-1"},
             {"path": "tests/test_cart.py", "mode": "100644", "type": "blob", "sha": "blob-2"},
         ],
     }
@@ -200,7 +220,7 @@ def test_open_fix_pr_mints_exactly_the_autofix_permissions(encode):
     }
 
 
-@pytest.mark.parametrize("fail_get", [0, 1, 2])
+@pytest.mark.parametrize("fail_get", [0, 1, 2, 3, 4])
 @patch("receiver.github_app.jwt.encode", return_value="app.jwt")
 def test_a_failed_read_returns_none_never_raises(encode, fail_get):
     assert open_pr(sequence(fail_get=fail_get)) is None
@@ -215,3 +235,45 @@ def test_a_failed_write_returns_none_never_raises(encode, fail_post):
 @patch("receiver.github_app.jwt.encode", return_value="app.jwt")
 def test_a_pull_request_without_a_url_reads_as_not_opened(encode):
     assert open_pr(sequence(pull_body={})) is None
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_base_commit_off_the_base_branch_opens_nothing(encode):
+    session = sequence(compare_status="diverged")
+
+    assert open_pr(session) is None
+    # The mint happened, but nothing past the compare check was ever posted.
+    assert session.post.call_count == 1
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_truncated_base_tree_falls_back_to_regular_files(encode):
+    session = sequence(tree_body={"truncated": True, "tree": []})
+
+    assert open_pr(session) == PR_URL
+
+    tree_call = session.post.call_args_list[3]
+    assert [entry["mode"] for entry in tree_call.kwargs["json"]["tree"]] == [
+        "100644",
+        "100644",
+    ]
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_every_request_carries_a_timeout_inside_the_budget(encode):
+    session = sequence()
+
+    assert open_pr(session) == PR_URL
+
+    for call in session.get.call_args_list + session.post.call_args_list:
+        timeout = call.kwargs["timeout"]
+        assert 0 < timeout <= 15
+
+
+@patch("receiver.github_app.time.monotonic", side_effect=[0.0] + [1000.0] * 50)
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_an_exhausted_budget_stops_before_the_next_request(encode, monotonic):
+    session = sequence()
+
+    assert open_pr(session) is None
+    assert session.get.call_count == 0
