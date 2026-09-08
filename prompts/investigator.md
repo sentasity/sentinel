@@ -160,6 +160,10 @@ Steps:
       renamed: report `declined_in_session` through f and stop this grant,
       because the receiver writes whole files at the paths you send and
       nothing else, so a fix that reshapes the file layout cannot travel.
+      The same if the finished fix would exceed what the receiver accepts:
+      more than 20 changed files, more than 512 KB of file contents in
+      total, a title over 200 characters, or a body over 40,000 characters:
+      report `declined_in_session` through f and stop this grant.
    d. Write the fix, mirroring the codebase's existing conventions, and a
       test that fails without the fix and passes with it, mirroring an
       existing test pattern. Run the narrowest relevant test command and

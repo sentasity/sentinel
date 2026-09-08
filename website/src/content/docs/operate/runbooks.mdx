@@ -104,7 +104,7 @@ The one worth acting on is a path rejection, because it means the session decide
 
 ### `AUTOFIX_FAILED ... pull request not opened`
 
-The payload passed, the record was claimed, and one of the GitHub calls that build the branch and open the pull request did not succeed. The App client's own line, just above, names the failing call and the underlying error. Work through the App checklist above: the wrong `autofix.app_id`, a private key that no longer matches an active key, an App not installed on the target repository, or an installation missing one of the two permissions all land here. A branch that already exists (a replayed dispatch id) lands here too.
+The payload passed, the record was claimed, and one of the GitHub calls that build the branch and open the pull request did not succeed. The App client's own line, just above, names the failing call and the underlying error. Work through the App checklist above: the wrong `autofix.app_id`, a private key that no longer matches an active key, an App not installed on the target repository, or an installation missing one of the two permissions all land here. A branch that already exists (a replayed dispatch id) lands here too, as does a base commit that is not on the base branch (the session checked out something other than the branch it was told to; the App client's line says so) and a sequence that ran out of its time budget.
 
 A failure after the branch was created leaves that branch behind with no pull request on it. It is inert, and its name carries the dispatch id that failed:
 
@@ -143,7 +143,7 @@ Without `--reset`, a repeat issue posts a fresh card and nothing else happens. T
 
 ## Runbook: updating the investigator's stored prompt
 
-A routine holds one prompt, and the receiver's contract with it changes whenever step 7 of `prompts/investigator.md` does. Update the stored prompt through the routines API rather than by hand: write the repository file with the receiver's origin substituted for `REPLACE_WITH_FUNCTION_URL`, then read the routine back and diff it against that substituted file. A diff that is not empty means the update did not land whole. The probe routine keeps its own prompt and is not touched by this.
+A routine holds one prompt, and the receiver's contract with it changes whenever step 7 of `prompts/investigator.md` does. The public routines API cannot read or write a routine's configuration, so the update happens on the routine's own page at claude.ai: substitute the receiver's origin for `REPLACE_WITH_FUNCTION_URL` in the repository file, paste the result into the routine's prompt, save, then reopen the routine and compare its prompt against the substituted file. A Claude Code session with routine tooling can make the same edit and read it back, which is how the comparison is automated when one is at hand. Either way, a prompt that differs from the file is a partial update. The probe routine keeps its own prompt and is not touched by this.
 
 ## Configuration probe
 

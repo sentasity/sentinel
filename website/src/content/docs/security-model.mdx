@@ -104,10 +104,11 @@ credential being there at all; a session with no credential needs none of them.
 | Storage | none: minted per pull request inside the receiver, never returned, never written down |
 
 The receiver mints it only after a `fix_ready` payload has passed validation and the
-dispatch record has been claimed, and spends it on one short sequence: a read of the
-base branch to confirm the pull request's base exists, a read of the base commit, a blob
-per file, a tree that inherits the base commit and overrides only those paths, a commit,
-a branch, and then the pull request itself. The commit's author is whatever GitHub
+dispatch record has been claimed, and spends it on one short sequence under a single
+time budget: a read of the base branch and a comparison that confirms the base commit
+is on it, a read of the base commit and its tree, a blob per file, a tree that inherits
+the base commit and overrides only those paths, a commit, a branch, and then the pull
+request itself. The commit's author is whatever GitHub
 records for the App installation, because nothing in the receiver sets one, so the pull
 request is the App's by construction rather than by a check made afterwards.
 
@@ -219,6 +220,13 @@ clear of the forbidden and excluded patterns, no path twice, at most 512 KB of c
 a one-line title, and a bounded body. The first failure wins, the response names the
 rule, the record settles as failed, and the thread is told. Nothing is minted for a
 payload that fails.
+
+One check needs GitHub and so runs after the claim: the base commit the session built
+on must be the base branch's head or an ancestor of it. A fix built on a commit that is
+not on the branch would open a pull request carrying unrelated changes, so the receiver
+opens nothing and the grant settles as failed. The whole sequence also runs under one
+time budget short of the function's own limit, so a slow GitHub cannot leave a record
+claimed with no settle.
 
 A payload that passes is opened under a claim. The receiver moves the dispatch record
 from `dispatched` to `opening` with a conditional write before its first GitHub call,

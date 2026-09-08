@@ -177,6 +177,18 @@ def test_the_fix_phase_statuses_match_the_callback_contract():
     assert "pr_opened" not in body
 
 
+def test_the_fix_phase_names_the_receiver_caps():
+    """The receiver settles a fix_ready that breaks a cap as failed without
+    opening anything, so the session has to know the caps to decline
+    before sending. Derived from the constants so the two cannot drift."""
+    body = " ".join(fix_phase().split())
+
+    assert f"more than {autofix.FIX_FILE_LIMIT} changed files" in body
+    assert f"more than {autofix.FIX_CONTENT_BYTES_LIMIT // 1024} KB" in body
+    assert f"a title over {autofix.FIX_TITLE_LIMIT} characters" in body
+    assert f"a body over {autofix.FIX_BODY_LIMIT:,} characters" in body
+
+
 def test_the_fix_phase_checks_the_callback_url_against_the_verified_origin():
     """The callback URL arrives in a response body, which is the one place the
     step-5 out-of-band verification does not reach on its own. Trusting it as
