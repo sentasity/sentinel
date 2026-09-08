@@ -809,8 +809,8 @@ def test_a_non_bot_error_on_one_row_still_answers_the_next_one(
     `delivered` by the time the loop runs, which is terminal and out of the
     due index, so a guard that only understands `BotError` would leave every
     row after the failing one silent forever. The grants are pending in the
-    response too, so losing the loop would also 5xx a session whose token has
-    already been minted."""
+    response too, so losing the loop would cost the session its fix as well
+    as the remaining threads their replies."""
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
