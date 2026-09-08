@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -930,7 +930,7 @@ from receiver.handler import route
 
 
 def callback_event(token="cb-token", **body):
-    payload = {"dispatch_id": "d-1", "status": "pr_opened", "pr_url": "https://pr", **body}
+    payload = {"dispatch_id": "d-1", "status": "aborted_drift", **body}
     headers = {"authorization": f"Bearer {token}"} if token is not None else {}
     return {
         "rawPath": "/autofix-result",
@@ -951,33 +951,6 @@ def dispatch_record(token="cb-token"):
         "callback_token_hash": AlertStore.hash_token(token),
         "status": "dispatched",
     }
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_a_pr_opened_callback_replies_with_the_link(
-    config, alert_store, bot_client, github_client, tmp_path
-):
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    repo = config.return_value.target_repo
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
-
-    good_url = f"https://github.com/{repo}/pull/42"
-    response = route(callback_event(pr_url=good_url))
-
-    assert response["statusCode"] == 200
-    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert reply == f"Autofix PR opened: {good_url}"
-    assert store.advance_autofix.call_args.args == ("d-1", "dispatched", "pr_opened")
 
 
 @patch("receiver.handler.bot_client")
@@ -1066,248 +1039,257 @@ def test_autofix_result_with_a_non_ascii_token_is_rejected_not_crashed():
     assert route(callback_event(token="tökén"))["statusCode"] == 401
 
 
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-def test_a_malicious_pr_url_is_rejected_not_relayed_into_the_reply(alert_store, bot_client):
-    """A masked-link payload must not reach Teams as clickable markdown."""
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
+FIX_SHA = "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29"
+FIX_TITLE = "Autofix CHECKOUT-4B2: guard the empty-cart total"
+FIX_BODY = "Root cause.\n\nWhat changed.\n\npytest tests/test_cart.py: passed."
 
-    payload = "https://good.example/x)[Click to review](https://phish.example"
-    response = route(callback_event(pr_url=payload))
 
-    assert response["statusCode"] == 200
-    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "phish.example" not in reply
-    assert "[Click to review]" not in reply
-    # Not a github.com PR URL, so verification fails closed before it would
-    # even need the missing target-repo config: the warning reply, not the
-    # normal completion text, is what a reader sees.
-    assert reply == handler.UNVERIFIED_REPLY.format(pr_url="(missing PR URL)")
+def fix_ready_event(**overrides):
+    payload = {
+        "base_sha": FIX_SHA,
+        "files": [{"path": "src/cart.py", "content": "total = 0\n"}],
+        "title": FIX_TITLE,
+        "body": FIX_BODY,
+    }
+    payload.update(overrides)
+    return callback_event(status="fix_ready", **payload)
+
+
+def autofix_config(tmp_path):
+    from receiver.config import load_config
+    from tests.test_config import AUTOFIX, VALID, write
+
+    return load_config(write(tmp_path, VALID + AUTOFIX))
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_pathological_pr_number_reads_as_unverified_not_as_a_crash(
+def test_a_fix_ready_callback_claims_then_opens_then_replies_with_the_link(
     config, alert_store, bot_client, github_client, tmp_path
 ):
-    """`verified_pr_author` promises both lookups degrade to False and never
-    to an exception, and the security page tells an evaluator the same thing.
-    Verification reads the raw URL, so the callback route's own length cap is
-    not in play, and parsing an unbounded digit run with int() raises once it
-    passes the runtime's integer-string conversion limit. That exception would
-    escape the callback route as a 5xx and leave the thread with no completion
-    reply at all, which is the one outcome this pipeline is built to avoid."""
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    repo = config.return_value.target_repo
+    cfg = autofix_config(tmp_path)
+    config.return_value = cfg
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
+    url = f"https://github.com/{cfg.target_repo}/pull/42"
 
-    huge = f"https://github.com/{repo}/pull/{'9' * 6000}"
-    response = route(callback_event(pr_url=huge))
+    def open_after_claim(**kwargs):
+        # The claim must precede the first GitHub call, or the sweep could
+        # expire the record while the pull request is being built.
+        assert store.advance_autofix.call_args.args == ("d-1", "dispatched", "opening")
+        return url
+
+    github_client.return_value.open_fix_pr.side_effect = open_after_claim
+
+    response = route(fix_ready_event())
 
     assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    claim, settle = store.advance_autofix.call_args_list
+    assert claim.args == ("d-1", "dispatched", "opening")
+    assert claim.kwargs["due_at"]
+    assert settle.args == ("d-1", "opening", "pr_opened")
+    assert settle.kwargs == {"extra": {"pr_url": url}}
+    assert github_client.return_value.open_fix_pr.call_args.kwargs == {
+        "repo": cfg.target_repo,
+        "base_sha": FIX_SHA,
+        "base_branch": cfg.autofix_base_branch,
+        "branch": "autofix/checkout-4b2-d-1",
+        "files": [("src/cart.py", "total = 0\n")],
+        "title": FIX_TITLE,
+        "body": FIX_BODY,
+    }
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert reply.startswith("⚠️ Autofix reported a PR")
-    # The bound lives in the pattern, so the URL never reaches a lookup at
-    # all: nothing is asked of GitHub on behalf of a forged number.
-    github_client.return_value.pr_author.assert_not_called()
+    assert reply == f"Autofix PR opened: {url}"
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_legitimate_pr_url_survives_intact_and_stays_a_link(
-    config, alert_store, bot_client, github_client, tmp_path
+def test_a_malformed_fix_payload_is_a_400_that_settles_failed_without_github(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
 ):
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
-
-    good_url = "https://github.com/acme-tools/checkout/pull/42"
-    response = route(callback_event(pr_url=good_url))
-
-    assert response["statusCode"] == 200
-    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert reply == f"Autofix PR opened: {good_url}"
-
-
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-def test_a_bold_markdown_pr_url_is_neutralized_not_relayed(alert_store, bot_client):
-    """`*` passes CALLBACK_URL_RE's shape check but is bold in Teams; a
-    domain-spoofing payload must not reach the reply as live `**...**`."""
+    config.return_value = autofix_config(tmp_path)
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
 
-    payload = "https://evil.example/**not-really-github.com**"
-    response = route(callback_event(pr_url=payload))
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event(files=[]))
 
-    assert response["statusCode"] == 200
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"]) == {
+        "status": "failed", "reason": "files must be a non-empty list",
+    }
+    assert store.advance_autofix.call_args_list == [
+        call("d-1", "dispatched", "failed", extra={"failure": "files must be a non-empty list"})
+    ]
+    github_client.return_value.open_fix_pr.assert_not_called()
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "**" not in reply
-
-
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-def test_an_underscore_markdown_pr_url_is_neutralized_not_relayed(alert_store, bot_client):
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
-
-    payload = "https://evil.example/_not-really-github.com_"
-    response = route(callback_event(pr_url=payload))
-
-    assert response["statusCode"] == 200
-    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "_" not in reply
-
-
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-def test_a_backslash_pr_url_is_neutralized_not_relayed(alert_store, bot_client):
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
-
-    payload = "https://evil.example/\\not-really-github.com\\"
-    response = route(callback_event(pr_url=payload))
-
-    assert response["statusCode"] == 200
-    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "\\" not in reply
+    assert reply == "Autofix failed. No pull request was opened."
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_legitimate_underscored_pr_url_still_produces_a_working_link(
+def test_a_forbidden_or_excluded_path_is_rejected_before_any_github_call(
     config, alert_store, bot_client, github_client, tmp_path
 ):
-    """`_` is common in real GitHub repo/branch names and must not be
-    rejected outright; percent-encoding keeps the link real and clickable."""
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
+    """The AUTOFIX config excludes `infra/**`; `.github/*` is forbidden for
+    every deployment. Both must fail on the receiver, where an injected
+    instruction cannot argue with them."""
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
 
-    custom = VALID.replace(
-        "target_repo: acme-tools/checkout", "target_repo: acme-tools/check_out"
+    for path in (".github/workflows/ci.yml", "infra/stack.py"):
+        response = route(fix_ready_event(files=[{"path": path, "content": ""}]))
+
+        assert response["statusCode"] == 400, path
+        assert json.loads(response["body"])["reason"] == f"path {path} is excluded"
+
+    github_client.return_value.open_fix_pr.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_lost_claim_opens_nothing_and_returns_the_stored_outcome(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """A replayed fix_ready, or one the sweep beat: the record is already
+    settled, so the session reads that outcome and nothing is opened."""
+    cfg = autofix_config(tmp_path)
+    config.return_value = cfg
+    store = alert_store.return_value
+    url = f"https://github.com/{cfg.target_repo}/pull/42"
+    store.get_autofix_dispatch.side_effect = [
+        dispatch_record(),
+        {**dispatch_record(), "status": "pr_opened", "pr_url": url},
+    ]
+    store.advance_autofix.return_value = False
+
+    response = route(fix_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    github_client.return_value.open_fix_pr.assert_not_called()
+    bot_client.return_value.reply_in_thread.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_pull_request_that_did_not_open_settles_failed_and_says_so(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    github_client.return_value.open_fix_pr.return_value = None
+
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {
+        "status": "failed", "reason": "pull request not opened",
+    }
+    assert store.advance_autofix.call_args == call(
+        "d-1", "opening", "failed", extra={"failure": "pull request not opened"}
     )
-    assert custom != VALID  # guards against a silently no-op substitution
-    config.return_value = load_config(write(tmp_path, custom))
-    repo = config.return_value.target_repo
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply == "Autofix failed. No pull request was opened."
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_crash_inside_the_fix_branch_settles_failed_instead_of_a_5xx(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """A record left at `opening` by an unhandled exception would wait for
+    the sweep with a thread that reads as still in progress; the branch
+    must settle it itself."""
+    config.return_value = autofix_config(tmp_path)
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
+    github_client.return_value.open_fix_pr.side_effect = RuntimeError("boom")
 
-    good_url = f"https://github.com/{repo}/pull/42"
-    response = route(callback_event(pr_url=good_url))
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event())
 
     assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "failed", "reason": "receiver crashed"}
+    assert store.advance_autofix.call_args == call(
+        "d-1", "opening", "failed", extra={"failure": "receiver crashed"}
+    )
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    # Pinned to the exact verified reply (with the underscore
-    # percent-encoded, same as safe_callback_url always does for display),
-    # not just "some link survived": a verification that read the encoded
-    # pr_url instead of the raw one would fail to match this underscored
-    # repo against PR_URL_RE, fall through to the unverified warning, and
-    # still contain a single "https://github.com/" with no
-    # "(missing PR URL)" in it, so a looser assertion here would not catch
-    # that regression.
-    encoded_url = handler.safe_callback_url(good_url, field="pr_url")
-    assert reply == f"Autofix PR opened: {encoded_url}"
+    assert reply == "Autofix failed. No pull request was opened."
+    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+def test_a_session_claiming_pr_opened_gets_a_400(alert_store, bot_client):
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+
+    response = route(callback_event(status="pr_opened", pr_url="https://pr"))
+
+    assert response["statusCode"] == 400
+    store.advance_autofix.assert_not_called()
+    bot_client.return_value.reply_in_thread.assert_not_called()
 
 
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_pr_from_the_app_bot_gets_the_normal_completion_reply(
+def test_the_pull_request_url_is_encoded_for_the_thread_and_raw_for_the_session(
     config, alert_store, bot_client, github_client, tmp_path
 ):
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    repo = config.return_value.target_repo
+    """`_` is common in real repository names and is markdown on the Teams
+    surface, so the reply percent-encodes it; the session and the record
+    get GitHub's URL untouched."""
+    config.return_value = autofix_config(tmp_path)
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "acme-autofix[bot]"
+    url = "https://github.com/acme-tools/my_repo/pull/7"
+    github_client.return_value.open_fix_pr.return_value = url
 
-    route(callback_event(pr_url=f"https://github.com/{repo}/pull/42"))
+    response = route(fix_ready_event())
 
+    assert json.loads(response["body"])["pr_url"] == url
+    assert store.advance_autofix.call_args.kwargs == {"extra": {"pr_url": url}}
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert reply.startswith("Autofix PR opened:")
-    github_client.return_value.pr_author.assert_called_once_with(repo, 42)
+    assert reply == "Autofix PR opened: https://github.com/acme-tools/my%5Frepo/pull/7"
 
 
-@patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_a_pr_not_authored_by_the_app_is_flagged_loudly(
-    config, alert_store, bot_client, github_client, tmp_path, caplog
-):
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    repo = config.return_value.target_repo
+def test_a_terminal_status_advances_from_dispatched_and_replies(alert_store, bot_client):
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
-    github_client.return_value.app_slug.return_value = "acme-autofix"
-    github_client.return_value.pr_author.return_value = "some-human"
 
-    with caplog.at_level(logging.ERROR):
-        route(callback_event(pr_url=f"https://github.com/{repo}/pull/42"))
+    response = route(callback_event(status="aborted_drift"))
 
-    assert any(observability.AUTOFIX_UNVERIFIED_MARKER in r.message for r in caplog.records)
-    # The unverified marker rides along with the existing failure marker so
-    # the alarm already wired to it fires without a second alarm to define.
-    assert any(observability.AUTOFIX_FAILED_MARKER in r.message for r in caplog.records)
+    assert response["statusCode"] == 200
+    assert store.advance_autofix.call_args == call("d-1", "dispatched", "aborted_drift")
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
-    assert "could not be verified" in reply
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_a_pr_in_the_wrong_repo_is_flagged_without_an_api_call(
-    config, alert_store, bot_client, github_client, tmp_path, caplog
-):
-    from receiver.config import load_config
-    from tests.test_config import VALID, write
-
-    config.return_value = load_config(write(tmp_path, VALID))
-    store = alert_store.return_value
-    store.get_autofix_dispatch.return_value = dispatch_record()
-    store.advance_autofix.return_value = True
-
-    with caplog.at_level(logging.ERROR):
-        route(callback_event(pr_url="https://github.com/evil/elsewhere/pull/1"))
-
-    assert any(observability.AUTOFIX_UNVERIFIED_MARKER in r.message for r in caplog.records)
-    github_client.return_value.app_slug.assert_not_called()
-    github_client.return_value.pr_author.assert_not_called()
+    assert reply.startswith("Autofix skipped: the base branch has moved")

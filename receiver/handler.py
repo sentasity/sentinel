@@ -38,7 +38,6 @@ from receiver.observability import (
     AUTOFIX_DECLINED_MARKER,
     AUTOFIX_DISPATCHED_MARKER,
     AUTOFIX_FAILED_MARKER,
-    AUTOFIX_UNVERIFIED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
     PROBE_LOG_LIMIT,
@@ -521,50 +520,102 @@ def safe_callback_url(value: str, *, field: str) -> str:
     return value
 
 
-# The exact PR-URL shape the author check parses. Stricter than
-# CALLBACK_URL_RE on purpose: verification reads the RAW pr_url, before
-# safe_callback_url percent-encodes underscores, so repo names survive.
-#
-# The digit run is bounded because the number is parsed with int(), and a
-# runtime that caps integer-string conversion raises on a long enough digit
-# run rather than returning a value. Reading the raw URL means
-# safe_callback_url's own length cap has not been applied here, so the bound
-# has to live in this pattern. Nine digits is far past any real pull-request
-# number and short enough that no conversion limit is in play, and an
-# over-long run now fails the match, which is the fail-closed answer this
-# function documents. Without the bound, a hostile callback body could turn a
-# check that promises to degrade to False into an unhandled exception out of
-# the callback route, and the thread would never get its completion reply.
-PR_URL_MAX_DIGITS = 9
-PR_URL_RE = re.compile(
-    rf"^https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d{{1,{PR_URL_MAX_DIGITS}}})$"
-)
-
-UNVERIFIED_REPLY = (
-    "⚠️ Autofix reported a PR, but its author could not be verified as the "
-    "autofix App. Review it with care before trusting it: {pr_url}"
-)
+# What the record and the session are told when the GitHub sequence did not
+# produce a pull request. The App client logged the underlying error.
+OPENING_FAILURE = "pull request not opened"
 
 
-def verified_pr_author(raw_pr_url: str) -> bool:
-    """True when the callback's PR is in the target repo AND authored by the
-    App bot. Both lookups degrade to False, never to an exception: the
-    callback body is untrusted, and this check must fail closed."""
-    match = PR_URL_RE.match(raw_pr_url)
-    if not match or match.group(1) != config().target_repo:
-        return False
-    slug = github_client().app_slug()
-    if not slug:
-        return False
-    number = int(match.group(2))
-    return github_client().pr_author(config().target_repo, number) == f"{slug}[bot]"
+def post_completion(record: dict, reply: str) -> None:
+    """Post one autofix outcome into its thread. A chat failure is logged
+    under the delivery marker and never reaches the caller."""
+    try:
+        bot_client().reply_in_thread(record["conversation_id"], record["message_id"], reply)
+    except BotError as exc:
+        LOG.error(
+            "%s autofix completion reply for %s: %s",
+            DELIVERY_FAILURE_MARKER, record.get("short_id", ""), exc,
+        )
+
+
+def settle_failed(record: dict, reason: str, *, expected: str) -> None:
+    """Advance a record from `expected` to `failed` and tell the thread. A
+    lost advance means another writer settled it first and already
+    replied."""
+    if alert_store().advance_autofix(
+        record["dispatch_id"], expected, "failed", extra={"failure": reason}
+    ):
+        post_completion(record, autofix.completion_reply("failed"))
+
+
+def settled_outcome(dispatch_id: str) -> dict:
+    """The outcome already recorded for a dispatch, for a fix_ready that
+    lost its claim: a replayed POST, or the sweep expiring the record
+    first. Read fresh, because the record the caller holds predates the
+    write it just lost."""
+    latest = alert_store().get_autofix_dispatch(dispatch_id) or {}
+    outcome = {"status": str(latest.get("status") or "failed")}
+    if latest.get("pr_url"):
+        outcome["pr_url"] = latest["pr_url"]
+    if latest.get("failure"):
+        outcome["reason"] = latest["failure"]
+    return outcome
+
+
+def open_fix(record: dict, body: dict) -> dict:
+    """The fix_ready branch: validate, claim, open, settle, reply.
+
+    Validation runs before the claim, so a malformed payload costs a 400
+    and a failed record and no GitHub call. The claim moves the record to
+    `opening` under a short deadline: the sweep cannot expire it under a
+    receiver mid-sequence, and a receiver that dies mid-sequence still
+    gets its row failed loudly rather than stranded.
+    """
+    cfg = config()
+    short_id = record.get("short_id", "")
+    try:
+        payload = autofix.parse_fix_payload(body, exclude_paths=cfg.autofix_exclude_paths)
+    except autofix.InvalidFixPayload as exc:
+        LOG.error("%s %s rejected fix payload: %s", AUTOFIX_FAILED_MARKER, short_id, exc)
+        settle_failed(record, str(exc), expected="dispatched")
+        return respond_json(400, {"status": "failed", "reason": str(exc)})
+
+    if not alert_store().advance_autofix(
+        record["dispatch_id"], "dispatched", "opening",
+        due_at=_deadline(autofix.OPENING_DEADLINE_SECONDS),
+    ):
+        LOG.info("autofix fix_ready for %s already settled; ignoring", record["dispatch_id"])
+        return respond_json(200, settled_outcome(record["dispatch_id"]))
+
+    url = github_client().open_fix_pr(
+        repo=cfg.target_repo,
+        base_sha=payload.base_sha,
+        base_branch=cfg.autofix_base_branch,
+        branch=autofix.fix_branch(short_id, record["dispatch_id"]),
+        files=list(payload.files),
+        title=payload.title,
+        body=payload.body,
+    )
+    if not url:
+        LOG.error("%s %s %s", AUTOFIX_FAILED_MARKER, short_id, OPENING_FAILURE)
+        settle_failed(record, OPENING_FAILURE, expected="opening")
+        return respond_json(200, {"status": "failed", "reason": OPENING_FAILURE})
+
+    # Stored raw, so a replay reads back the URL GitHub gave. Encoded only
+    # for the thread, where markdown-significant characters would render
+    # as formatting instead of a link.
+    if alert_store().advance_autofix(
+        record["dispatch_id"], "opening", "pr_opened", extra={"pr_url": url}
+    ):
+        pr_url = safe_callback_url(url, field="pr_url")
+        post_completion(record, autofix.completion_reply("pr_opened", pr_url=pr_url))
+    return respond_json(200, {"status": "pr_opened", "pr_url": url})
 
 
 def handle_autofix_result(event: dict) -> dict:
-    """Accept the workflow's outcome and close the Teams thread.
+    """Accept a session's outcome for one grant and close the Teams thread.
 
     Authenticated by the per-dispatch capability token; the record's hash is
-    the only credential store. The advance is conditional, so the callback
+    the only credential store. Every advance is conditional, so the callback
     and the timeout sweep can both target a record and exactly one wins.
     """
     token = bearer_token(event)
@@ -597,46 +648,43 @@ def handle_autofix_result(event: dict) -> dict:
         LOG.warning("rejected autofix callback with status %r", status)
         return respond(400, "unusable status")
 
-    raw_pr_url = str(body.get("pr_url") or "")
-    pr_url = safe_callback_url(raw_pr_url, field="pr_url")
+    if status == "fix_ready":
+        try:
+            return open_fix(record, body)
+        except Exception as exc:  # noqa: BLE001 - a claimed record must settle, never 5xx
+            LOG.error(
+                "%s %s fix_ready crashed: %s",
+                AUTOFIX_FAILED_MARKER, record.get("short_id", ""), exc,
+            )
+            # The crash may have landed before or after the claim, so try
+            # both origins; whichever the record is in, it settles. A store
+            # that is itself the thing failing leaves the row to the sweep.
+            try:
+                for expected in ("opening", "dispatched"):
+                    if alert_store().advance_autofix(
+                        record["dispatch_id"], expected, "failed",
+                        extra={"failure": "receiver crashed"},
+                    ):
+                        post_completion(record, autofix.completion_reply("failed"))
+                        break
+            except Exception as settle_exc:  # noqa: BLE001 - logged; the sweep is the backstop
+                LOG.error(
+                    "%s %s could not settle after the crash: %s",
+                    AUTOFIX_FAILED_MARKER, record.get("short_id", ""), settle_exc,
+                )
+            return respond_json(200, {"status": "failed", "reason": "receiver crashed"})
+
     run_url = safe_callback_url(str(body.get("run_url") or ""), field="run_url")
-    if not alert_store().advance_autofix(
-        record["dispatch_id"], "dispatched", status, extra={"pr_url": pr_url}
-    ):
+    if not alert_store().advance_autofix(record["dispatch_id"], "dispatched", status):
         LOG.info("autofix callback for %s already settled; ignoring", record["dispatch_id"])
         return respond(200, "ok")
 
     if status == "failed":
         LOG.error(
-            "%s %s workflow reported failure %s",
+            "%s %s session reported failure %s",
             AUTOFIX_FAILED_MARKER, record.get("short_id", ""), run_url,
         )
-
-    if status == "pr_opened" and not verified_pr_author(raw_pr_url):
-        # Both markers land in this one line on purpose. The prompt tells the
-        # session to push only through the vended App token, but a prompt is
-        # guidance, not enforcement, so this line is the detective control
-        # for the case where that instruction was not followed. Carrying the
-        # existing failure marker alongside the new one means the alarm
-        # already wired to it fires here too, with no second alarm to define
-        # and keep in sync; the new marker is what tells a reader looking at
-        # the logs that this is specifically an authorship mismatch, not an
-        # ordinary autofix failure.
-        LOG.error(
-            "%s %s %s pr_url=%s",
-            AUTOFIX_UNVERIFIED_MARKER, AUTOFIX_FAILED_MARKER,
-            record.get("short_id", ""), pr_url,
-        )
-        reply = UNVERIFIED_REPLY.format(pr_url=pr_url or "(missing PR URL)")
-    else:
-        reply = autofix.completion_reply(status, pr_url=pr_url, run_url=run_url)
-    try:
-        bot_client().reply_in_thread(record["conversation_id"], record["message_id"], reply)
-    except BotError as exc:
-        LOG.error(
-            "%s autofix completion reply for %s: %s",
-            DELIVERY_FAILURE_MARKER, record.get("short_id", ""), exc,
-        )
+    post_completion(record, autofix.completion_reply(status, run_url=run_url))
     return respond(200, "ok")
 
 
