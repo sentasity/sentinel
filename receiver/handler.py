@@ -648,9 +648,16 @@ def _settle_pr_opened(record: dict, url: str, *, short_id: str) -> bool:
             "%s %s record left at opening with pull request %s: %s",
             AUTOFIX_FAILED_MARKER, short_id, url, exc,
         )
-        post_completion(
-            record, autofix.completion_reply("pr_opened", pr_url=safe_callback_url(url, field="pr_url"))
-        )
+        try:
+            post_completion(
+                record,
+                autofix.completion_reply("pr_opened", pr_url=safe_callback_url(url, field="pr_url")),
+            )
+        except Exception as post_exc:  # noqa: BLE001 - the pull request exists; nothing raised from here may reach the crash guard
+            LOG.error(
+                "%s %s could not post the pull request link for %s: %s",
+                DELIVERY_FAILURE_MARKER, short_id, url, post_exc,
+            )
         return False
 
 

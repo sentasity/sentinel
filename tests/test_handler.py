@@ -1356,3 +1356,31 @@ def test_a_settle_that_keeps_raising_still_tells_the_truth_about_the_pull_reques
     assert url in caplog.text
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
     assert not any(c.args[2] == "failed" for c in store.advance_autofix.call_args_list)
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_chat_transport_failure_after_the_pull_request_exists_never_records_failed(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """Both settle attempts fail, and the chat client's own attempt to post
+    the pull request link fails too, with a transport error `post_completion`
+    does not wrap. That must still never let the record land at `failed`:
+    the pull request exists, and the crash guard is not allowed to see it."""
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    url = "https://github.com/acme-tools/checkout/pull/42"
+    github_client.return_value.open_fix_pr.return_value = url
+    store.advance_autofix.side_effect = [True, RuntimeError("down"), RuntimeError("down")]
+    bot_client.return_value.reply_in_thread.side_effect = ConnectionError("chat down")
+
+    with caplog.at_level(logging.ERROR):
+        response = route(fix_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    assert not any(c.args[2] == "failed" for c in store.advance_autofix.call_args_list)
+    assert observability.DELIVERY_FAILURE_MARKER in caplog.text
