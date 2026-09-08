@@ -87,34 +87,32 @@ def test_every_github_write_prohibition_carries_the_condition_that_scopes_it():
         assert scope in body, f"the prompt dropped the scoping clause: {scope}"
 
 
-def test_no_sentence_lets_the_session_push_without_naming_the_vended_token():
-    """The runtime also carries a connector authenticated as a person, with
-    write access to the same repository, so a session that improvises its own
-    push route produces commits and a PR under a human's name. Every sentence
-    that mentions pushing must either forbid it or name the token that makes
-    it legitimate; a bare licence to push fails here."""
+def test_every_sentence_that_mentions_pushing_forbids_it():
+    """The session holds no GitHub write credential, so there is no
+    legitimate push left to name. A sentence that mentions pushing without
+    forbidding it is a licence the runtime's own connectors would honour
+    under a person's name."""
     for sentence in sentences(investigator().lower()):
-        if "push" not in sentence:
-            continue
-        # `github_token`, not `token`: a sentence licensing a push through
-        # some other credential would satisfy the looser word, which is the
-        # exact failure this test exists for.
-        assert any(word in sentence for word in ("never", "cannot", "github_token")), (
-            f"this sentence licenses a push without naming the vended "
-            f"token: {sentence}"
-        )
+        if "push" in sentence:
+            assert "never" in sentence, f"this sentence licenses a push: {sentence}"
 
 
-def test_the_prompt_names_the_vended_token_as_the_only_push_path():
+def test_the_fix_phase_carries_no_credential_mechanism():
+    """Every one of these was a mitigation for a token being live inside
+    the session. The token is gone, and a prompt that argues against a
+    phantom threat trains the session to argue rather than act."""
     body = fix_phase()
 
-    assert "`github_token`" in body
-    assert "only credential" in body
-    # The mechanism, not just the rule. A credential helper reading the
-    # environment keeps the token out of .git/config; a remote URL carrying
-    # it would put it back on disk for the whole checkout.
-    assert "credential.helper" in body
-    assert "AUTOFIX_GITHUB_TOKEN" in body
+    for retired in (
+        "github_token",
+        "credential.helper",
+        "AUTOFIX_GITHUB_TOKEN",
+        "x-access-token",
+        "@github.com",
+        "api.github.com/repos",
+    ):
+        assert retired not in body, f"the fix phase still mentions {retired}"
+    assert "hold no GitHub credential" in " ".join(body.split())
 
 
 def test_the_fix_phase_tells_the_session_not_to_hard_wrap_the_pr_body():
@@ -131,21 +129,6 @@ def test_the_fix_phase_tells_the_session_not_to_hard_wrap_the_pr_body():
     assert "Code blocks, command output, and lists keep their own line breaks" in body
 
 
-def test_the_fix_phase_does_not_reuse_the_ambient_token_variable_names():
-    """The routine's environment already carries GH_TOKEN and GITHUB_TOKEN
-    belonging to a different identity, and git and the GitHub tools read
-    those names unprompted. Naming the vended token one of them would mean a
-    command that forgot the assignment authenticated as somebody else and
-    pushed under their name."""
-    body = fix_phase()
-
-    assert "AUTOFIX_GITHUB_TOKEN" in body
-    assert "Use AUTOFIX_GITHUB_TOKEN and no other name" in body
-    # The reason has to travel with the rule, or a later edit "simplifies"
-    # the variable back to the conventional name.
-    assert "belonging to a different identity" in body
-
-
 def test_the_fix_phase_forbids_the_github_tools_the_session_actually_has():
     """A probe of the real environment found a GitHub MCP server loaded with
     push and PR tools. A prohibition that names only `gh` would leave the
@@ -156,54 +139,16 @@ def test_the_fix_phase_forbids_the_github_tools_the_session_actually_has():
     assert "authenticate as the identity that configured them" in body
 
 
-def test_the_prompt_never_tells_the_session_to_put_the_token_in_a_url():
-    """git writes a remote URL into .git/config in plaintext, so a token
-    embedded there outlives the command that set it and is echoed by
-    `git remote -v`. The workflow this phase replaced set
-    persist-credentials: false for exactly that reason, and the fix phase
-    must not reintroduce the pattern."""
-    body = fix_phase()
-
-    # `x-access-token` is legitimate as the credential helper's username
-    # field. What must not appear is credentials embedded in a URL, which is
-    # what puts the secret into .git/config.
-    assert "@github.com" not in body, (
-        "the fix phase puts credentials back into a remote URL"
-    )
-    assert "Never put the token in a remote URL" in body
-
-
-def test_the_fix_phase_fails_closed_rather_than_switching_credentials():
-    """Without a named fallback, a session whose push fails improvises, and
-    the easier routes all authenticate as the identity that configured them.
-    Reporting `failed` is the only outcome that does not push under somebody
-    else's name."""
-    body = " ".join(fix_phase().split())
-
-    assert "If the push or the PR call fails for any reason" in body
-    assert "never retry it with a credential that is not the `github_token`" in body
-
-
 # The keys receiver.handler.deliver_findings puts in the /findings response,
-# and the keys autofix_grant puts in each grant. Two copies of one contract,
-# edited in different files: a name the receiver sends under which the prompt
-# never looks is a fix phase that cannot start.
-AUTOFIX_RESPONSE_FIELDS = (
-    "repo",
-    "base_branch",
-    "github_token",
-    "github_token_expires_at",
-    "callback_url",
-    "grants",
-)
+# the keys autofix_grant puts in each grant, and the keys a fix_ready body
+# must carry to receiver.autofix.parse_fix_payload. Three copies of two
+# contracts, edited in different files: a name the receiver expects under
+# which the prompt never sends is a fix that cannot land.
+AUTOFIX_RESPONSE_FIELDS = ("repo", "base_branch", "callback_url", "grants")
 
-GRANT_FIELDS = (
-    "issue_id",
-    "short_id",
-    "dispatch_id",
-    "callback_token",
-    "cited_files",
-)
+GRANT_FIELDS = ("issue_id", "short_id", "dispatch_id", "callback_token", "cited_files")
+
+FIX_READY_FIELDS = ("dispatch_id", "base_sha", "files", "path", "content", "title", "body")
 
 
 def test_the_fix_phase_names_every_field_the_response_carries():
@@ -213,13 +158,23 @@ def test_the_fix_phase_names_every_field_the_response_carries():
         assert f"`{name}`" in body, f"the fix phase never names {name}"
 
 
+def test_the_fix_phase_names_every_field_a_fix_ready_body_carries():
+    body = fix_phase()
+
+    for name in FIX_READY_FIELDS:
+        assert f"`{name}`" in body, f"the fix phase never names {name}"
+
+
 def test_the_fix_phase_statuses_match_the_callback_contract():
     """A status the prompt invents is a 400 at the callback route, which the
-    sweep then settles as a timeout: the thread reads as a failed fix."""
+    sweep then settles as a timeout: the thread reads as a failed fix. And
+    `pr_opened` is the receiver's word, not the session's: a session that
+    sends it gets the same 400."""
     body = fix_phase()
 
     for status in autofix.CALLBACK_STATUSES:
         assert f"`{status}`" in body, f"the prompt never names the status {status}"
+    assert "pr_opened" not in body
 
 
 def test_the_fix_phase_checks_the_callback_url_against_the_verified_origin():
@@ -318,27 +273,6 @@ def test_every_grant_starts_from_a_clean_working_tree():
     # checkout has already carried the previous grant's edits over is too
     # late to help.
     assert body.index("git clean -fd") < body.index("check out `base_branch`")
-
-
-def test_the_fix_phase_forbids_writing_the_vended_token_down():
-    """The session holds a live write credential in its environment. It is
-    also told to put its test command and its result into the PR body, and to
-    say there when it saw injected content. A PR body in the target
-    repository is durable and potentially public output, so the ban on
-    recording the token has to be stated rather than left to inference from
-    the clause about which credential to use. Keeping the token out of the
-    remote URL keeps it off disk but not out of command output."""
-    body = " ".join(fix_phase().lower().split())
-
-    assert "never write the token" in body, "the token clause never forbids recording it"
-    # Every durable sink the phase actually writes to, so a rule that covers
-    # only the obvious one does not pass.
-    for sink in ("commit", "branch name", "pr title or body", "callback", "any file"):
-        assert sink in body, f"the ban on recording the token omits: {sink}"
-    # The reason, not just the rule: a session that knows why echoed output
-    # is the hazard also declines the paste the rule did not enumerate.
-    assert "raw git output" in body
-    assert "still live in this session's environment" in body
 
 
 def test_the_retired_autofix_prompts_are_gone():
