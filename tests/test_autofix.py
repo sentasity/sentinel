@@ -1,10 +1,14 @@
 """The autofix gate: ordered checks, disposition lines, completion replies."""
 
+import re
 from dataclasses import replace
 from unittest.mock import MagicMock
 
+import pytest
+
+from receiver import autofix
 from receiver.autofix import (
-    CALLBACK_STATUSES,
+    RECORD_STATUSES,
     GateDecision,
     completion_reply,
     evaluate,
@@ -145,8 +149,8 @@ def test_a_spent_daily_cap_declines_last(tmp_path):
     store.claim_autofix_dedupe.assert_called_once()
 
 
-def test_completion_replies_cover_every_callback_status():
-    for status in CALLBACK_STATUSES:
+def test_completion_replies_cover_every_record_status():
+    for status in RECORD_STATUSES:
         text = completion_reply(status, pr_url="https://pr", run_url="https://run")
         assert text
 
@@ -157,7 +161,7 @@ def test_no_completion_reply_names_a_branch():
     """The base branch is operator config, so a reply that hardcodes one name
     tells every other deployment something false. These strings are read by a
     human in a chat thread, so they describe the branch by its role instead."""
-    for status in CALLBACK_STATUSES:
+    for status in RECORD_STATUSES:
         text = completion_reply(status, pr_url="https://pr", run_url="https://run")
         for branch in ("develop", "main", "master", "trunk"):
             assert branch not in text.lower(), f"{status} reply names {branch!r}"
@@ -208,6 +212,99 @@ def test_no_completion_reply_promises_a_link_it_cannot_supply():
     sends renders its fallback text forever, which reads to the person in the
     thread as a broken link rather than as an honest absence.
     """
-    for status in CALLBACK_STATUSES:
+    for status in RECORD_STATUSES:
         text = completion_reply(status)
         assert "(link unavailable)" not in text, f"{status} reply promises a run URL"
+
+
+SHA = "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29"
+
+
+def fix_body(**overrides) -> dict:
+    body = {
+        "dispatch_id": "d-1",
+        "status": "fix_ready",
+        "base_sha": SHA,
+        "files": [
+            {"path": "src/cart.py", "content": "total = 0\n"},
+            {"path": "tests/test_cart.py", "content": "def test_total(): ...\n"},
+        ],
+        "title": "Autofix CHECKOUT-4B2: guard the empty-cart total",
+        "body": "Root cause.\n\nWhat changed.\n\npytest tests/test_cart.py: passed.",
+    }
+    body.update(overrides)
+    return body
+
+
+def test_a_well_formed_fix_payload_parses_in_the_order_sent():
+    payload = autofix.parse_fix_payload(fix_body())
+
+    assert payload.base_sha == SHA
+    assert payload.files == (
+        ("src/cart.py", "total = 0\n"),
+        ("tests/test_cart.py", "def test_total(): ...\n"),
+    )
+    assert payload.title.startswith("Autofix CHECKOUT-4B2")
+    assert payload.body.startswith("Root cause.")
+
+
+@pytest.mark.parametrize(
+    ("override", "rule"),
+    [
+        ({"files": []}, "non-empty list"),
+        ({"files": "src/cart.py"}, "non-empty list"),
+        ({"files": [{"path": "src/cart.py"}]}, "string path and string content"),
+        ({"base_sha": 42}, "must be strings"),
+        ({"base_sha": SHA.upper()}, "full lowercase commit sha"),
+        ({"base_sha": SHA[:39]}, "full lowercase commit sha"),
+        (
+            {"files": [{"path": f"src/f{i}.py", "content": ""} for i in range(21)]},
+            "more than 20 files",
+        ),
+        ({"files": [{"path": "", "content": ""}]}, "not a plain repository-relative path"),
+        ({"files": [{"path": "/src/cart.py", "content": ""}]}, "not a plain repository-relative path"),
+        ({"files": [{"path": "src\\cart.py", "content": ""}]}, "not a plain repository-relative path"),
+        ({"files": [{"path": "src/cart\x00.py", "content": ""}]}, "not a plain repository-relative path"),
+        ({"files": [{"path": "./src/cart.py", "content": ""}]}, "dot segment"),
+        ({"files": [{"path": "src/../.env", "content": ""}]}, "dot segment"),
+        ({"files": [{"path": "src//cart.py", "content": ""}]}, "empty or dot segment"),
+        ({"files": [{"path": "src/cart.py/", "content": ""}]}, "empty or dot segment"),
+        ({"files": [{"path": ".github/workflows/ci.yml", "content": ""}]}, "is excluded"),
+        (
+            {"files": [{"path": "src/cart.py", "content": ""}, {"path": "src/cart.py", "content": "x"}]},
+            "listed twice",
+        ),
+        ({"files": [{"path": "src/cart.py", "content": "x" * (512 * 1024 + 1)}]}, "exceed 524288 bytes"),
+        ({"title": ""}, "title must be one non-empty line"),
+        ({"title": "a\nb"}, "title must be one non-empty line"),
+        ({"title": "t" * 201}, "title must be one non-empty line"),
+        ({"body": "b" * 40_001}, "body exceeds 40000"),
+    ],
+)
+def test_each_payload_rule_rejects_with_its_own_reason(override, rule):
+    with pytest.raises(autofix.InvalidFixPayload, match=rule):
+        autofix.parse_fix_payload(fix_body(**override))
+
+
+def test_an_operator_excluded_path_is_rejected_like_a_forbidden_one():
+    body = fix_body(files=[{"path": "infra/stack.py", "content": ""}])
+
+    with pytest.raises(
+        autofix.InvalidFixPayload, match=re.escape("path infra/stack.py is excluded")
+    ):
+        autofix.parse_fix_payload(body, exclude_paths=("infra/**",))
+
+
+def test_the_session_cannot_claim_a_pull_request_itself():
+    assert "pr_opened" not in autofix.CALLBACK_STATUSES
+    assert "fix_ready" in autofix.CALLBACK_STATUSES
+    assert "fix_ready" not in RECORD_STATUSES
+    assert "opening" not in RECORD_STATUSES
+    for status in RECORD_STATUSES:
+        assert status in autofix.COMPLETION_REPLIES
+
+
+def test_the_fix_branch_comes_from_the_record_not_the_payload():
+    assert autofix.fix_branch("CHECKOUT-4B2", "0f3c9a1e-7b52-4d0e-a1b2") == (
+        "autofix/checkout-4b2-0f3c9a1e"
+    )

@@ -9,9 +9,9 @@ Runbooks for the credentials the engine holds, what autofix needs on the GitHub 
 
 | Credential | Where it lives | Purpose |
 |---|---|---|
-| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The autofix App's private key, read by the receiver at cold start; it mints the scoped installation tokens vended to fix sessions |
+| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The autofix App's private key, read by the receiver at cold start; it mints the scoped installation token the receiver uses to open each pull request |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
-| Vended installation tokens | Nowhere: minted per batch, returned in the `/findings` response, never stored | Lets the fix session push a branch and open a pull request; scoped to the target repo, `contents: write` and `pull_requests: write`, one hour |
+| Installation tokens | Nowhere: minted per pull request inside the receiver, spent in the same invocation, never returned or stored | Lets the receiver push one branch and open one pull request; scoped to the target repo, `contents: write` and `pull_requests: write`, one hour |
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the fix session presents to `/autofix-result`; scoped to a single dispatch, not reusable |
 | `SENTINEL_BANNED_PATTERNS` | Actions secret, engine repo | The deployment-identifying ban patterns `tests/test_public_tree.py` enforces; not a credential, but held like one because publishing the list would index what it protects |
 
@@ -26,11 +26,14 @@ The receiver mints every autofix credential itself, so the App's configuration i
 - Do **not** grant `workflows`. It is excluded from every minted token on purpose ([why](/sentinel/security-model/)), and granting it at the installation widens the App's own reach for no benefit here.
 - `autofix.app_id` in the config file must be the App's numeric id, and `/sentinel/github-app-private-key` must be one of that App's active private keys.
 
-## The routine's environment must reach GitHub
+## The routine's environment reaches GitHub for reads only
 
-The fix phase fetches the base branch, pushes a branch, and calls the pull-request API, all against GitHub, from inside the routine's cloud environment. That environment's egress policy has to permit reaching those endpoints or the fix phase cannot run at all. Investigation is unaffected either way, so the symptom is narrow and uniform: findings keep arriving and threads keep getting their replies, while every grant fails and no pull request ever opens. Read that pattern as an egress question before a code question.
-
-It is worth stating what the two phases need separately, because they are not the same. Investigation reads the repository at the release SHA, which the routine's own environment provides for the repository it is bound to. The fix phase additionally writes: it pushes to a branch and creates a pull request through the API. Widen the policy by exactly the endpoints that needs, rather than opening it generally. The narrower the policy stays, the more the out-of-band destination check in [the security model](/sentinel/security-model/) is actually worth.
+The fix phase fetches the base branch and nothing else from GitHub: the session sends its
+changed files to the receiver, and the receiver opens the pull request. So the routine's
+environment needs the same GitHub reach the investigation already has, the repository
+fetch, and no more. If fixes are failing while findings keep arriving, the pattern points
+at the receiver's side, the App configuration above or the `AUTOFIX_FAILED` lines below,
+before it points at egress.
 
 ## Runbook: rotating the GitHub App private key
 
@@ -79,41 +82,43 @@ A fork's pull request runs without the secret and tests the generic patterns onl
 
 ## Reading autofix in the logs
 
-These are the four markers to filter on. They cover the gate's decisions and every outcome that reaches a thread, but they are not everything autofix logs: see the unmarked lines below the table.
+These are the three markers to filter on. They cover the gate's decisions and every outcome that reaches a thread, but they are not everything autofix logs: see the unmarked lines below the table.
 
 | Marker | Means |
 |---|---|
 | `AUTOFIX_DECLINED` | The gate said no, with the reason on the same line. Not a fault: this is the normal outcome for most findings |
-| `AUTOFIX_DISPATCHED` | A grant was staged, with its dispatch id. Staging happens before the batch's token is minted, so a withdrawal line can still follow |
-| `AUTOFIX_FAILED` | Something went wrong: a mint failure, a crashed gate, a session reporting `failed`, or a callback deadline passing with nothing reported |
-| `AUTOFIX_UNVERIFIED` | A session reported a pull request the receiver could not confirm the App authored. Always accompanied by `AUTOFIX_FAILED`, which follows it on the same line |
+| `AUTOFIX_DISPATCHED` | A grant was staged, with its dispatch id |
+| `AUTOFIX_FAILED` | Something went wrong: a crashed gate, a session reporting `failed`, a `fix_ready` payload that broke a rule, a pull request the receiver could not open, or a deadline passing with nothing settled. The rest of the line says which |
 
 ### The lines that carry no marker
 
 A filter built from the table above will miss several things, and one of them matters operationally. **Rejections at `/autofix-result` are unmarked warnings**: a request with no usable bearer token, one naming an unknown dispatch or presenting the wrong token, and one carrying a status outside the accepted set each log a plain `rejected autofix callback ...` warning. So repeated authentication failures against the callback endpoint, which is the shape a probe of that endpoint would take, produce nothing any of the four markers would catch. Search the callback route's own wording, not the markers, when that is the question.
 
-Also unmarked: a callback arriving for a dispatch the sweep already settled logs an `already settled; ignoring` notice at info, which is normal and means the deadline won a race. And a completion reply that cannot be posted to the thread carries the receiver's general delivery-failure marker rather than an autofix one, so a chat outage during an autofix reply is found under that marker. The App client's own failures log with their own wording too, each naming the underlying error. The token mint and the pull-request author fetch also name the repository they were working against; the App slug fetch does not, because the slug is a property of the App rather than of any one repository.
+Also unmarked: a callback arriving for a dispatch the sweep already settled logs an `already settled; ignoring` notice at info, which is normal and means the deadline won a race. And a completion reply that cannot be posted to the thread carries the receiver's general delivery-failure marker rather than an autofix one, so a chat outage during an autofix reply is found under that marker. The App client's own failures log with their own wording too, each naming the underlying error. The App client's token mint and pull-request sequence both name the repository they were working against.
 
-### `AUTOFIX_UNVERIFIED`: treat the pull request as untrusted
+### `AUTOFIX_FAILED ... rejected fix payload`
 
-The receiver checks every reported pull request: the URL must parse, name the configured target repository, and resolve to a pull request whose author is the autofix App's own bot login. Anything else is unverified, and the thread gets a warning rather than a plain link.
+The session sent a `fix_ready` body that broke one of the receiver's rules, and the line names the rule: a path under `.github/` or matching `autofix.exclude_paths`, a path that is not plain and repository-relative, more than twenty files, more than 512 KB of content, a title that is empty or wraps, or a base commit that is not a full SHA. The record is settled as failed, the thread has been told, and no GitHub call was made.
 
-The line names the short id and the URL that was reported. What to do:
+The one worth acting on is a path rejection, because it means the session decided a fix needed a file the operator ruled out. Read the transcript to see whether the exclusion is right or the finding was steered; either way the pull request did not happen, which is the design.
 
-1. **Treat the pull request as untrusted.** It was opened by something other than the App identity the pipeline is supposed to use, or in a repository other than the target, or by an identity the receiver could not read at all. Do not review it as a normal autofix pull request and do not merge it.
-2. **Close it.** If a fix is genuinely wanted, it should come back through the pipeline or be written by hand, not merged on the strength of a claim the receiver rejected.
-3. **Read the session transcript.** This is the part that matters, because the marker tells you the pipeline caught something without telling you what. The transcript shows which credential the session actually used and, if the pull request was opened under a person's identity, that a connector was used where the vended token was meant to be.
-4. **Rule out the boring causes before the alarming one.** A GitHub outage during the author lookup, or an App whose slug could not be fetched, both fail closed and report unverified. Those are noise; a pull request genuinely authored by someone else is not.
+### `AUTOFIX_FAILED ... pull request not opened`
 
-The line carries `AUTOFIX_FAILED` too, so the alarm on that marker fires for this case as well and it does not need an alarm of its own.
+The payload passed, the record was claimed, and one of the GitHub calls that build the branch and open the pull request did not succeed. The App client's own line, just above, names the failing call and the underlying error. Work through the App checklist above: the wrong `autofix.app_id`, a private key that no longer matches an active key, an App not installed on the target repository, or an installation missing one of the two permissions all land here. A branch that already exists (a replayed dispatch id) lands here too, as does a base commit that is not on the base branch (the session checked out something other than the branch it was told to; the App client's line says so) and a sequence that ran out of its time budget.
 
-### `AUTOFIX_FAILED ... token mint failed`
+A failure after the branch was created leaves that branch behind with no pull request on it. It is inert, and its name carries the dispatch id that failed:
 
-Minting is the one step between a passing gate and a session that can act. When it fails, every grant staged for that batch is withdrawn: the dispatch records settle as failed, and each thread's reply line reads `Autofix declined: could not mint a GitHub credential.` rather than promising a fix that has no credential to start with. The findings replies themselves are unaffected, which is the design: autofix failing must never cost a thread its investigation.
+```bash
+git ls-remote --heads origin 'autofix/*'
+```
 
-One line per withdrawn grant appears in the log, each naming the short id. The mint failure's own cause is logged separately by the App client, naming the repository and the underlying error. Work through the App checklist above: the wrong `autofix.app_id`, a private key that no longer matches an active key, or an App not installed on the target repository all land here.
+lists them, and once you have confirmed no pull request references a branch, `git push origin --delete <branch>` removes it. The receiver never deletes branches itself; that is a destructive path it does not need.
 
-If a batch instead reports a crash before minting was attempted, the cause is usually the App private key parameter being unreadable at cold start rather than GitHub itself.
+### `AUTOFIX_FAILED ... opening timeout`
+
+The receiver claimed a record and never settled it, which means the invocation died between its first GitHub call and its last. The sweep fails the record after three minutes and the thread reads that the receiver did not finish opening the pull request. Check the receiver's own error log for the invocation, then the branch listing above, since the branch may exist without its pull request.
+
+If a batch instead reports a crash before any of this, the cause is usually the App private key parameter being unreadable at cold start rather than GitHub itself.
 
 ## Runbook: replaying an alert the receiver has already seen
 
@@ -136,13 +141,17 @@ Each delete is conditional on the row existing, and the script prints `deleted:`
 
 Without `--reset`, a repeat issue posts a fresh card and nothing else happens. That is the right mode for a freshly staged error that has no rows yet.
 
+## Runbook: updating the investigator's stored prompt
+
+A routine holds one prompt, and the receiver's contract with it changes whenever step 7 of `prompts/investigator.md` does. The public routines API cannot read or write a routine's configuration, so the update happens on the routine's own page at claude.ai: substitute the receiver's origin for `REPLACE_WITH_FUNCTION_URL` in the repository file, paste the result into the routine's prompt, save, then reopen the routine and compare its prompt against the substituted file. A Claude Code session with routine tooling can make the same edit and read it back, which is how the comparison is automated when one is at hand. Either way, a prompt that differs from the file is a partial update. The probe routine keeps its own prompt and is not touched by this.
+
 ## Configuration probe
 
 The prompts in `prompts/` are templates. `REPLACE_WITH_FUNCTION_URL` stands in
 for the receiver's Function URL and must be substituted with the real origin
-when the prompt is pasted into the routine. The session cross-checks that
+when the prompt is written to the routine. The session cross-checks that
 origin against the `SENTINEL_RECEIVER_URL` environment variable, so a prompt
-pasted with the placeholder left in place fails the check and posts nothing.
+written with the placeholder left in place fails the check and posts nothing.
 
 The routines API exposes no configuration read, so the routine's repository binding and connector set can only be verified by firing a session that reports on itself (`prompts/probe.md`, reporting to `/findings/probe`; `scripts/probe_routine.py` fires it). Connector drift is not detected automatically: re-run the probe whenever the routine or the account's connectors change.
 

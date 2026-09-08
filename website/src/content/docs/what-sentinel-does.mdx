@@ -33,18 +33,19 @@ today.
    out the target repository at the release SHA, investigates each issue, and posts a
    findings document back, which the receiver renders as a threaded reply.
 4. **Autofix.** A finding whose confidence and fixability both clear their configured
-   minimums earns a grant, returned in the reply to that findings document along with a
-   GitHub credential scoped to one repository for one hour. The same session writes the
-   fix and opens the pull request with it.
+   minimums earns a grant, returned in the reply to that findings document. The same
+   session writes the fix and its test and sends the changed files back; the receiver
+   opens the pull request as the GitHub App.
 
 See [How it works](/sentinel/how-it-works/) for the same pipeline with its gates and
 failure handling, or [See it work](/sentinel/evidence/) for the artifacts it produces.
 
 ## What it will not do
 
-Nothing merges automatically. Every pull request waits for a human reviewer, and the
-credential a session gets to open one cannot reach past a single repository, two
-permissions, and an hour. It notably cannot push a workflow file.
+Nothing merges automatically. Every pull request waits for a human reviewer. The session
+that writes a fix holds no GitHub credential, and the one the receiver uses to open the
+pull request cannot reach past a single repository, two permissions, and an hour. It
+notably cannot push a workflow file, and the receiver refuses to carry one.
 
 Both of the aggressive behaviours ship switched off. A new deployment starts in
 `shadow` mode, which runs the whole gate and records what it would have fired without

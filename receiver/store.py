@@ -41,7 +41,7 @@ class BatchState(enum.Enum):
 # Statuses that keep a row in the due index, mapped to the `due_pk` they carry
 # while there. Everything else is terminal for scheduling and has its index
 # attributes removed.
-WAITING_STATES = {"pending": "pending", "fired": "awaiting"}
+WAITING_STATES = {"pending": "pending", "fired": "awaiting", "opening": "autofix"}
 
 
 def utc_now() -> str:
@@ -397,13 +397,22 @@ class AlertStore:
         return self.table.get_item(Key=key).get("Item")
 
     def advance_autofix(
-        self, dispatch_id: str, expected: str, status: str, *, extra: dict | None = None
+        self,
+        dispatch_id: str,
+        expected: str,
+        status: str,
+        *,
+        extra: dict | None = None,
+        due_at: str = "",
     ) -> bool:
         """Move a dispatch from `expected` to `status`. False if already moved.
 
-        Every advance is terminal for scheduling, so the index attributes
-        are always removed; the callback route and the timeout sweep target
-        the same transition and exactly one may win.
+        The callback route and the timeout sweep target the same transition
+        and exactly one may win. A status in WAITING_STATES given a `due_at`
+        keeps the row in the due index under that fresh deadline: that is
+        how the `opening` claim stays visible to the sweep without being
+        expirable while the receiver is mid-sequence. Every other advance
+        is terminal for scheduling and removes the index attributes.
         """
         names = {"#s": "status"}
         values = {":expected": expected, ":status": status, ":now": utc_now()}
@@ -413,10 +422,20 @@ class AlertStore:
             sets.append(f"#e{index} = :e{index}")
             values[f":e{index}"] = value
 
+        due_pk = WAITING_STATES.get(status)
+        stays_in_index = bool(due_pk and due_at)
+        if stays_in_index:
+            sets += ["due_pk = :due_pk", "due_at = :due_at"]
+            values[":due_pk"] = due_pk
+            values[":due_at"] = due_at
+        expression = "SET " + ", ".join(sets)
+        if not stays_in_index:
+            expression += " REMOVE due_pk, due_at"
+
         try:
             self.table.update_item(
                 Key=self._autofix_dispatch_key(dispatch_id),
-                UpdateExpression="SET " + ", ".join(sets) + " REMOVE due_pk, due_at",
+                UpdateExpression=expression,
                 ConditionExpression="#s = :expected",
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,

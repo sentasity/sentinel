@@ -488,6 +488,45 @@ def test_a_dispatch_the_callback_already_settled_is_left_alone():
     bot.reply_in_thread.assert_not_called()
 
 
+def overdue_opening():
+    return {**overdue_dispatch(), "status": "opening"}
+
+
+def test_an_overdue_opening_claim_is_failed_with_the_receiver_reply(caplog):
+    """A row at `opening` was claimed by a receiver that then never settled
+    it, so the honest reply names the receiver, not the session."""
+    from receiver.sweep import expire_autofix
+
+    store = MagicMock()
+    store.query_due.side_effect = lambda state, now, limit=50: (
+        [overdue_opening()] if state == "autofix" else []
+    )
+    store.advance_autofix.return_value = True
+    bot = MagicMock()
+
+    assert expire_autofix(store=store, bot=bot) == 1
+    assert store.advance_autofix.call_args.args == ("d-1", "opening", "failed")
+    assert store.advance_autofix.call_args.kwargs == {"extra": {"failure": "opening timeout"}}
+    assert "AUTOFIX_FAILED" in caplog.text
+    reply = bot.reply_in_thread.call_args.args[2]
+    assert "did not finish opening" in reply
+
+
+def test_an_overdue_dispatch_still_expires_from_dispatched():
+    from receiver.sweep import expire_autofix
+
+    store = MagicMock()
+    store.query_due.side_effect = lambda state, now, limit=50: (
+        [overdue_dispatch()] if state == "autofix" else []
+    )
+    store.advance_autofix.return_value = True
+
+    expire_autofix(store=store, bot=MagicMock())
+
+    assert store.advance_autofix.call_args.args == ("d-1", "dispatched", "failed")
+    assert store.advance_autofix.call_args.kwargs == {"extra": {"failure": "callback timeout"}}
+
+
 def test_the_sweep_summary_counts_autofix_expiries():
     # Reuse the module's existing run_sweep fixtures/fakes; assert the key.
     from receiver.sweep import run_sweep
