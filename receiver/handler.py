@@ -269,10 +269,11 @@ def handle_probe(event: dict) -> dict:
 def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
     """Run the gate for one delivered result; stage a grant on pass.
 
-    Returns (disposition line, grant dict or None). The grant is only
-    staged: the caller mints one GitHub token for the whole batch and
-    withdraws every staged grant if the mint fails, so the thread only
-    ever reads "attempting" once a credential actually exists.
+    Returns (disposition line, grant dict or None). A pass writes the
+    dispatch record and returns the grant the session will read. No
+    credential is minted here: the receiver mints its own when the fix
+    comes back through `/autofix-result`, so nothing on this path can fail
+    after the thread has been told a fix is being attempted.
     """
     cfg = config()
     decision = autofix.evaluate(result, doc, row, cfg=cfg, store=alert_store())
@@ -297,7 +298,7 @@ def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
             "message_id": row["message_id"],
             "callback_token_hash": AlertStore.hash_token(callback_token),
         },
-        due_at=_autofix_deadline(),
+        due_at=_deadline(autofix.CALLBACK_DEADLINE_SECONDS),
     )
     LOG.info("%s %s dispatch %s", AUTOFIX_DISPATCHED_MARKER, result.short_id, dispatch_id)
     return decision.disposition, {
@@ -309,41 +310,9 @@ def autofix_grant(result, doc, row: dict) -> tuple[str, dict | None]:
     }
 
 
-MINT_FAILED_DISPOSITION = "Autofix declined: could not mint a GitHub credential."
-
-
-def withdraw_grants(staged: list[dict]) -> None:
-    """Undo every grant staged for a batch whose token never arrived.
-
-    The dispatch records exist but no session will ever call back for them,
-    and the disposition must not promise a fix that cannot start. Each settle
-    is its own best effort: one throttled conditional update must not cost
-    the remaining withdrawals, and a record left at `dispatched` is still
-    settled later by the sweep's callback deadline.
-    """
-    for d in staged:
-        LOG.error(
-            "%s %s token mint failed; grant withdrawn",
-            AUTOFIX_FAILED_MARKER, d["result"].short_id,
-        )
-        try:
-            alert_store().advance_autofix(
-                d["grant"]["dispatch_id"], "dispatched", "failed"
-            )
-        except Exception as exc:  # noqa: BLE001 - one failed settle must not stop the rest
-            LOG.error(
-                "%s %s could not settle the withdrawn dispatch: %s",
-                AUTOFIX_FAILED_MARKER, d["result"].short_id, exc,
-            )
-        d["disposition"] = MINT_FAILED_DISPOSITION
-        d["grant"] = None
-
-
-def _autofix_deadline() -> str:
-    """When the sweep may fail a dispatch that never called back."""
-    when = datetime.now(timezone.utc) + timedelta(
-        seconds=autofix.CALLBACK_DEADLINE_SECONDS
-    )
+def _deadline(seconds: int) -> str:
+    """A due_at `seconds` from now, in the store's ISO-8601 Z form."""
+    when = datetime.now(timezone.utc) + timedelta(seconds=seconds)
     return when.isoformat().replace("+00:00", "Z")
 
 
@@ -383,12 +352,11 @@ def deliver_findings(body, rows: list[dict]) -> dict:
     """Validate one batch's findings, reply under each card, and answer the
     session with any autofix grants it has earned.
 
-    The response body is the vending channel: the session that POSTed these
-    findings is the one that will write the fix, and this response is the
-    only message the receiver can ever send it. Gates run first, then one
-    token is minted for the whole batch, then the cards post; that order
-    means a mint failure can still rewrite the disposition line before any
-    thread reads it.
+    The response body is the only message the receiver can ever send the
+    session that POSTed these findings, and a grant is all it carries.
+    The session writes the fix and posts the files back, and the receiver
+    opens the pull request itself, so no credential travels down this
+    channel and nothing here can fail between the gate and the reply.
     """
     by_issue = {r["issue_id"]: r for r in rows}
     try:
@@ -421,27 +389,6 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             {"result": result, "row": row, "disposition": disposition, "grant": grant}
         )
 
-    minted = None
-    staged = [d for d in deliveries if d["grant"]]
-    if staged:
-        # Guarded for the same reason the gate above is, and more urgently:
-        # every row here has already advanced to `delivered`, which is
-        # terminal and out of the due index, so an exception escaping this
-        # block would leave each of those threads permanently silent rather
-        # than merely unfixed. `mint_autofix_token` never raises, but
-        # `github_client()` reads the App private key on first use, so an
-        # infrastructure blip raises before any mint is attempted.
-        try:
-            minted = github_client().mint_autofix_token(cfg.target_repo)
-        except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
-            LOG.error("%s token mint crashed: %s", AUTOFIX_FAILED_MARKER, exc)
-        if minted is None:
-            withdraw_grants(staged)
-
-    # Posted last, after the mint has resolved: that is the whole reason the
-    # gate loop above stages grants instead of posting as it goes. Folding
-    # this back into that loop would put "attempting a fix" in a thread
-    # before the credential it promises is known to exist.
     for d in deliveries:
         # Per row, not around the loop. Every row here has already advanced to
         # `delivered`, which is terminal and out of the due index, so anything
@@ -453,11 +400,10 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         # cold container meeting a throttled parameter store fails here rather
         # than at post time; rendering the card is not exception-free by
         # contract; and scheduling the retry is itself a conditional write
-        # that re-raises anything other than the condition failing. The stakes
-        # are higher than they were before the fix phase moved into the
-        # session: a credential has already been minted by this point and the
-        # grants are waiting in the response below, so losing the loop costs
-        # the session its fix as well as the remaining threads their replies.
+        # that re-raises anything other than the condition failing. The
+        # grants are waiting in the response below, so losing the loop would
+        # cost the session its fix as well as the remaining threads their
+        # replies.
         try:
             _post_findings_reply(d)
         except Exception as exc:  # noqa: BLE001 - one row must never cost the batch
@@ -467,7 +413,7 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             )
 
     grants = [d["grant"] for d in deliveries if d["grant"]]
-    if not (minted and grants):
+    if not grants:
         return respond_json(200, {"autofix": None})
     return respond_json(
         200,
@@ -475,8 +421,6 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             "autofix": {
                 "repo": cfg.target_repo,
                 "base_branch": cfg.autofix_base_branch,
-                "github_token": minted.token,
-                "github_token_expires_at": minted.expires_at,
                 "callback_url": cfg.autofix_callback_url,
                 "grants": grants,
             }

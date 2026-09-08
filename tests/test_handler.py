@@ -650,8 +650,7 @@ def two_passing_results():
     """The v2 fixture with a second passing result in the same project.
 
     Every other autofix test runs a one-result batch, which cannot tell a
-    single mint for the batch from one mint per grant, nor a withdrawal loop
-    that settles every staged grant from one that settles only the first.
+    reply loop that keeps going after one row fails from one that stops.
     """
     payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
     second = copy.deepcopy(payload["results"][0])
@@ -687,10 +686,9 @@ def two_autofix_rows():
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_passing_finding_vends_a_token_and_says_so_in_the_thread(
+def test_a_passing_finding_returns_a_grant_and_says_so_in_the_thread(
     config, alert_store, bot_client, github_client, tmp_path
 ):
-    from receiver.github_app import MintedToken
     from receiver.store import AlertStore
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
@@ -701,9 +699,6 @@ def test_a_passing_finding_vends_a_token_and_says_so_in_the_thread(
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = MintedToken(
-        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
-    )
 
     response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
@@ -712,22 +707,13 @@ def test_a_passing_finding_vends_a_token_and_says_so_in_the_thread(
     block = json.loads(response["body"])["autofix"]
     # The key set is a contract with the session prompt, which reads these
     # names verbatim, so pin the whole shape rather than the fields in use.
-    assert set(block) == {
-        "repo",
-        "base_branch",
-        "github_token",
-        "github_token_expires_at",
-        "callback_url",
-        "grants",
-    }
+    # No token is among them: the session never authenticates to GitHub,
+    # and the receiver mints its own when the fix comes back.
+    assert set(block) == {"repo", "base_branch", "callback_url", "grants"}
     assert block["repo"] == cfg.target_repo
     assert block["base_branch"] == cfg.autofix_base_branch
-    assert block["github_token"] == "ghs_vended"
-    assert block["github_token_expires_at"] == "2026-09-01T13:00:00Z"
     assert block["callback_url"] == cfg.autofix_callback_url
-    assert github_client.return_value.mint_autofix_token.call_args.args == (
-        cfg.target_repo,
-    )
+    github_client.return_value.mint_autofix_token.assert_not_called()
 
     grant = block["grants"][0]
     assert set(grant) == {
@@ -786,149 +772,11 @@ def test_a_declined_finding_returns_a_null_autofix_block(
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")
 @patch("receiver.handler.config")
-def test_a_mint_failure_withdraws_the_grant_and_declines_in_the_thread(
-    config, alert_store, bot_client, github_client, tmp_path, caplog
-):
-    from tests.test_config import AUTOFIX, VALID, write
-    from receiver.config import load_config
-
-    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
-    store = alert_store.return_value
-    store.advance.return_value = True
-    store.claim_autofix_dedupe.return_value = True
-    store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = None
-
-    with caplog.at_level(logging.ERROR):
-        response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
-
-    assert json.loads(response["body"]) == {"autofix": None}
-    store.advance_autofix.assert_called_once()
-    assert store.advance_autofix.call_args.args[1:] == ("dispatched", "failed")
-    assert (
-        store.advance_autofix.call_args.args[0]
-        == store.put_autofix_dispatch.call_args.args[0]["dispatch_id"]
-    )
-    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
-    assert "could not mint a GitHub credential" in json.dumps(card)
-    # The thread must never read "attempting" when no credential exists, which
-    # is only true if the cards post after the mint, not before it.
-    assert "attempting a fix in this session" not in json.dumps(card)
-    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_one_batch_mints_one_token_for_every_grant_it_vends(
-    config, alert_store, bot_client, github_client, tmp_path
-):
-    """One token covers the batch. Minting per grant would hand the session
-    several credentials for one repository and multiply the audit trail."""
-    from receiver.github_app import MintedToken
-    from tests.test_config import AUTOFIX, VALID, write
-    from receiver.config import load_config
-
-    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
-    store = alert_store.return_value
-    store.advance.return_value = True
-    store.claim_autofix_dedupe.return_value = True
-    store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = MintedToken(
-        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
-    )
-
-    response = deliver_findings(two_passing_results(), two_autofix_rows())
-
-    block = json.loads(response["body"])["autofix"]
-    assert github_client.return_value.mint_autofix_token.call_count == 1
-    assert [g["short_id"] for g in block["grants"]] == ["CHECKOUT-4B2", SECOND_SHORT_ID]
-    assert len({g["dispatch_id"] for g in block["grants"]}) == 2
-    assert len({g["callback_token"] for g in block["grants"]}) == 2
-    assert bot_client.return_value.reply_card_in_thread.call_count == 2
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_a_mint_failure_withdraws_every_staged_grant_not_just_the_first(
-    config, alert_store, bot_client, github_client, tmp_path, caplog
-):
-    """A withdrawal that stops at the first record would leave the rest
-    promising a fix in the thread while holding a token that never existed.
-    The first settle is made to raise, since one throttled conditional update
-    must not cost the remaining withdrawals either."""
-    from tests.test_config import AUTOFIX, VALID, write
-    from receiver.config import load_config
-
-    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
-    store = alert_store.return_value
-    store.advance.return_value = True
-    store.claim_autofix_dedupe.return_value = True
-    store.claim_autofix_pr.return_value = True
-    store.advance_autofix.side_effect = [RuntimeError("throttled"), True]
-    github_client.return_value.mint_autofix_token.return_value = None
-
-    with caplog.at_level(logging.ERROR):
-        response = deliver_findings(two_passing_results(), two_autofix_rows())
-
-    assert json.loads(response["body"]) == {"autofix": None}
-    settled = [c.args[0] for c in store.advance_autofix.call_args_list]
-    staged = [c.args[0]["dispatch_id"] for c in store.put_autofix_dispatch.call_args_list]
-    assert settled == staged
-    cards = [c.args[2] for c in bot_client.return_value.reply_card_in_thread.call_args_list]
-    assert len(cards) == 2
-    for card in cards:
-        assert "could not mint a GitHub credential" in json.dumps(card)
-    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
-def test_a_crash_while_minting_never_costs_the_findings_replies(
-    config, alert_store, bot_client, github_client, tmp_path, caplog
-):
-    """Building the GitHub client reads the App private key, so an infra blip
-    raises before any mint is attempted. Every row is already `delivered` by
-    then, which is terminal and out of the due index, so letting that escape
-    would leave both threads silent forever instead of merely unfixed."""
-    from tests.test_config import AUTOFIX, VALID, write
-    from receiver.config import load_config
-
-    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
-    store = alert_store.return_value
-    store.advance.return_value = True
-    store.claim_autofix_dedupe.return_value = True
-    store.claim_autofix_pr.return_value = True
-    github_client.side_effect = RuntimeError("parameter store unreachable")
-
-    with caplog.at_level(logging.ERROR):
-        response = deliver_findings(two_passing_results(), two_autofix_rows())
-
-    assert response["statusCode"] == 200
-    assert json.loads(response["body"]) == {"autofix": None}
-    cards = [c.args[2] for c in bot_client.return_value.reply_card_in_thread.call_args_list]
-    assert len(cards) == 2
-    for card in cards:
-        assert "could not mint a GitHub credential" in json.dumps(card)
-    assert store.advance_autofix.call_count == 2
-    assert observability.AUTOFIX_FAILED_MARKER in caplog.text
-
-
-@patch("receiver.handler.github_client")
-@patch("receiver.handler.bot_client")
-@patch("receiver.handler.alert_store")
-@patch("receiver.handler.config")
 def test_a_failed_thread_post_still_returns_the_grant(
     config, alert_store, bot_client, github_client, tmp_path
 ):
     """A chat outage is not a reason to abandon the fix: the findings survived
-    validation, the credential exists, and the reply goes to the retry sweep."""
-    from receiver.github_app import MintedToken
+    validation, and the grant has already been staged."""
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
@@ -937,15 +785,11 @@ def test_a_failed_thread_post_still_returns_the_grant(
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = MintedToken(
-        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
-    )
     bot_client.return_value.reply_card_in_thread.side_effect = BotError("teams down")
 
     response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
     block = json.loads(response["body"])["autofix"]
-    assert block["github_token"] == "ghs_vended"
     assert len(block["grants"]) == 1
     store.advance_autofix.assert_not_called()
 
@@ -967,7 +811,6 @@ def test_a_non_bot_error_on_one_row_still_answers_the_next_one(
     row after the failing one silent forever. The grants are pending in the
     response too, so losing the loop would also 5xx a session whose token has
     already been minted."""
-    from receiver.github_app import MintedToken
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
@@ -976,9 +819,6 @@ def test_a_non_bot_error_on_one_row_still_answers_the_next_one(
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = MintedToken(
-        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
-    )
     bot_client.return_value.reply_card_in_thread.side_effect = [
         RuntimeError("parameter store unreachable"),
         None,
@@ -991,7 +831,6 @@ def test_a_non_bot_error_on_one_row_still_answers_the_next_one(
     assert len(posts) == 2, "the first row's failure stopped the loop"
     assert posts[1].args[1] == "msg-10"
     block = json.loads(response["body"])["autofix"]
-    assert block["github_token"] == "ghs_vended"
     assert [g["short_id"] for g in block["grants"]] == ["CHECKOUT-4B2", SECOND_SHORT_ID]
     assert observability.DELIVERY_FAILURE_MARKER in caplog.text
     # The generic path logs and moves on rather than scheduling a retry: it
@@ -1012,7 +851,6 @@ def test_a_card_render_that_raises_costs_only_its_own_row(
     """Rendering is not exception-free by contract, and it happens before the
     post, so a row can be lost without the chat client ever being reached.
     The row after it must still get its reply."""
-    from receiver.github_app import MintedToken
     from tests.test_config import AUTOFIX, VALID, write
     from receiver.config import load_config
 
@@ -1021,9 +859,6 @@ def test_a_card_render_that_raises_costs_only_its_own_row(
     store.advance.return_value = True
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
-    github_client.return_value.mint_autofix_token.return_value = MintedToken(
-        token="ghs_vended", expires_at="2026-09-01T13:00:00Z"
-    )
     render.side_effect = [ValueError("unrenderable finding"), ({"card": "ok"}, 0)]
 
     with caplog.at_level(logging.ERROR):
