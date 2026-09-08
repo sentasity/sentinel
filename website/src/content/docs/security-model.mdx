@@ -104,11 +104,12 @@ credential being there at all; a session with no credential needs none of them.
 | Storage | none: minted per pull request inside the receiver, never returned, never written down |
 
 The receiver mints it only after a `fix_ready` payload has passed validation and the
-dispatch record has been claimed, and uses it for six Git Data API calls: a blob per
-file, a tree that inherits the base commit and overrides only those paths, a commit, a
-branch, and the pull request. The commit's author is whatever GitHub records for the App
-installation, because nothing in the receiver sets one, so the pull request is the App's
-by construction rather than by a check made afterwards.
+dispatch record has been claimed, and spends it on one short sequence: a read of the
+base branch to confirm the pull request's base exists, a read of the base commit, a blob
+per file, a tree that inherits the base commit and overrides only those paths, a commit,
+a branch, and then the pull request itself. The commit's author is whatever GitHub
+records for the App installation, because nothing in the receiver sets one, so the pull
+request is the App's by construction rather than by a check made afterwards.
 
 `workflows` is absent deliberately. A workflow file pushed to a branch runs in CI, with
 access to the repository's secrets, before any human reviews the pull request that
