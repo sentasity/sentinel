@@ -325,28 +325,45 @@ def expire_overdue(*, store, bot) -> int:
 
 
 AUTOFIX_TIMEOUT_REPLY = "Autofix failed: the fix session never reported back."
+AUTOFIX_OPENING_TIMEOUT_REPLY = (
+    "Autofix failed: the receiver did not finish opening the pull request."
+)
+
+# The two waiting states an autofix record can be overdue in, each with the
+# failure written on the row and the reply the thread reads. `dispatched`
+# is waiting on the session's callback. `opening` is a record the callback
+# route claimed while it built the pull request; overdue there means the
+# receiver died between the claim and the settle, and the reply says so
+# rather than blaming a session that did report.
+AUTOFIX_TIMEOUTS = {
+    "dispatched": ("callback timeout", AUTOFIX_TIMEOUT_REPLY),
+    "opening": ("opening timeout", AUTOFIX_OPENING_TIMEOUT_REPLY),
+}
 
 
 def expire_autofix(*, store, bot) -> int:
-    """Fail every dispatch whose callback deadline passed. Returns count told.
+    """Fail every dispatch whose deadline passed. Returns count told.
 
-    The advance is conditioned on `dispatched`, the same claim the callback
-    route makes, so a late callback and this sweep cannot both write into
-    the thread.
+    The advance is conditioned on the status the row was read in, the same
+    claim the callback route makes from that status, so a late callback
+    and this sweep cannot both write into the thread.
     """
     expired = 0
     for r in store.query_due("autofix", utc_now()):
+        status = str(r.get("status") or "")
+        if status not in AUTOFIX_TIMEOUTS:
+            continue
+        failure, reply = AUTOFIX_TIMEOUTS[status]
         if not store.advance_autofix(
-            r["dispatch_id"], "dispatched", "failed",
-            extra={"failure": "callback timeout"},
+            r["dispatch_id"], status, "failed", extra={"failure": failure},
         ):
             continue
         LOG.error(
-            "%s %s callback timeout",
-            AUTOFIX_FAILED_MARKER, r.get("short_id", r["dispatch_id"]),
+            "%s %s %s",
+            AUTOFIX_FAILED_MARKER, r.get("short_id", r["dispatch_id"]), failure,
         )
         try:
-            bot.reply_in_thread(r["conversation_id"], r["message_id"], AUTOFIX_TIMEOUT_REPLY)
+            bot.reply_in_thread(r["conversation_id"], r["message_id"], reply)
             expired += 1
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
             LOG.error(
