@@ -77,7 +77,7 @@ def test_receiver_function_runtime_and_limits(template):
             "Runtime": "python3.12",
             "Handler": "receiver.handler.lambda_handler",
             "MemorySize": 256,
-            "Timeout": 30,
+            "Timeout": 60,
         },
     )
 
