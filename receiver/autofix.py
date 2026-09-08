@@ -111,8 +111,8 @@ class FixPayload:
 def _check_path(path: str, excluded: tuple[str, ...]) -> None:
     if not path or path.startswith("/") or "\\" in path or "\x00" in path:
         raise InvalidFixPayload(f"path {path!r} is not a plain repository-relative path")
-    if any(segment in (".", "..") for segment in path.split("/")):
-        raise InvalidFixPayload(f"path {path!r} has a dot segment")
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
+        raise InvalidFixPayload(f"path {path!r} has an empty or dot segment")
     if any(fnmatch(path, pattern) for pattern in excluded):
         raise InvalidFixPayload(f"path {path} is excluded")
 

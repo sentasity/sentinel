@@ -1,5 +1,6 @@
 """The autofix gate: ordered checks, disposition lines, completion replies."""
 
+import re
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -266,6 +267,8 @@ def test_a_well_formed_fix_payload_parses_in_the_order_sent():
         ({"files": [{"path": "src/cart\x00.py", "content": ""}]}, "not a plain repository-relative path"),
         ({"files": [{"path": "./src/cart.py", "content": ""}]}, "dot segment"),
         ({"files": [{"path": "src/../.env", "content": ""}]}, "dot segment"),
+        ({"files": [{"path": "src//cart.py", "content": ""}]}, "empty or dot segment"),
+        ({"files": [{"path": "src/cart.py/", "content": ""}]}, "empty or dot segment"),
         ({"files": [{"path": ".github/workflows/ci.yml", "content": ""}]}, "is excluded"),
         (
             {"files": [{"path": "src/cart.py", "content": ""}, {"path": "src/cart.py", "content": "x"}]},
@@ -286,7 +289,9 @@ def test_each_payload_rule_rejects_with_its_own_reason(override, rule):
 def test_an_operator_excluded_path_is_rejected_like_a_forbidden_one():
     body = fix_body(files=[{"path": "infra/stack.py", "content": ""}])
 
-    with pytest.raises(autofix.InvalidFixPayload, match="infra/stack.py is excluded"):
+    with pytest.raises(
+        autofix.InvalidFixPayload, match=re.escape("path infra/stack.py is excluded")
+    ):
         autofix.parse_fix_payload(body, exclude_paths=("infra/**",))
 
 
