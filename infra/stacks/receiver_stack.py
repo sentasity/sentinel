@@ -113,8 +113,8 @@ class ReceiverStack(Stack):
             handler="receiver.handler.lambda_handler",
             memory_size=256,
             # The callback route runs the whole GitHub sequence that opens an
-            # autofix pull request inside one invocation: a token mint plus
-            # six Git Data API calls, twenty of them blobs at most.
+            # autofix pull request inside one invocation: a token mint, six
+            # fixed Git Data API calls, and one blob call per file, twenty at most.
             timeout=Duration.seconds(60),
             log_group=self.log_group,
             environment={
