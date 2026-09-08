@@ -18,9 +18,9 @@ flowchart LR
     Receiver -->|cards and replies| Teams[Microsoft Teams]
     Receiver -->|fires| Routine[Claude Code routine]
     Routine -->|findings| Receiver
-    Receiver -->|scoped token and grants| Routine
-    Routine -->|pull request| Repo[Target repo]
-    Routine -->|outcome| Receiver
+    Receiver -->|grants| Routine
+    Routine -->|fix files| Receiver
+    Receiver -->|pull request| Repo[Target repo]
 ```
 
 1. **Alert.** Sentry webhooks each issue alert to the receiver, a single Lambda behind a Function URL. The receiver verifies the signature, renders an Adaptive Card, and posts it to a Teams channel through its own bot identity.

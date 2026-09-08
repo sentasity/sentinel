@@ -11,9 +11,9 @@ flowchart LR
     Receiver -->|card| Teams[Microsoft Teams]
     Receiver -->|fires| Routine[Unattended session]
     Routine -->|findings| Receiver
-    Receiver -->|scoped token and grants| Routine
-    Routine -->|pull request| Repo[Target repo]
-    Routine -->|outcome| Receiver
+    Receiver -->|grants| Routine
+    Routine -->|fix files| Receiver
+    Receiver -->|pull request| Repo[Target repo]
 ```
 
 ## 1. Alert
