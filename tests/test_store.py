@@ -438,6 +438,36 @@ def test_advancing_a_dispatch_leaves_the_due_index():
     assert kwargs["ConditionExpression"] == "#s = :expected"
 
 
+def test_an_opening_claim_keeps_the_dispatch_in_the_due_index():
+    """The receiver claims a record while it opens the pull request. The
+    row must stay visible to the sweep under a fresh deadline: a claim
+    that left the index would strand the row forever if the Lambda died
+    mid-sequence, and one that kept the old deadline could be expired
+    underneath a receiver still working."""
+    store, table = make_store()
+
+    assert store.advance_autofix(
+        "d-1", "dispatched", "opening", due_at="2026-09-02T12:03:00Z"
+    )
+
+    kwargs = table.update_item.call_args.kwargs
+    assert "REMOVE" not in kwargs["UpdateExpression"]
+    assert "due_pk = :due_pk, due_at = :due_at" in kwargs["UpdateExpression"]
+    assert kwargs["ExpressionAttributeValues"][":due_pk"] == "autofix"
+    assert kwargs["ExpressionAttributeValues"][":due_at"] == "2026-09-02T12:03:00Z"
+    assert kwargs["ConditionExpression"] == "#s = :expected"
+
+
+def test_settling_an_opening_claim_leaves_the_due_index():
+    store, table = make_store()
+
+    assert store.advance_autofix("d-1", "opening", "pr_opened", extra={"pr_url": "u"})
+
+    kwargs = table.update_item.call_args.kwargs
+    assert "REMOVE due_pk, due_at" in kwargs["UpdateExpression"]
+    assert kwargs["ExpressionAttributeValues"][":expected"] == "opening"
+
+
 def test_an_already_settled_dispatch_refuses_a_second_advance():
     store, table = make_store()
     table.update_item.side_effect = conditional_failure("UpdateItem")
