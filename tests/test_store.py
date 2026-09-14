@@ -473,3 +473,67 @@ def test_an_already_settled_dispatch_refuses_a_second_advance():
     table.update_item.side_effect = conditional_failure("UpdateItem")
 
     assert not store.advance_autofix("d-1", "dispatched", "failed")
+
+
+def resolved(kwargs) -> str:
+    """The update expression with every name placeholder substituted."""
+    expression = kwargs["UpdateExpression"]
+    names = kwargs["ExpressionAttributeNames"]
+    for placeholder in sorted(names, key=len, reverse=True):
+        expression = expression.replace(placeholder, names[placeholder])
+    return expression
+
+
+def test_requeue_failed_returns_a_failed_row_to_pending_under_the_new_card():
+    store, table = make_store()
+
+    ok = store.requeue_failed(
+        "123", "prod", "abc", "conv-2", "msg-2", "2026-08-13T10:01:00Z",
+        max_requeues=1, notice_kinds=("throttled", "rejected"),
+    )
+
+    assert ok is True
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": "issue:123", "sk": "investigation:prod#abc"}
+    expression = resolved(kwargs)
+    values = kwargs["ExpressionAttributeValues"]
+    sets, removes = expression.split(" REMOVE ", 1)
+    for assignment in (
+        "status = :status", "due_pk = :due_pk", "due_at = :due_at",
+        "conversation_id = :conversation_id", "message_id = :message_id",
+        "attempt = :zero", "requeues = if_not_exists(requeues, :zero) + :one",
+    ):
+        assert assignment in sets
+    assert values[":status"] == "pending"
+    assert values[":due_pk"] == "pending"
+    assert values[":due_at"] == "2026-08-13T10:01:00Z"
+    assert values[":conversation_id"] == "conv-2"
+    assert values[":message_id"] == "msg-2"
+    for gone in (
+        "batch_id", "reply_token_hash", "pending_reply", "delivery_attempt",
+        "notice_throttled_at", "notice_rejected_at",
+    ):
+        assert gone in removes
+
+
+def test_requeue_failed_only_claims_a_failed_row_with_retry_budget_left():
+    store, table = make_store()
+
+    store.requeue_failed("123", "prod", "abc", "c", "m", "t", max_requeues=1, notice_kinds=())
+
+    kwargs = table.update_item.call_args.kwargs
+    condition = kwargs["ConditionExpression"]
+    for placeholder in sorted(kwargs["ExpressionAttributeNames"], key=len, reverse=True):
+        condition = condition.replace(placeholder, kwargs["ExpressionAttributeNames"][placeholder])
+    assert condition == "status = :failed AND (attribute_not_exists(requeues) OR requeues < :max)"
+    assert kwargs["ExpressionAttributeValues"][":failed"] == "failed"
+    assert kwargs["ExpressionAttributeValues"][":max"] == 1
+
+
+def test_requeue_failed_returns_false_when_the_row_is_not_failed_or_the_budget_is_spent():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert store.requeue_failed(
+        "123", "prod", "abc", "c", "m", "t", max_requeues=1, notice_kinds=()
+    ) is False

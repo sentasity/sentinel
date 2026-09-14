@@ -310,6 +310,8 @@ def test_a_delivered_alert_is_enqueued_for_investigation():
 
     enqueue.assert_called_once()
     assert enqueue.call_args.args[1:] == ("conv-1", "msg-9")
+    # The bot goes along so a repeat can answer the card it just posted.
+    assert enqueue.call_args.kwargs["bot"] is bot
 
 
 def test_an_enqueue_failure_never_turns_into_a_sentry_retry():
@@ -482,6 +484,19 @@ def test_a_successful_reply_ends_delivered_and_posts_exactly_once():
     bot.reply_card_in_thread.assert_called_once()
     store.advance.assert_called_once()
     assert store.advance.call_args.args[3:] == ("fired", "delivered")
+
+
+def test_a_delivered_finding_records_its_confidence_for_repeat_alerts():
+    """A later alert on the same release quotes the row, not the thread."""
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store):
+        handler.deliver_findings(load_fixture("findings-payload.json"), [awaiting_row()])
+
+    assert store.advance.call_args.kwargs["extra"] == {"confidence": "high"}
 
 
 def test_a_failed_reply_is_requeued_for_the_sweep_not_lost():

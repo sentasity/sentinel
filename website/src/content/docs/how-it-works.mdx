@@ -41,6 +41,15 @@ the issue rather than doing that.
 Eligible alerts are enqueued with a debounce, so a deploy that lights up nine related
 issues becomes one batch rather than nine sessions.
 
+The enqueue is also the skip cache: one investigation per issue, per environment, per
+release. Sentry sends repeats on purpose, since a frequency rule re-fires for as long
+as an issue stays hot, and each repeat posts a card of its own. Investigating that card
+would read the same code and reach the same findings, so a repeat on an unchanged release
+answers its own thread with a pointer to the thread that has them. The one exception is
+an earlier attempt that failed: the next repeat takes the row over and runs the
+investigation again under the new card, once. A new release gets a fresh row, because the
+code changed and the findings may too.
+
 ## 3. Investigate
 
 Every minute a sweep groups due issues by project and release, respects the per-sweep

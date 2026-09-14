@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from receiver.bot import BotError, TeamsBotClient
+from receiver.bot import BotError, TeamsBotClient, thread_link
 
 
 def make_client():
@@ -222,3 +222,17 @@ def test_an_unparseable_expires_in_does_not_mint_an_immortal_token():
     assert client._token == "tok"
     assert client._token_expires_at is not None
     assert post.call_count == 1
+
+
+def test_thread_link_addresses_the_card_by_channel_and_message_within_the_tenant():
+    """The conversation id a post returns carries a `;messageid=` suffix that
+    the deep link must not, and the channel id's `:` and `@` are encoded so
+    the link survives the markdown surface that renders it."""
+    link = thread_link(
+        "19:prod@thread.tacv2;messageid=1788938161110", "1788938161110", "tenant-123"
+    )
+
+    assert link == (
+        "https://teams.microsoft.com/l/message/19%3Aprod%40thread.tacv2/1788938161110"
+        "?tenantId=tenant-123&parentMessageId=1788938161110"
+    )

@@ -122,7 +122,7 @@ If a batch instead reports a crash before any of this, the cause is usually the 
 
 ## Runbook: replaying an alert the receiver has already seen
 
-Sentry will not re-send an alert for a known issue. New-issue rules fire on `first_seen` only, and a repeat event on an unchanged release finds the investigation row and stops before any Sentry call. So when you need the receiver to process a known issue again, after fixing something in the pipeline for example, sign a webhook body and post it yourself:
+A repeat alert on an unchanged release finds the investigation row and stops before any Sentry call: it posts a pointer to the earlier thread, or retries once if that attempt failed, and never re-runs a delivered investigation. New-issue rules fire once per issue per environment, and only frequency rules re-fire for a known issue at all. So when you need the receiver to process a known issue again, after fixing something in the pipeline for example, sign a webhook body and post it yourself:
 
 ```bash
 python -m scripts.replay_alert --issue 1000000007 --environment prod --dry-run
@@ -139,7 +139,7 @@ Two rows make a replay a no-op for a repeat, and `--reset` deletes both before p
 
 Each delete is conditional on the row existing, and the script prints `deleted:` or `absent:` per row. That distinction is the point: an unconditional `delete-item` against a mistyped sort key succeeds silently and reads as a successful clear. The `alert:<environment>` row is never touched, because it is the replay's own input.
 
-Without `--reset`, a repeat issue posts a fresh card and nothing else happens. That is the right mode for a freshly staged error that has no rows yet.
+Without `--reset`, a repeat issue posts a fresh card that points at the earlier thread, or retries a failed investigation if its retry budget is unspent. That is the right mode for a freshly staged error that has no rows yet.
 
 ## Runbook: updating the investigator's stored prompt
 

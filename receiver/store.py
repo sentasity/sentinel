@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 import boto3
@@ -162,6 +163,80 @@ class AlertStore:
         """Return the investigation row for an issue at a release, or None."""
         key = self._investigation_key(issue_id, environment, release)
         return self.table.get_item(Key=key).get("Item")
+
+    def requeue_failed(
+        self,
+        issue_id: str,
+        environment: str,
+        release: str,
+        conversation_id: str,
+        message_id: str,
+        due_at: str,
+        *,
+        max_requeues: int,
+        notice_kinds: Iterable[str],
+    ) -> bool:
+        """Return a `failed` row to `pending` under a newly posted card.
+
+        False when the row is not failed or has been requeued `max_requeues`
+        times already; the condition carries both checks so two repeat alerts
+        arriving together cannot each spend the same retry. The row keeps its
+        key, because the key is the skip cache, and moves its thread to the new
+        card so the findings land under the alert the reader is looking at.
+        Everything the earlier attempt left behind is cleared: its batch and
+        reply token would answer the wrong session, a stored reply would be
+        retried instead of the deadline fallback, and the notice markers would
+        keep the new thread silent about an outcome it never heard.
+        """
+        names = {
+            "#s": "status",
+            "#due_pk": "due_pk",
+            "#due_at": "due_at",
+            "#conv": "conversation_id",
+            "#msg": "message_id",
+            "#attempt": "attempt",
+            "#requeues": "requeues",
+            "#updated": "updated_at",
+            "#batch": "batch_id",
+            "#token": "reply_token_hash",
+            "#reply": "pending_reply",
+            "#delivery": "delivery_attempt",
+        }
+        removes = ["#batch", "#token", "#reply", "#delivery"]
+        for index, kind in enumerate(notice_kinds):
+            names[f"#notice{index}"] = f"notice_{kind}_at"
+            removes.append(f"#notice{index}")
+        try:
+            self.table.update_item(
+                Key=self._investigation_key(issue_id, environment, release),
+                UpdateExpression=(
+                    "SET #s = :status, #due_pk = :due_pk, #due_at = :due_at, "
+                    "#conv = :conversation_id, #msg = :message_id, #attempt = :zero, "
+                    "#requeues = if_not_exists(#requeues, :zero) + :one, #updated = :now "
+                    "REMOVE " + ", ".join(removes)
+                ),
+                ConditionExpression=(
+                    "#s = :failed AND (attribute_not_exists(#requeues) OR #requeues < :max)"
+                ),
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues={
+                    ":status": "pending",
+                    ":failed": "failed",
+                    ":due_pk": WAITING_STATES["pending"],
+                    ":due_at": due_at,
+                    ":conversation_id": conversation_id,
+                    ":message_id": message_id,
+                    ":zero": 0,
+                    ":one": 1,
+                    ":max": max_requeues,
+                    ":now": utc_now(),
+                },
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
 
     def advance(
         self,
