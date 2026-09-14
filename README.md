@@ -24,7 +24,7 @@ flowchart LR
 ```
 
 1. **Alert.** Sentry webhooks each issue alert to the receiver, a single Lambda behind a Function URL. The receiver verifies the signature, renders an Adaptive Card, and posts it to a Teams channel through its own bot identity.
-2. **Gate and enqueue.** Eligible alerts (error-level, an investigated environment, a release that resolves to a commit SHA) are enqueued in DynamoDB with a debounce.
+2. **Gate and enqueue.** Eligible alerts (error-level, an investigated environment, a release that resolves to a commit SHA) are enqueued in DynamoDB with a debounce. One investigation per issue per environment per release: a repeat alert points its card at the thread that already has the findings.
 3. **Investigate.** A scheduled sweep batches pending issues per project and release and fires a Claude Code cloud routine. The session checks out the target repo at the release SHA, investigates each issue, and posts a findings document back to the receiver, which renders it as a reply in the alert's Teams thread.
 4. **Autofix.** Findings above the configured confidence and fixability minimums earn a grant, returned in the response to the findings POST. The same session writes the fix and its test, then sends the changed files, the base commit, and the pull request text back to the receiver, which validates the paths, mints a GitHub App token scoped to the target repo, opens the PR as the App, and replies in the thread with the link.
 

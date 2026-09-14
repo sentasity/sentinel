@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Replay a signed Sentry alert at the receiver's /sentry route.
 
-Sentry does not re-send an alert the receiver has already seen: new-issue
-rules fire on first_seen only, and a repeat on an unchanged release finds the
-investigation row and stops. So the only way to make the receiver process a
-known issue again is to sign a webhook body ourselves and post it.
+A repeat alert on an unchanged release finds the investigation row and
+stops: it points its card at the earlier thread, or retries once if that
+attempt failed, and never re-runs a delivered investigation. New-issue rules
+fire once per issue per environment besides. So the only way to make the
+receiver process a known issue again is to sign a webhook body ourselves and
+post it.
 
 The body is the committed webhook fixture with the target issue's fields
 overridden from its stored `alert:<environment>` row, so the shape stays a
@@ -16,7 +18,7 @@ real Sentry payload rather than an invented one.
 Requires AWS credentials for the account holding the table and the SSM
 parameters. `--reset` first deletes the investigation and autofix-dedupe rows
 that would otherwise make the replay a no-op; without it a repeat issue posts
-a fresh card and nothing else.
+a fresh card that points at the earlier thread.
 
 A live replay posts a real card to the environment's real Teams channel.
 Use --dry-run to see the exact body and target first.

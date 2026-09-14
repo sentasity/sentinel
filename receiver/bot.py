@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -19,6 +20,20 @@ DEFAULT_TOKEN_LIFETIME_SECONDS = 3600
 
 class BotError(RuntimeError):
     """A Bot Framework call failed. Never swallowed: the caller returns 500."""
+
+
+def thread_link(conversation_id: str, message_id: str, tenant_id: str) -> str:
+    """A deep link to the card that a (conversation id, message id) pair names.
+
+    The conversation id a post returns carries a `;messageid=` suffix the link
+    format does not take, and the channel id's `:` and `@` are percent-encoded
+    so the link stays a single token on the markdown surface that renders it.
+    """
+    channel = quote(conversation_id.split(";", 1)[0], safe="")
+    return (
+        f"https://teams.microsoft.com/l/message/{channel}/{message_id}"
+        f"?tenantId={tenant_id}&parentMessageId={message_id}"
+    )
 
 
 class TeamsBotClient:

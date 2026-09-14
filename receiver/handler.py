@@ -201,7 +201,8 @@ def deliver(alert) -> None:
     # retry would post a second one. Anything raised here is swallowed.
     try:
         enqueue_investigation(
-            alert, conversation_id, message_id, cfg=cfg, ref=ref, store=alert_store()
+            alert, conversation_id, message_id,
+            cfg=cfg, ref=ref, store=alert_store(), bot=bot_client(),
         )
     except Exception as exc:  # noqa: BLE001 - see the comment above
         LOG.error("enqueue failed for %s: %s", ref.short_id, exc)
@@ -373,9 +374,15 @@ def deliver_findings(body, rows: list[dict]) -> dict:
     for result in doc.results:
         row = by_issue[result.issue_id]
         # Claim before posting: the deadline sweep targets the same transition
-        # and exactly one of us may write into this thread.
+        # and exactly one of us may write into this thread. The outcome rides
+        # on the claim so a repeat alert on this release can quote it without
+        # reading the thread back.
+        outcome = {"confidence": result.confidence}
+        if result.fixability:
+            outcome["fixability"] = result.fixability
         if not alert_store().advance(
-            row["issue_id"], row["environment"], row["release"], "fired", "delivered"
+            row["issue_id"], row["environment"], row["release"], "fired", "delivered",
+            extra=outcome,
         ):
             LOG.info("row for %s already answered; skipping", result.short_id)
             continue

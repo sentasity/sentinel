@@ -1,13 +1,10 @@
 """Claude Code routines API client. Fires a routine; reads nothing.
 
-Write-only by necessity rather than by choice. Measured 2026-08-13: the API
-exposes no configuration read. `GET /v1/claude_code/routines/{id}/fire`
-returns 405 (the path is routed, POST only), while `/routines/{id}`,
-`/routines`, `/triggers`, and `/environments` return a plain-text
-`404 page not found` instead of the API's JSON error shape, and `GET
-/v1/models` returns a JSON 403 naming scopes the trigger token lacks. A
-routine's repository binding, connector set, and cloud environment can only be
-observed by firing a session that reports on itself.
+Write-only by necessity rather than by choice: the public routines API
+exposes a fire endpoint and no configuration read, so a routine's repository
+binding, connector set, and cloud environment can only be observed by firing
+a session that reports on itself. Check the current API documentation before
+assuming that is still so.
 """
 
 from __future__ import annotations
