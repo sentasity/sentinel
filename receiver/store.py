@@ -160,9 +160,15 @@ class AlertStore:
         return True
 
     def get_investigation(self, issue_id: str, environment: str, release: str) -> dict | None:
-        """Return the investigation row for an issue at a release, or None."""
+        """Return the investigation row for an issue at a release, or None.
+
+        Strongly consistent. Every reader here is deciding what to do about a
+        conditional write that just lost, and an eventually consistent read
+        can lag that write: it would report no row for the very row that
+        refused the put.
+        """
         key = self._investigation_key(issue_id, environment, release)
-        return self.table.get_item(Key=key).get("Item")
+        return self.table.get_item(Key=key, ConsistentRead=True).get("Item")
 
     def requeue_failed(
         self,

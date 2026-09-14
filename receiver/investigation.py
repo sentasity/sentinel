@@ -139,6 +139,13 @@ def enqueue_investigation(
         )
         return
 
+    if existing.get("status") == "failed":
+        # The requeue lost. Either the retry budget is spent, or another
+        # repeat arriving seconds before this one spent it, in which case the
+        # row now belongs to that repeat's card and the pointer should say
+        # so. Read it again rather than describe the thread that failed.
+        existing = store.get_investigation(alert.issue_id, alert.environment, release) or existing
+
     LOG.info(
         "investigation for %s at %s: already recorded (%s)",
         ref.short_id, release[:7], existing.get("status"),

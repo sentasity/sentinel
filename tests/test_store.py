@@ -123,6 +123,8 @@ def test_put_investigation_returns_false_when_the_issue_was_already_enqueued():
 
 
 def test_get_investigation_reads_by_issue_environment_and_release():
+    """Strongly consistent: every reader is deciding off a conditional write
+    that just lost, and a stale replica would say the row is not there."""
     store, table = make_store()
     table.get_item.return_value = {"Item": {"status": "fired"}}
 
@@ -131,6 +133,7 @@ def test_get_investigation_reads_by_issue_environment_and_release():
         "pk": "issue:123",
         "sk": "investigation:prod#abc",
     }
+    assert table.get_item.call_args.kwargs["ConsistentRead"] is True
 
 
 def test_query_due_reads_the_sparse_index_by_state_and_time():

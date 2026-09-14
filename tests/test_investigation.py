@@ -165,6 +165,26 @@ def test_a_repeat_after_the_retry_budget_is_spent_says_so():
     assert EARLIER_LINK in text
 
 
+def test_a_retry_another_repeat_already_claimed_points_at_that_repeats_card():
+    """Two repeats seconds apart: the second loses the requeue and must link
+    the thread the retry now belongs to, not the thread that failed."""
+    store, bot = MagicMock(), MagicMock()
+    store.put_investigation.return_value = False
+    store.get_investigation.side_effect = [
+        existing("failed"),
+        existing("pending", conversation_id="19:staging@thread.tacv2;messageid=300",
+                 message_id="300"),
+    ]
+    store.requeue_failed.return_value = False
+
+    enqueue(store, bot)
+
+    text = bot.reply_in_thread.call_args.args[2]
+    assert "under way" in text
+    assert "/19%3Astaging%40thread.tacv2/300?" in text
+    assert "/100?" not in text
+
+
 def test_a_repeat_whose_row_vanished_posts_nothing():
     """`--reset` on a replay deletes the row; a race with it is not an error."""
     store, bot = MagicMock(), MagicMock()
