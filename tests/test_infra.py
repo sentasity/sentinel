@@ -20,7 +20,7 @@ CONFIG = ReceiverConfig(
     service_url="https://smba.trafficmanager.net/amer/",
     bot_app_id="app-456",
     channels={"prod": "19:prod@thread.tacv2", "staging": "19:staging@thread.tacv2"},
-    sentry_org="sentasity",
+    sentry_org="acme-tools",
     ssm_prefix="/sentinel",
     automation_dsn="https://key@o0.ingest.sentry.io/1",
 )

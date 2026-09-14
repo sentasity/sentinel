@@ -37,7 +37,7 @@ VALID = textwrap.dedent(
         prod: "19:prod@thread.tacv2"
         staging: "19:staging@thread.tacv2"
     webhook:
-      sentry_org: sentasity
+      sentry_org: acme-tools
       ssm_prefix: /sentinel
     observability:
       automation_dsn: "https://key@o0.ingest.sentry.io/1"
