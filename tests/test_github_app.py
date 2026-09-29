@@ -160,6 +160,7 @@ def open_pr(session: MagicMock):
         files=FILES,
         title=TITLE,
         body="Root cause.",
+        commit_message=f"{TITLE}\n\nFixes CHECKOUT-4B2",
     )
 
 
@@ -197,7 +198,7 @@ def test_open_fix_pr_runs_the_six_calls_in_order_and_returns_the_url(encode):
         ],
     }
     assert posts[4].kwargs["json"] == {
-        "message": TITLE, "tree": "tree-new", "parents": [BASE_SHA],
+        "message": f"{TITLE}\n\nFixes CHECKOUT-4B2", "tree": "tree-new", "parents": [BASE_SHA],
     }
     assert posts[5].kwargs["json"] == {"ref": f"refs/heads/{BRANCH}", "sha": "commit-new"}
     assert posts[6].kwargs["json"] == {

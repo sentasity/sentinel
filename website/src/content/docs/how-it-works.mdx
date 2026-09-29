@@ -84,8 +84,10 @@ test that fails without it, and sends the changed files back to the receiver as 
 text, with the base commit and the pull request title and body. The receiver checks
 every path against the same policy the gate uses, mints a token scoped to one repository
 and two permissions, builds one commit on a new branch through GitHub's API, opens the
-pull request as the App, and posts the link into the Teams thread. A grant that never
-reports is failed into the thread once its hour is up.
+pull request as the App, and posts the link into the Teams thread. The commit message
+and the pull request body both end with a `Fixes <short id>` line naming the issue the
+grant was for, so Sentry resolves that issue in the first release that ships the merge.
+A grant that never reports is failed into the thread once its hour is up.
 
 The gate stays on the receiver rather than moving into the session, and so does the
 only GitHub credential in the pipeline. [The security model](/sentinel/security-model/)

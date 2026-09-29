@@ -1115,7 +1115,8 @@ def test_a_fix_ready_callback_claims_then_opens_then_replies_with_the_link(
         "branch": "autofix/checkout-4b2-d-1",
         "files": [("src/cart.py", "total = 0\n")],
         "title": FIX_TITLE,
-        "body": FIX_BODY,
+        "body": f"{FIX_BODY}\n\nFixes CHECKOUT-4B2",
+        "commit_message": f"{FIX_TITLE}\n\nFixes CHECKOUT-4B2",
     }
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
     assert reply == f"Autofix PR opened: {url}"

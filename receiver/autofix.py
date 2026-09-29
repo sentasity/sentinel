@@ -176,6 +176,20 @@ def fix_branch(short_id: str, dispatch_id: str) -> str:
     return f"autofix/{short_id.lower()}-{dispatch_id[:8]}"
 
 
+def with_fixes_line(text: str, short_id: str) -> str:
+    """`text` closed by a `Fixes <short id>` line, which Sentry reads in a
+    commit message or a pull request description to resolve the issue in
+    the first release that carries the fix. The short id comes from the
+    record, never the payload: which issue a merge resolves is the
+    receiver's to say, not the session's. Applied to both the commit and
+    the pull request, so the line survives however the branch is merged.
+    """
+    if not short_id:
+        return text
+    line = f"Fixes {short_id}"
+    return f"{text.rstrip()}\n\n{line}" if text.strip() else line
+
+
 @dataclass(frozen=True)
 class GateDecision:
     passed: bool
