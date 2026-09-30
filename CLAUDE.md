@@ -47,6 +47,7 @@ Nothing published on the site may name a real deployment: no live org slug, inte
 
 `docs/brand/` holds the generators; every asset under it is built, not hand-edited.
 The adopted mark is `perch`. Regenerate with `cd docs/brand && python3 build_assets.py`,
-`python3 build_header.py`, and `python3 build_social_card.py`. The owl's colours are
-defined twice, in `gen_round3.py` and in `build_header.py`'s inlined `OWL` constant, so
-a palette change has to be made in both.
+`python3 build_dance.py`, `python3 build_header.py`, and `python3 build_social_card.py`.
+The owl's colours are defined twice, in `gen_round3.py` and in `build_header.py`'s
+inlined `OWL` constant, so a palette change has to be made in both. `build_dance.py`
+imports its shapes and colours from `gen_round3.py`, so it follows automatically.

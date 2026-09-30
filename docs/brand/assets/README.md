@@ -1,7 +1,8 @@
 # Sentinel mark assets
 
-One adopted mark, `perch`, as a complete asset set. The README banner that pairs it
-with the wordmark lives in [../header](../header/README.md). It is built from the
+One adopted mark, `perch`, as a complete asset set, plus [dancing versions](#dancing-gifs)
+of it for chat. The README banner that pairs it with the wordmark lives in
+[../header](../header/README.md). It is built from the
 Sentasity palette: navy `#1b2741` and steel `#2f485e` build the bird, amber `#c98a3c`
 holds the irises and the feet, amber-300 `#ddb377` the beak, and a cool off-white
 family carries every pale area.
@@ -85,14 +86,46 @@ islands so the face still reads, and the whole mark inset to 88% so the ear tuft
 feet clear the circle. Sentry renders this icon small inside UI components, which is
 what the larger eyes and the knocked-out beak are for.
 
+## Dancing GIFs
+
+`perch-dance/` holds the mark as looping GIFs, for celebrating in chat when
+Sentinel lands a fix.
+
+<img alt="perch-hop" src="perch-dance/perch-hop-128.gif" width="96"> <img alt="perch-hop-bare" src="perch-dance/perch-hop-bare-128.gif" width="96"> <img alt="perch-roof" src="perch-dance/perch-roof-128.gif" width="96">
+
+| File | Use |
+|---|---|
+| `perch-hop-{128,512}.gif` | Hops side to side, raising the wing opposite each lean. Outlined. |
+| `perch-hop-bare-{128,512}.gif` | The same hop without the outline, for backgrounds known to be light. |
+| `perch-roof-{128,512}.gif` | Bounces in place and pushes both wings up on every beat. Outlined. |
+
+The 128px files are for custom emoji. Slack caps an emoji upload at 128 KB and all
+three fit. The 512px files are for posting into a message. Every dance is 24 frames
+of 40ms, a 0.96s loop holding two beats at 125 bpm.
+
+The owl gains wings for this. The static mark has none, so each dancing wing is
+rooted inside the body and drawn behind it, and takes the colour of the opposite
+half so it separates from the side it swings out of.
+
+### Why the outline
+
+On a dark chat background (`#1a1d21`) the navy half of the body measures 1.14:1 and
+the steel half 1.78:1, so the owl reduces to its eyes and chest. The outline is
+off-050 `#f4f7fa`, which measures 15.7:1 there and 1.08:1 against white, so it
+separates the bird on dark themes and vanishes on light ones. GIF transparency is
+all or nothing per pixel, which leaves every edge hard-cut; the outline also hides
+that stair-stepping where it would show most. The bare variant is for the places
+where the background is known to be light.
+
 ## Regenerating
 
-`docs/brand/build_assets.py` rebuilds every file here from the shape and color
-definitions in `docs/brand/gen_round3.py`. Only the adopted mark is built. It needs
-`rsvg-convert` and `magick` on PATH.
+`docs/brand/build_assets.py` rebuilds every file in `perch/`, and
+`docs/brand/build_dance.py` every file in `perch-dance/`, both from the shape and
+color definitions in `docs/brand/gen_round3.py`. Only the adopted mark is built.
+Both need `rsvg-convert` and `magick` on PATH.
 
 ```bash
-cd docs/brand && python3 build_assets.py
+cd docs/brand && python3 build_assets.py && python3 build_dance.py
 ```
 
 `gen_round3.py` still defines the three candidates `perch` beat during selection
