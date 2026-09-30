@@ -308,3 +308,17 @@ def test_the_fix_branch_comes_from_the_record_not_the_payload():
     assert autofix.fix_branch("CHECKOUT-4B2", "0f3c9a1e-7b52-4d0e-a1b2") == (
         "autofix/checkout-4b2-0f3c9a1e"
     )
+
+
+def test_the_fixes_line_closes_the_text_with_the_records_short_id():
+    assert autofix.with_fixes_line("Root cause.\n", "CHECKOUT-4B2") == (
+        "Root cause.\n\nFixes CHECKOUT-4B2"
+    )
+
+
+def test_the_fixes_line_stands_alone_on_an_empty_body():
+    assert autofix.with_fixes_line("", "CHECKOUT-4B2") == "Fixes CHECKOUT-4B2"
+
+
+def test_no_short_id_leaves_the_text_untouched():
+    assert autofix.with_fixes_line("Root cause.", "") == "Root cause."

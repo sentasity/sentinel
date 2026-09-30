@@ -604,7 +604,8 @@ def open_fix(record: dict, body: dict) -> dict:
         branch=autofix.fix_branch(short_id, record["dispatch_id"]),
         files=list(payload.files),
         title=payload.title,
-        body=payload.body,
+        body=autofix.with_fixes_line(payload.body, short_id),
+        commit_message=autofix.with_fixes_line(payload.title, short_id),
     )
     if not url:
         LOG.error("%s %s %s", AUTOFIX_FAILED_MARKER, short_id, OPENING_FAILURE)

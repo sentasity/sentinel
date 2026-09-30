@@ -162,10 +162,12 @@ class GitHubAppClient:
         files: list[tuple[str, str]],
         title: str,
         body: str,
+        commit_message: str,
     ) -> str | None:
-        """Create `branch` at `base_sha` carrying `files`, open a pull
-        request against `base_branch`, and return its URL. None on any
-        failure; never raises.
+        """Create `branch` at `base_sha` carrying `files` in one commit
+        described by `commit_message`, open a pull request against
+        `base_branch`, and return its URL. None on any failure; never
+        raises.
 
         Up to eight calls against the Git Data API and none against a
         working tree, bounded by SEQUENCE_BUDGET_SECONDS. The ref read
@@ -248,7 +250,11 @@ class GitHubAppClient:
             commit = self._call(
                 "post", f"{base}/git/commits", headers,
                 deadline=deadline,
-                json={"message": title, "tree": new_tree["sha"], "parents": [base_sha]},
+                json={
+                    "message": commit_message,
+                    "tree": new_tree["sha"],
+                    "parents": [base_sha],
+                },
             )
             self._call(
                 "post", f"{base}/git/refs", headers,
