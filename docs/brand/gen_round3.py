@@ -154,116 +154,120 @@ def perch_sym(sid, shape, c, band=None):
   <path fill="{c["beak"]}" d="{s["beak"]}"/>
 </symbol>'''
 
-SYMS, CARDS = [], []
-TILE = {"c-frost":"#eef4f9","c-cream":"#eef4f9","c-teal":"#eef6f6","c-sky":"#eef4f9",
-        "p-cream":"#c98a3c","p-sky":"#eef4f9","p-teal":"#eef6f6","p-shaded":"#eef4f9"}
+# Everything above is the shape and colour source other build scripts import.
+# The comparison page below reads an untracked local file, so it runs only when
+# this script is run directly; importing it must work from a fresh clone.
+if __name__ == "__main__":
+    SYMS, CARDS = [], []
+    TILE = {"c-frost":"#eef4f9","c-cream":"#eef4f9","c-teal":"#eef6f6","c-sky":"#eef4f9",
+            "p-cream":"#c98a3c","p-sky":"#eef4f9","p-teal":"#eef6f6","p-shaded":"#eef4f9"}
 
-for sid, name, shape, col, blurb in CURIOUS:
-    SYMS.append(curious_sym(sid, shape, col))
-    CARDS.append(("Curious", sid, name, blurb))
+    for sid, name, shape, col, blurb in CURIOUS:
+        SYMS.append(curious_sym(sid, shape, col))
+        CARDS.append(("Curious", sid, name, blurb))
 
-for sid, name, shape, col, blurb in PERCH:
-    SYMS.append(perch_sym(sid, shape, col))
-    CARDS.append(("Perch", sid, name, blurb))
+    for sid, name, shape, col, blurb in PERCH:
+        SYMS.append(perch_sym(sid, shape, col))
+        CARDS.append(("Perch", sid, name, blurb))
 
-# fourth Perch: no chest patch at all, a shaded lower body instead
-SYMS.append(perch_sym("p-shaded", "base",
-    dict(belly="", disc="#eef4f9", beak="#ddb377", feet="#c98a3c", cat="#ffffff"),
-    band="#4d82a8"))
-CARDS.append(("Perch", "p-shaded", "Shaded",
-    "No chest patch at all. The lower half of the body simply lightens to blue-400, which reads as a bird catching light rather than as a panel."))
+    # fourth Perch: no chest patch at all, a shaded lower body instead
+    SYMS.append(perch_sym("p-shaded", "base",
+        dict(belly="", disc="#eef4f9", beak="#ddb377", feet="#c98a3c", cat="#ffffff"),
+        band="#4d82a8"))
+    CARDS.append(("Perch", "p-shaded", "Shaded",
+        "No chest patch at all. The lower half of the body simply lightens to blue-400, which reads as a bird catching light rather than as a panel."))
 
-src = open("marks-preview.local.html").read()
-fonts = src[src.index("@font-face"):src.rindex('format("woff2")}') + len('format("woff2")}')]
+    src = open("marks-preview.local.html").read()
+    fonts = src[src.index("@font-face"):src.rindex('format("woff2")}') + len('format("woff2")}')]
 
-def card(fam, sid, name, blurb):
-    tile = TILE[sid]
-    sizes = lambda: "".join(
-        f'<svg class="mark" width="{n}" height="{n}"><use href="#{sid}"/></svg>' for n in (38, 24, 16))
-    tiles = "".join(
-        f'<span class="tile" style="background:{tile};width:{n+10}px;height:{n+10}px;border-radius:{max(4,n//4)}px">'
-        f'<svg class="mark" width="{n}" height="{n}"><use href="#{sid}"/></svg></span>' for n in (38, 24, 16))
-    return f'''<article class="card">
-  <div class="card-top">
-    <div class="hero"><svg class="mark" width="118" height="118"><use href="#{sid}"/></svg></div>
-    <div class="meta">
-      <span class="idx">{fam}</span>
-      <h2>{name}</h2>
-      <p>{blurb}</p>
-    </div>
-  </div>
-  <div class="gauntlet">
-    <div class="bay on-light"><div class="sizes">{sizes()}</div><span class="bay-label">Light</span></div>
-    <div class="bay on-dark"><div class="sizes">{tiles}</div><span class="bay-label">Avatar tile</span></div>
-  </div>
-</article>'''
+    def card(fam, sid, name, blurb):
+        tile = TILE[sid]
+        sizes = lambda: "".join(
+            f'<svg class="mark" width="{n}" height="{n}"><use href="#{sid}"/></svg>' for n in (38, 24, 16))
+        tiles = "".join(
+            f'<span class="tile" style="background:{tile};width:{n+10}px;height:{n+10}px;border-radius:{max(4,n//4)}px">'
+            f'<svg class="mark" width="{n}" height="{n}"><use href="#{sid}"/></svg></span>' for n in (38, 24, 16))
+        return f'''<article class="card">
+      <div class="card-top">
+        <div class="hero"><svg class="mark" width="118" height="118"><use href="#{sid}"/></svg></div>
+        <div class="meta">
+          <span class="idx">{fam}</span>
+          <h2>{name}</h2>
+          <p>{blurb}</p>
+        </div>
+      </div>
+      <div class="gauntlet">
+        <div class="bay on-light"><div class="sizes">{sizes()}</div><span class="bay-label">Light</span></div>
+        <div class="bay on-dark"><div class="sizes">{tiles}</div><span class="bay-label">Avatar tile</span></div>
+      </div>
+    </article>'''
 
-cur = "".join(card(*c) for c in CARDS if c[0] == "Curious")
-per = "".join(card(*c) for c in CARDS if c[0] == "Perch")
+    cur = "".join(card(*c) for c in CARDS if c[0] == "Curious")
+    per = "".join(card(*c) for c in CARDS if c[0] == "Perch")
 
-html = f'''<title>Sentinel — color variations</title>
-<style>
-{fonts}
-:root{{--navy:#1b2741;--canvas:#f3f5f8;--surface:#fff;--n200:#d3dae3;--ink:#222a34;
-  --ink-muted:#4e5762;--ink-subtle:#646e7c;
-  --shadow-sm:0 1px 2px rgba(27,39,65,.06),0 2px 8px rgba(27,39,65,.08)}}
-*{{box-sizing:border-box}}
-body{{margin:0;background:var(--canvas);color:var(--ink);font-family:"Touche",-apple-system,sans-serif;
-  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}}
-.wrap{{max-width:1060px;margin:0 auto;padding:52px 24px 90px}}
-.eyebrow{{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--ink-subtle);margin:0 0 8px}}
-h1{{font-size:40px;line-height:1.05;letter-spacing:-.024em;font-weight:600;color:var(--navy);margin:0 0 12px}}
-.lede{{font-size:17px;color:var(--ink-muted);max-width:60ch;margin:0 0 8px}}
-h2.fam{{font-size:26px;letter-spacing:-.018em;color:var(--navy);font-weight:600;margin:44px 0 4px}}
-.famnote{{margin:0 0 18px;color:var(--ink-muted);font-size:15px;max-width:62ch}}
-.grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:22px}}
-.card{{background:var(--surface);border-radius:6px;box-shadow:var(--shadow-sm);overflow:hidden}}
-.card-top{{display:flex;gap:20px;padding:24px 24px 18px;align-items:flex-start}}
-.hero{{flex:0 0 auto;width:142px;height:142px;border-radius:6px;background:var(--canvas);
-  display:grid;place-items:center}}
-.meta{{flex:1 1 auto;min-width:0}}
-.idx{{font-size:11px;font-weight:600;letter-spacing:.14em;color:var(--ink-subtle);
-  text-transform:uppercase;display:block;margin-bottom:2px}}
-.card h2{{margin:0 0 8px;font-size:23px;letter-spacing:-.015em;font-weight:600;color:var(--navy)}}
-.card p{{margin:0;font-size:14px;color:var(--ink-muted)}}
-.gauntlet{{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--n200);
-  border-top:1px solid var(--n200)}}
-.bay{{padding:15px 14px 13px;display:flex;flex-direction:column;align-items:center;gap:11px}}
-.bay.on-light{{background:var(--surface)}}
-.bay.on-dark{{background:var(--navy)}}
-.sizes{{display:flex;align-items:center;gap:12px;height:50px}}
-.tile{{display:grid;place-items:center;flex:0 0 auto}}
-.bay-label{{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--ink-subtle)}}
-.bay.on-dark .bay-label{{color:#aecae0}}
-.mark{{display:block;flex:0 0 auto}}
-.note{{margin-top:44px;background:var(--surface);border-radius:6px;box-shadow:var(--shadow-sm);padding:22px 26px}}
-.note h3{{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#2f6f9c}}
-.note p{{margin:0;font-size:14px;color:var(--ink-muted);max-width:72ch}}
-@media (max-width:820px){{.grid{{grid-template-columns:1fr}}h1{{font-size:32px}}}}
-</style>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-{"".join(SYMS)}
-</defs></svg>
-<div class="wrap">
-  <p class="eyebrow">Sentinel, round three</p>
-  <h1>Curious and Perch, without the gray</h1>
-  <p class="lede">Silver is gone from both. Every pale area now carries a hue: blue, cream, teal, or sky. Navy and steel still build the bird, and amber still holds the irises, so the family rule survives intact.</p>
+    html = f'''<title>Sentinel — color variations</title>
+    <style>
+    {fonts}
+    :root{{--navy:#1b2741;--canvas:#f3f5f8;--surface:#fff;--n200:#d3dae3;--ink:#222a34;
+      --ink-muted:#4e5762;--ink-subtle:#646e7c;
+      --shadow-sm:0 1px 2px rgba(27,39,65,.06),0 2px 8px rgba(27,39,65,.08)}}
+    *{{box-sizing:border-box}}
+    body{{margin:0;background:var(--canvas);color:var(--ink);font-family:"Touche",-apple-system,sans-serif;
+      font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}}
+    .wrap{{max-width:1060px;margin:0 auto;padding:52px 24px 90px}}
+    .eyebrow{{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+      color:var(--ink-subtle);margin:0 0 8px}}
+    h1{{font-size:40px;line-height:1.05;letter-spacing:-.024em;font-weight:600;color:var(--navy);margin:0 0 12px}}
+    .lede{{font-size:17px;color:var(--ink-muted);max-width:60ch;margin:0 0 8px}}
+    h2.fam{{font-size:26px;letter-spacing:-.018em;color:var(--navy);font-weight:600;margin:44px 0 4px}}
+    .famnote{{margin:0 0 18px;color:var(--ink-muted);font-size:15px;max-width:62ch}}
+    .grid{{display:grid;grid-template-columns:repeat(2,1fr);gap:22px}}
+    .card{{background:var(--surface);border-radius:6px;box-shadow:var(--shadow-sm);overflow:hidden}}
+    .card-top{{display:flex;gap:20px;padding:24px 24px 18px;align-items:flex-start}}
+    .hero{{flex:0 0 auto;width:142px;height:142px;border-radius:6px;background:var(--canvas);
+      display:grid;place-items:center}}
+    .meta{{flex:1 1 auto;min-width:0}}
+    .idx{{font-size:11px;font-weight:600;letter-spacing:.14em;color:var(--ink-subtle);
+      text-transform:uppercase;display:block;margin-bottom:2px}}
+    .card h2{{margin:0 0 8px;font-size:23px;letter-spacing:-.015em;font-weight:600;color:var(--navy)}}
+    .card p{{margin:0;font-size:14px;color:var(--ink-muted)}}
+    .gauntlet{{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--n200);
+      border-top:1px solid var(--n200)}}
+    .bay{{padding:15px 14px 13px;display:flex;flex-direction:column;align-items:center;gap:11px}}
+    .bay.on-light{{background:var(--surface)}}
+    .bay.on-dark{{background:var(--navy)}}
+    .sizes{{display:flex;align-items:center;gap:12px;height:50px}}
+    .tile{{display:grid;place-items:center;flex:0 0 auto}}
+    .bay-label{{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+      color:var(--ink-subtle)}}
+    .bay.on-dark .bay-label{{color:#aecae0}}
+    .mark{{display:block;flex:0 0 auto}}
+    .note{{margin-top:44px;background:var(--surface);border-radius:6px;box-shadow:var(--shadow-sm);padding:22px 26px}}
+    .note h3{{margin:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:#2f6f9c}}
+    .note p{{margin:0;font-size:14px;color:var(--ink-muted);max-width:72ch}}
+    @media (max-width:820px){{.grid{{grid-template-columns:1fr}}h1{{font-size:32px}}}}
+    </style>
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    {"".join(SYMS)}
+    </defs></svg>
+    <div class="wrap">
+      <p class="eyebrow">Sentinel, round three</p>
+      <h1>Curious and Perch, without the gray</h1>
+      <p class="lede">Silver is gone from both. Every pale area now carries a hue: blue, cream, teal, or sky. Navy and steel still build the bird, and amber still holds the irises, so the family rule survives intact.</p>
 
-  <h2 class="fam">Curious</h2>
-  <p class="famnote">Four takes on the head. Each pairs a different pale tone in the eyes with a matching brow, and adjusts the head shape a little to suit it.</p>
-  <div class="grid">{cur}</div>
+      <h2 class="fam">Curious</h2>
+      <p class="famnote">Four takes on the head. Each pairs a different pale tone in the eyes with a matching brow, and adjusts the head shape a little to suit it.</p>
+      <div class="grid">{cur}</div>
 
-  <h2 class="fam">Perch</h2>
-  <p class="famnote">Four takes on the whole bird. The first three swap the chest color and reshape the body; the fourth drops the chest patch entirely.</p>
-  <div class="grid">{per}</div>
+      <h2 class="fam">Perch</h2>
+      <p class="famnote">Four takes on the whole bird. The first three swap the chest color and reshape the body; the fourth drops the chest patch entirely.</p>
+      <div class="grid">{per}</div>
 
-  <div class="note">
-    <h3>On the dark side</h3>
-    <p>These carry real hues now, so the old trick of flipping every tone for a dark background stops working. The right answer on navy is a pale tile, shown in the right-hand bay above, which is also how Teams and GitHub render an avatar anyway.</p>
-  </div>
-</div>'''
+      <div class="note">
+        <h3>On the dark side</h3>
+        <p>These carry real hues now, so the old trick of flipping every tone for a dark background stops working. The right answer on navy is a pale tile, shown in the right-hand bay above, which is also how Teams and GitHub render an avatar anyway.</p>
+      </div>
+    </div>'''
 
-open("sentinel-color.local.html", "w").write(html)
-print("wrote sentinel-color.local.html", len(html))
+    open("sentinel-color.local.html", "w").write(html)
+    print("wrote sentinel-color.local.html", len(html))
