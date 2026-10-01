@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,14 @@ AUTOFIX_LEVELS = ("high", "medium", "low")
 # rather than occasionally.
 PAYLOAD_MODES = ("issue-ids-only",)
 
+# The trigger token refs name SSM keys under `webhook.ssm_prefix`. A token
+# pasted in their place is the failure this shape catches: the config file
+# ships inside the Lambda bundle, so a literal token there is a credential in
+# the deployed code. Routine trigger tokens run past 64 characters and start
+# with `sk-`, so either test alone rejects one.
+SSM_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+TOKEN_VALUE_PREFIX = "sk-"
+
 
 class ConfigError(RuntimeError):
     """Configuration is missing, incomplete, or still carrying placeholders."""
@@ -92,6 +101,9 @@ class ReceiverConfig:
     trigger_mode: str = "shadow"
     payload_mode: str = "issue-ids-only"
     routine_id: str = ""
+    # The SSM key, under `ssm_prefix`, that holds the investigator routine's
+    # trigger token. Never the token itself.
+    token_ref: str = "routine-trigger-token"
     # The probe is a separate routine with its own prompt and its own trigger
     # token. Optional: the receiver never fires it, so an empty value costs
     # only the probe runbook.
@@ -159,8 +171,9 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         trigger_mode=raw.get("trigger_mode") or "shadow",
         payload_mode=raw.get("payload_mode") or "issue-ids-only",
         routine_id=str(trigger.get("routine_id") or ""),
+        token_ref=_token_ref(trigger, "token_ref", "routine-trigger-token"),
         probe_routine_id=str(trigger.get("probe_routine_id") or ""),
-        probe_token_ref=str(trigger.get("probe_token_ref") or "probe-trigger-token"),
+        probe_token_ref=_token_ref(trigger, "probe_token_ref", "probe-trigger-token"),
         findings_url=investigation.get("findings_url") or "",
         debounce_seconds=int(investigation.get("debounce_seconds") or 60),
         max_batch_issues=int(investigation.get("max_batch_issues") or 8),
@@ -177,6 +190,22 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         autofix_base_branch=autofix.get("base_branch") or "",
         autofix_callback_url=autofix.get("callback_url") or "",
     )
+
+
+def _token_ref(trigger: dict, key: str, default: str) -> str:
+    """Read a trigger token ref, refusing anything shaped like a token.
+
+    Checked at load rather than in assert_ready because the probe runbook
+    loads the config without asserting it. The error never echoes the value:
+    if it is a token, the message must not become a second copy of it.
+    """
+    value = str(trigger.get(key) or default)
+    if value.startswith(TOKEN_VALUE_PREFIX) or not SSM_KEY_PATTERN.fullmatch(value):
+        raise ConfigError(
+            f"trigger.{key} must name an SSM key under webhook.ssm_prefix "
+            f"(for example {default!r}), not hold the token itself"
+        )
+    return value
 
 
 def assert_ready(cfg: ReceiverConfig) -> None:

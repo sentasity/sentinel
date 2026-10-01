@@ -134,11 +134,18 @@ class ReceiverStack(Stack):
                     # Python deps hid this; cryptography, pulled in by
                     # PyJWT[crypto], has a native module and no fallback.
                     platform="linux/amd64",
+                    # Only the one config file ships. `config/` also holds
+                    # operator-local files (the disclosure ban list, and
+                    # whatever else an operator keeps beside the config),
+                    # and anything copied here is readable by everyone who
+                    # can read the function's code.
                     command=[
                         "bash",
                         "-c",
                         "pip install -r requirements-lambda.txt -t /asset-output "
-                        "&& cp -r receiver config /asset-output",
+                        "&& cp -r receiver /asset-output "
+                        "&& mkdir -p /asset-output/config "
+                        f"&& cp config/{DEFAULT_CONFIG_FILENAME} /asset-output/config/",
                     ],
                 ),
             ),

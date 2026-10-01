@@ -155,7 +155,7 @@ written with the placeholder left in place fails the check and posts nothing.
 
 The routines API exposes no configuration read, so the routine's repository binding and connector set can only be verified by firing a session that reports on itself (`prompts/probe.md`, reporting to `/findings/probe`; `scripts/probe_routine.py` fires it). Connector drift is not detected automatically: re-run the probe whenever the routine or the account's connectors change.
 
-**Give the probe its own routine.** A routine holds one prompt at a time, so a single routine cannot be both. Create a second routine carrying `prompts/probe.md` and leave the first on `prompts/investigator.md`. Record the probe's id as `trigger.probe_routine_id` and put its trigger token in the parameter store under `trigger.probe_token_ref`, then:
+**Give the probe its own routine.** A routine holds one prompt at a time, so a single routine cannot be both. Create a second routine carrying `prompts/probe.md` and leave the first on `prompts/investigator.md`. Record the probe's id as `trigger.probe_routine_id` and put its trigger token in the parameter store under the key `trigger.probe_token_ref` names (`probe-trigger-token` by default; the config holds the key name, never the token), then:
 
 ```bash
 scripts/probe_routine.py
