@@ -55,8 +55,11 @@ deploy again, then soak before switching to `auto`.
 
 ## Secrets
 
-Secrets never go in the config file. It carries only a `token_ref`, the name of the SSM
-parameter holding the value. The parameters themselves are SecureStrings written by:
+Secrets never go in the config file. It carries only `trigger.token_ref` and
+`trigger.probe_token_ref`, the names of the SSM keys (under `webhook.ssm_prefix`) that hold
+the routine trigger tokens. The config file ships inside the Lambda bundle, so the receiver
+refuses to load a config whose ref looks like a token rather than a key name. The
+parameters themselves are SecureStrings written by:
 
 ```bash
 BOT_CLIENT_SECRET='...' \

@@ -92,7 +92,7 @@ def routine_client() -> RoutineClient:
     """The routines fire client, built once per container."""
     cfg = config()
     return RoutineClient(
-        cfg.routine_id, get_secret(cfg.secret_name("routine-trigger-token"))
+        cfg.routine_id, get_secret(cfg.secret_name(cfg.token_ref))
     )
 
 

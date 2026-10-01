@@ -350,3 +350,57 @@ def test_the_example_config_loads_and_starts_inert():
 
     assert cfg.trigger_mode == "shadow"
     assert cfg.autofix_enabled is False
+
+
+def test_the_investigator_token_ref_defaults_to_the_documented_key(tmp_path):
+    cfg = load_config(write(tmp_path, VALID))
+
+    assert cfg.token_ref == "routine-trigger-token"
+    assert cfg.secret_name(cfg.token_ref) == "/sentinel/routine-trigger-token"
+
+
+def test_the_investigator_token_ref_is_read_from_the_trigger_section(tmp_path):
+    body = VALID.replace(
+        "  routine_id: trig_test",
+        "  routine_id: trig_test\n  token_ref: investigator-token",
+    )
+    assert "token_ref" in body, "the token ref was never substituted in"
+
+    assert load_config(write(tmp_path, body)).token_ref == "investigator-token"
+
+
+# Built at runtime so no token-shaped literal sits in the tree for the secret
+# scanners to flag. Real routine trigger tokens are about this long.
+TOKEN_SHAPED = "sk-" + "a" * 105
+
+
+@pytest.mark.parametrize("key", ["token_ref", "probe_token_ref"])
+@pytest.mark.parametrize(
+    "value",
+    [TOKEN_SHAPED, "sk-short", "a" * 65, "nested/key", "-leading-dash"],
+    ids=["token", "sk-prefix", "too-long", "slash", "leading-dash"],
+)
+def test_a_token_ref_that_is_not_an_ssm_key_is_refused(tmp_path, key, value):
+    """The config file ships in the Lambda bundle, so a token pasted where its
+    SSM key belongs would put a credential in the deployed code."""
+    body = VALID.replace(
+        "  routine_id: trig_test",
+        f"  routine_id: trig_test\n  {key}: {value}",
+    )
+
+    with pytest.raises(ConfigError, match=f"trigger.{key} must name an SSM key"):
+        load_config(write(tmp_path, body))
+
+
+def test_a_refused_token_ref_is_never_echoed(tmp_path):
+    """If the value is a token, the error must not become a second copy of it."""
+    body = VALID.replace(
+        "  routine_id: trig_test",
+        f"  routine_id: trig_test\n  token_ref: {TOKEN_SHAPED}",
+    )
+
+    with pytest.raises(ConfigError) as refused:
+        load_config(write(tmp_path, body))
+
+    assert TOKEN_SHAPED not in str(refused.value)
+    assert TOKEN_SHAPED[:12] not in str(refused.value)

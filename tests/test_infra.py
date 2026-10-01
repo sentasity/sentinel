@@ -426,3 +426,15 @@ def test_the_function_architecture_matches_the_pinned_bundle_platform(template):
         f"bundling platform in receiver_stack.py to match"
     )
     assert 'platform="linux/amd64"' in source
+
+
+def test_the_bundle_ships_only_the_receiver_config_file():
+    """`config/` holds operator-local files beside the config (the disclosure
+    ban list, and anything else an operator keeps there). Everything the
+    bundle copies is readable by anyone who can read the function's code, so
+    the step copies the one file the receiver loads and nothing else.
+    """
+    source = (Path(__file__).resolve().parent.parent / "infra" / "stacks" / "receiver_stack.py").read_text()
+
+    assert "cp -r receiver config" not in source, "the bundle copies the whole config directory"
+    assert "cp config/{DEFAULT_CONFIG_FILENAME} /asset-output/config/" in source
