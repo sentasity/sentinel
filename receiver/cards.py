@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from receiver.models import SentryAlert
+from receiver.models import SentryAlert, investigated_kind
 from receiver.sentry_api import IssueRef
 
 SCHEMA = "http://adaptivecards.io/schemas/adaptive-card.json"
@@ -17,7 +17,7 @@ SEVERITY_STYLES: dict[str, tuple[str, str]] = {
     "debug": ("emphasis", "🔵 INFO"),
 }
 DEFAULT_STYLE = SEVERITY_STYLES["info"]
-WARNING_FOOTER = "⚠️ Warnings are not auto-investigated."
+NOT_INVESTIGATED_FOOTER = "ℹ️ This kind of issue is not auto-investigated."
 
 
 # Teams renders Adaptive Card text through a markdown subset, so characters
@@ -120,11 +120,11 @@ def render_card(alert: SentryAlert, ref: IssueRef) -> dict:
         },
     ]
 
-    if (alert.level or "").lower() == "warning":
+    if not investigated_kind(alert):
         body.append(
             {
                 "type": "TextBlock",
-                "text": WARNING_FOOTER,
+                "text": NOT_INVESTIGATED_FOOTER,
                 "isSubtle": True,
                 "wrap": True,
                 "spacing": "Medium",

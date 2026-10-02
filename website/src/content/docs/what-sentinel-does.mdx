@@ -26,9 +26,10 @@ today.
 1. **Alert.** Sentry webhooks the issue to a receiver, which verifies the signature,
    renders an Adaptive Card, and posts it to a Teams channel through its own bot
    identity.
-2. **Gate and enqueue.** Alerts that are error-level, in an investigated environment,
-   and carry a release that resolves to a commit SHA are queued with a debounce, so a
-   burst of related issues becomes one batch rather than a stampede of sessions.
+2. **Gate and enqueue.** Alerts that are warning level or above (or an N+1 performance
+   issue), in an investigated environment, and carry a release that resolves to a
+   commit SHA are queued with a debounce, so a burst of related issues becomes one
+   batch rather than a stampede of sessions.
 3. **Investigate.** A scheduled sweep fires one unattended session per batch. It checks
    out the target repository at the release SHA, investigates each issue, and posts a
    findings document back, which the receiver renders as a threaded reply.

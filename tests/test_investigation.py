@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from receiver.bot import BotError
+from receiver.cards import NOT_INVESTIGATED_FOOTER, render_card
 from receiver.investigation import MAX_REQUEUES, SHA, eligible, enqueue_investigation
 from receiver.models import parse_alert
 from receiver.sentry_api import IssueRef
@@ -25,11 +26,46 @@ def test_an_error_with_a_release_is_eligible():
     assert eligible(alert_with(), CONFIG) == (True, "")
 
 
-def test_a_warning_is_skipped_because_its_card_promised_so():
-    ok, reason = eligible(alert_with(level="warning"), CONFIG)
+@pytest.mark.parametrize("level", ["fatal", "error", "warning"])
+def test_every_level_from_warning_up_is_eligible(level):
+    assert eligible(alert_with(level=level), CONFIG) == (True, "")
 
-    assert ok is False
-    assert reason == "level"
+
+@pytest.mark.parametrize("title", ["N+1 Query", "N+1 API Call"])
+def test_an_n_plus_one_performance_issue_is_eligible_at_info(title):
+    assert eligible(alert_with(level="info", title=title), CONFIG) == (True, "")
+
+
+@pytest.mark.parametrize(
+    "level,title",
+    [
+        ("info", "Large HTTP payload"),
+        ("info", "Consecutive DB Queries"),
+        ("info", "N+1 Query in a message someone wrote"),
+        ("debug", "N+1 Query"),
+    ],
+)
+def test_any_other_info_or_debug_issue_is_skipped(level, title):
+    assert eligible(alert_with(level=level, title=title), CONFIG) == (False, "kind")
+
+
+@pytest.mark.parametrize(
+    "level,title",
+    [
+        ("fatal", "Segfault"),
+        ("error", "TypeError"),
+        ("warning", "Missing spec entry"),
+        ("info", "N+1 Query"),
+        ("info", "N+1 API Call"),
+        ("info", "Large HTTP payload"),
+        ("debug", "N+1 Query"),
+    ],
+)
+def test_the_card_footer_and_the_gate_never_disagree(level, title):
+    alert = alert_with(level=level, title=title)
+    footer = render_card(alert, REF)["body"][-1].get("text") == NOT_INVESTIGATED_FOOTER
+
+    assert footer is (eligible(alert, CONFIG)[1] == "kind")
 
 
 def test_an_unserved_environment_is_skipped():

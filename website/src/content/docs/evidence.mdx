@@ -59,8 +59,9 @@ other.
 
 ## Severity variants
 
-The renderer handles four severities. Only `error` is investigated; the rest are posted
-for visibility and say so.
+The renderer handles four severities. Fatal, error, and warning are investigated. Info
+is posted for visibility and says so, unless it is an N+1 performance issue, which is
+investigated like an error.
 
 <AdaptiveCard card={fatalCard} />
 <AdaptiveCard card={warningCard} />

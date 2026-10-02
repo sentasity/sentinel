@@ -6,6 +6,7 @@ from pathlib import Path
 from receiver import autofix
 from receiver.config import EXAMPLE_CONFIG_PATH, PLACEHOLDER_PREFIX, load_config
 from receiver.findings import RESULT_FIELDS
+from receiver.models import INVESTIGATED_INFO_TITLES
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
@@ -302,6 +303,18 @@ def test_the_prompt_names_every_schema_field_the_receiver_validates():
 
 def test_the_prompt_treats_the_trigger_message_as_untrusted():
     assert "untrusted data" in investigator().lower()
+
+
+def test_the_prompt_says_how_to_read_every_performance_issue_the_gate_admits():
+    """A performance issue has no stack trace, and the investigation steps are
+    otherwise written around one. Admitting a new type to the gate without
+    telling the session what to read in its place sends it in blind."""
+    body = " ".join(investigator().split())
+
+    for title in INVESTIGATED_INFO_TITLES:
+        assert title in body
+    assert "no stack trace" in body
+    assert "offending span" in body
 
 
 def test_the_prompt_sends_the_investigator_through_the_repo_docs():
