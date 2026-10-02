@@ -40,10 +40,16 @@ jobs:
       # file: a public ban list is an index of what it protects. A fork's run
       # is not given the secret and skips this step, so it tests the generic
       # patterns only — the same posture a stranger's clone gets locally.
+      # Dependabot's runs are the same case from inside the repository: they
+      # read Dependabot's own secret store, never the Actions one, so the
+      # secret is empty there and they skip this step too.
       # Where the secret should exist, SENTINEL_REQUIRE_BANNED_LOCAL makes an
       # empty or missing list fail the suite instead of narrowing it quietly.
       - name: Materialize the private ban list
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        if: >-
+          (github.event_name != 'pull_request'
+            || github.event.pull_request.head.repo.full_name == github.repository)
+          && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           BANNED_PATTERNS: ${{ secrets.SENTINEL_BANNED_PATTERNS }}
         run: |
