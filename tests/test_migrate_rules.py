@@ -150,22 +150,27 @@ def test_prod_workflows_lose_the_level_condition():
     assert [c["type"] for c in conditions_of(planned)] == []
 
 
-def test_non_prod_workflows_keep_their_level_condition():
-    """The level condition is dropped for prod only, so a gate-less strip fails here.
+def with_level_condition(workflow):
+    """`workflow` carrying prod's `level >= error` condition.
 
-    Every non-prod workflow in the fixture happens to carry no conditions at all,
-    which would make this assertion pass even if `plan_workflow` stripped them
-    unconditionally. So the condition is added here rather than found.
+    Every non-prod workflow in the fixture carries no conditions at all, so a
+    test about stripping one from them has to add it rather than find it.
     """
-    source = copy.deepcopy(wf_by_name("[Checkout] New Issue - Dev"))
+    workflow = copy.deepcopy(workflow)
     level = copy.deepcopy(
         next(c for c in conditions_of(wf_by_name("[Checkout] New Issue - Prod")))
     )
-    source["actionFilters"][0]["conditions"].append(level)
+    workflow["actionFilters"][0]["conditions"].append(level)
+    return workflow
+
+
+def test_staging_workflows_lose_the_level_condition_too():
+    source = with_level_condition(wf_by_name("[Checkout] New Issue - Dev"))
+    source["environment"] = "staging"
 
     planned = mr.plan_workflow(source, WORKFLOW_ACTION)
 
-    assert [c["type"] for c in conditions_of(planned)] == ["level"]
+    assert [c["type"] for c in conditions_of(planned)] == []
 
 
 def test_classify_separates_migrated_from_pending():

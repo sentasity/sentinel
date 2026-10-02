@@ -29,6 +29,10 @@ config/*.yaml
 # so it is named here too rather than left to one glob.
 config/banned.local.txt
 
+# migrate_rules backups: a live deployment's alert rules, and the only way
+# to roll them back. Keep them, but never in the tree.
+fixtures/rule-backup-*.json
+
 # documentation site build output
 website/node_modules/
 website/dist/

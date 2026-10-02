@@ -110,18 +110,20 @@ prints exactly what would change.
 
 ```bash
 export SENTRY_ACCESS_TOKEN='<an org admin token>'
-.venv/bin/python -m scripts.migrate_rules apply --project checkout --environment staging --dry-run
-.venv/bin/python -m scripts.migrate_rules apply --project checkout --environment staging
+.venv/bin/python -m scripts.migrate_rules --org acme-tools apply --project checkout --environment staging --dry-run
+.venv/bin/python -m scripts.migrate_rules --org acme-tools apply --project checkout --environment staging
 # soak: wait for an organic alert, or force one, and check the channel
-.venv/bin/python -m scripts.migrate_rules apply --project checkout --environment prod
+.venv/bin/python -m scripts.migrate_rules --org acme-tools apply --project checkout --environment prod
 ```
 
 Already-migrated alerts are reported as `skipped` rather than aborting the slice, so
 re-running a project is safe.
 
 :::caution
-A prod slice also drops the `level >= error` condition, so those alerts begin delivering
-warnings as well as errors. That is deliberate, and it will visibly raise volume in the
+Every slice also drops the `level >= error` condition, so those alerts begin delivering
+warnings and info-level performance issues as well as errors. That is deliberate: the
+receiver decides what is investigated and says so on each card, and a filter on the
+alert would hide the warnings it investigates. It will visibly raise volume in the
 channel.
 :::
 
@@ -139,10 +141,10 @@ than assumed. `rollback` takes no `--project`: a workflow id is unique across th
 organization, and the backup carries it.
 
 ```bash
-.venv/bin/python -m scripts.migrate_rules rollback \
+.venv/bin/python -m scripts.migrate_rules --org acme-tools rollback \
   --backup fixtures/rule-backup-checkout-staging-<timestamp>.json
 # confirm the stock grey card returns, then re-apply
-.venv/bin/python -m scripts.migrate_rules apply --project checkout --environment staging
+.venv/bin/python -m scripts.migrate_rules --org acme-tools apply --project checkout --environment staging
 ```
 
 ## Notes on the workflows API

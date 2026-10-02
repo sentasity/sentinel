@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Migrate Sentry alert workflows from the stock Teams action to sentinel.
 
-    python -m scripts.migrate_rules apply    --project checkout --environment prod
-    python -m scripts.migrate_rules rollback --backup fixtures/rule-backup-2026-08-12.json
+    python -m scripts.migrate_rules --org acme-tools apply    --project checkout --environment prod
+    python -m scripts.migrate_rules --org acme-tools rollback --backup fixtures/rule-backup-2026-08-12.json
 
 `apply` always writes a backup of every workflow it is about to touch before it
 touches any of them, and refuses to run if that backup cannot be written.
@@ -31,10 +31,14 @@ TIMEOUT_SECONDS = 20
 
 MSTEAMS_ACTION_TYPE = "msteams"
 WEBHOOK_ACTION_TYPE = "webhook"
+# Every migrated workflow loses its level filter, in every target environment.
+# The receiver, not the alert rule, decides what is investigated, and it says
+# so on each card. A level filter on the rule hides alerts the receiver would
+# have investigated, and the hidden ones are exactly the warnings and
+# performance issues an environment exists to surface before prod does.
 LEVEL_CONDITION_TYPE = "level"
 
 TARGET_ENVIRONMENTS = ("prod", "staging")
-UNFILTERED_ENVIRONMENT = "prod"
 
 # A full round-trip, which the API accepts losslessly. Omitted keys are
 # otherwise preserved, with one exception: `enabled` resets to true when it is
@@ -134,15 +138,12 @@ def remove_level_condition(workflow: dict) -> dict:
 
 
 def plan_workflow(workflow: dict, action_template: dict) -> dict:
-    """Full transform for one workflow: swap the action, and unfilter prod.
+    """Full transform for one workflow: swap the action, and drop the level filter.
 
     Triggers, cooldown frequency, environment, and owner are never modified;
     retuning alert noise is deliberately out of this migration's scope.
     """
-    planned = swap_workflow_action(workflow, action_template)
-    if workflow.get("environment") == UNFILTERED_ENVIRONMENT:
-        planned = remove_level_condition(planned)
-    return planned
+    return remove_level_condition(swap_workflow_action(workflow, action_template))
 
 
 def detector_projects(detectors: list[dict]) -> dict[str, str]:
