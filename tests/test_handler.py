@@ -238,7 +238,7 @@ def test_the_handler_flushes_sentry_even_when_the_pipeline_raises():
     flush.assert_called_once()
 
 
-def test_warning_alert_posts_to_prod_channel_with_the_footer():
+def test_warning_alert_posts_to_prod_channel_without_a_footer():
     payload = copy.deepcopy(load_fixture("sentry-webhook-alert.json"))
     payload["data"]["event"]["environment"] = "prod"
     payload["data"]["event"]["level"] = "warning"
@@ -258,7 +258,7 @@ def test_warning_alert_posts_to_prod_channel_with_the_footer():
     assert response["statusCode"] == 200
     channel, card, _ = bot.post_card.call_args.args
     assert channel == "19:prod@thread.tacv2"
-    assert card["body"][-1]["text"] == "⚠️ Warnings are not auto-investigated."
+    assert card["body"][-1]["type"] == "FactSet"
 
 
 # The Function URL is unauthenticated at the platform, so every one of these

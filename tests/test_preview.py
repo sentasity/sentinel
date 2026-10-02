@@ -22,8 +22,8 @@ def test_write_cards_emits_the_whole_gallery(tmp_path):
         "reply.json",
         "warning.json",
     ]
-    body = (tmp_path / "warning.json").read_text()
+    body = (tmp_path / "info.json").read_text()
     assert body.endswith("\n")
     assert json.loads(body)["body"][-1]["text"] == (
-        "⚠️ Warnings are not auto-investigated."
+        "ℹ️ This kind of issue is not auto-investigated."
     )

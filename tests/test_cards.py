@@ -5,7 +5,7 @@ import dataclasses
 
 import pytest
 
-from receiver.cards import SEVERITY_STYLES, card_summary, render_card
+from receiver.cards import NOT_INVESTIGATED_FOOTER, SEVERITY_STYLES, card_summary, render_card
 from receiver.models import parse_alert
 from receiver.sentry_api import IssueRef
 from tests.conftest import load_fixture
@@ -142,20 +142,27 @@ def test_card_links_back_to_sentry():
     ]
 
 
-def test_warning_card_carries_the_not_auto_investigated_footer():
-    card = render_card(alert_at_level("warning"), REF)
+@pytest.mark.parametrize("level", ["info", "debug"])
+def test_a_card_the_gate_will_skip_carries_the_not_auto_investigated_footer(level):
+    card = render_card(alert_at_level(level), REF)
     footer = card["body"][-1]
 
-    assert footer["text"] == "⚠️ Warnings are not auto-investigated."
+    assert footer["text"] == "ℹ️ This kind of issue is not auto-investigated."
     assert footer["isSubtle"] is True
 
 
-def test_error_card_has_no_footer():
-    card = render_card(alert_at_level("error"), REF)
+@pytest.mark.parametrize("level", ["fatal", "error", "warning"])
+def test_an_investigated_level_has_no_footer(level):
+    card = render_card(alert_at_level(level), REF)
 
-    assert all(
-        b.get("text") != "⚠️ Warnings are not auto-investigated." for b in card["body"]
-    )
+    assert all(b.get("text") != NOT_INVESTIGATED_FOOTER for b in card["body"])
+
+
+def test_an_n_plus_one_info_card_has_no_footer():
+    alert = dataclasses.replace(alert_at_level("info"), title="N+1 Query")
+    card = render_card(alert, REF)
+
+    assert all(b.get("text") != NOT_INVESTIGATED_FOOTER for b in card["body"])
 
 
 def test_missing_culprit_renders_a_dash():

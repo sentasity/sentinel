@@ -29,8 +29,17 @@ autofix outcomes land under the alert they belong to instead of as loose message
 
 ## 2. Gate and enqueue
 
-An alert is worth investigating when three things hold: it is error-level, it is in an
-environment you asked to investigate, and its release resolves to a commit SHA.
+An alert is worth investigating when three things hold: it is a kind Sentinel
+investigates, it is in an environment you asked to investigate, and its release
+resolves to a commit SHA.
+
+The kinds are every level from warning up, plus two of the performance issues Sentry
+files at info: N+1 Query and N+1 API Call. Most performance issues are design work, a
+large payload that wants pagination or a slow query that wants an index, and an
+unattended session should not attempt that. An N+1 is a loop issuing one query or
+request per item, and the fix belongs where the loop is. Any other card says it is not
+auto-investigated, and the gate and that footer read the same rule, so they cannot
+disagree.
 
 That third condition is stricter than it sounds. Investigating at the release SHA is
 the whole point, because it is the code that actually produced the error. If a release

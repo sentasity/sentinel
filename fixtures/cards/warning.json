@@ -66,13 +66,6 @@
           "value": "checkout.services.payments in capture\\_intent"
         }
       ]
-    },
-    {
-      "type": "TextBlock",
-      "text": "⚠️ Warnings are not auto-investigated.",
-      "isSubtle": true,
-      "wrap": true,
-      "spacing": "Medium"
     }
   ],
   "actions": [

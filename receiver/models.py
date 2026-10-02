@@ -24,6 +24,32 @@ class SentryAlert:
     rule_name: str
 
 
+# Every level from warning up is investigated. A warning is usually code that
+# noticed something wrong and said so, which is as close to a bug report as an
+# event gets without an exception, and a fatal is the strongest signal there is.
+INVESTIGATED_LEVELS = ("fatal", "error", "warning")
+
+# Below that, only these. Sentry files its performance issues at info, and most
+# of them are not a bug one code change fixes: a large payload or a slow query
+# wants pagination or an index, which is design work an unattended session
+# should not attempt. An N+1 is different: one loop issuing a query or a
+# request per item, fixed by batching or eager loading where the loop is.
+# Sentry gives each performance issue type a fixed title, so the title is what
+# identifies one.
+INVESTIGATED_INFO_TITLES = ("N+1 Query", "N+1 API Call")
+
+
+def investigated_kind(alert: SentryAlert) -> bool:
+    """Whether `alert` is a level and type that is investigated at all.
+
+    The eligibility gate and the card's "not auto-investigated" footer both
+    read this, so a card can never promise what the gate will not do.
+    """
+    if alert.level in INVESTIGATED_LEVELS:
+        return True
+    return alert.level == "info" and alert.title in INVESTIGATED_INFO_TITLES
+
+
 def tag_value(event: dict, key: str) -> str | None:
     """Return the value of `key` in the event's tag list, or None."""
     for tag in event.get("tags") or []:

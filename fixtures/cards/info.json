@@ -66,6 +66,13 @@
           "value": "checkout.services.payments in capture\\_intent"
         }
       ]
+    },
+    {
+      "type": "TextBlock",
+      "text": "ℹ️ This kind of issue is not auto-investigated.",
+      "isSubtle": true,
+      "wrap": true,
+      "spacing": "Medium"
     }
   ],
   "actions": [

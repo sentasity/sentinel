@@ -8,13 +8,12 @@ from datetime import datetime, timedelta, timezone
 
 from receiver.bot import thread_link
 from receiver.config import ReceiverConfig
-from receiver.models import SentryAlert
+from receiver.models import SentryAlert, investigated_kind
 from receiver.sweep import NOT_STARTED_REASONS
 
 LOG = logging.getLogger(__name__)
 
 SHA = re.compile(r"[0-9a-f]{40}")
-INVESTIGATED_LEVEL = "error"
 
 # How many times a repeat alert may re-run an investigation that failed. One:
 # a failure is usually the routine or the chat surface having a bad quarter
@@ -33,10 +32,8 @@ def eligible(alert: SentryAlert, cfg: ReceiverConfig) -> tuple[bool, str]:
     deliberately absent here: it is a conditional write in the store, so
     checking it separately would be a read the write already performs.
     """
-    if alert.level != INVESTIGATED_LEVEL:
-        # The card's "not auto-investigated" footer is decided from the same
-        # value, so these two must never disagree.
-        return False, "level"
+    if not investigated_kind(alert):
+        return False, "kind"
 
     if alert.environment not in cfg.environments:
         return False, "environment"
