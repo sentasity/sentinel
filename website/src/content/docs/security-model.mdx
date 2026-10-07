@@ -106,9 +106,9 @@ credential being there at all; a session with no credential needs none of them.
 The receiver mints it only after a `fix_ready` payload has passed validation and the
 dispatch record has been claimed, and spends it on one short sequence under a single
 time budget: a read of the base branch and a comparison that confirms the base commit
-is on it, a read of the base commit and its tree, a blob per file, a tree that inherits
-the base commit and overrides only those paths, a commit, a branch, and then the pull
-request itself. The commit's author is whatever GitHub
+is on it, a read of the base commit and its tree, a read of each base file a patch
+modifies, a blob per new or changed file, a tree that inherits the base commit and
+overrides only those paths, a commit, a branch, and then the pull request itself. The commit's author is whatever GitHub
 records for the App installation, because nothing in the receiver sets one, so the pull
 request is the App's by construction rather than by a check made afterwards.
 
@@ -116,8 +116,9 @@ request is the App's by construction rather than by a check made afterwards.
 access to the repository's secrets, before any human reviews the pull request that
 carries it. A credential that can write `.github/workflows/` is therefore not a
 code-writing credential at all; it is a secrets-reading one, and reviewing the pull
-request afterwards is too late to matter. The receiver also refuses any `fix_ready` file
-under `.github/` before minting anything, so the scope is the enforcement behind a
+request afterwards is too late to matter. The receiver also refuses any `fix_ready` path
+under `.github/` before minting anything, on either side of a rename and in either
+payload form, so the scope is the enforcement behind a
 check that already said no.
 
 The gate declines any *finding* that cites a path under `.github/` too, but the three
@@ -192,8 +193,9 @@ What it earns is a grant: a dispatch id and a callback token that let the holder
 one `fix_ready` payload, from which the receiver will open one pull request. That is
 the whole prize. No credential leaves the receiver, and the payload is validated on the
 receiver before anything is minted: every path is checked against the forbidden and
-operator-excluded patterns, the file count and total size are capped, and the branch
-name is computed from the record rather than read from the payload. What a forged
+operator-excluded patterns, the file count and size are capped, symlinks and submodules
+are refused, and the branch name is computed from the record rather than read from the
+payload. What a forged
 finding can produce is therefore a pull request, authored by the App, containing files
 the forger chose, in a repository whose base branch is protected and whose reviewers
 read it. That is a real thing and it is bounded by review, which is the same thing that
@@ -213,18 +215,35 @@ write.
 ### The receiver validates what it is handed, and claims the record while it works
 
 A `fix_ready` payload is untrusted input from a session whose context held
-attacker-influenceable text, and the receiver treats it that way. Before any GitHub
-call it checks, in order: the shape, a full lowercase commit SHA for the base, at most
-twenty files, every path plain and repository-relative with no dot segments, every path
-clear of the forbidden and excluded patterns, no path twice, at most 512 KB of content,
-a one-line title, and a bounded body. The first failure wins, the response names the
-rule, the record settles as failed, and the thread is told. Nothing is minted for a
+attacker-influenceable text, and the receiver treats it that way. The fix arrives as
+whole files or as a patch, and both forms pass through one path and mode policy, so
+neither can carry what the other refuses. Before any GitHub call it checks, in order:
+exactly one form, the shape, a full lowercase commit SHA for the base, at most twenty
+changed files, every path plain and repository-relative with no dot segments, every
+path clear of the forbidden and excluded patterns (a rename is checked on both sides,
+since moving a file out of a protected path changes that path too), no path twice, no
+mode but a regular or executable file, at most 512 KB of whole-file content or a 4 MB
+patch, a one-line title, and a bounded body. The first failure wins, the response names
+the rule, the record settles as failed, and the thread is told. Nothing is minted for a
 payload that fails.
 
-One check needs GitHub and so runs after the claim: the base commit the session built
+A patch is parsed in full before that policy runs, and the parser refuses rather than
+guesses: leading text, an unknown header, a hunk whose lines disagree with its counts,
+a copy, or a binary change sent without its binary hunk all fail the payload. Binary
+hunks are compressed, so what all of them together may inflate to is capped before any
+is inflated, and the reverse hunks git adds for `git apply -R` are never inflated at all.
+
+Some checks need GitHub and so run after the claim. The base commit the session built
 on must be the base branch's head or an ancestor of it. A fix built on a commit that is
 not on the branch would open a pull request carrying unrelated changes, so the receiver
-opens nothing and the grant settles as failed. The whole sequence also runs under one
+opens nothing and the grant settles as failed. The base tree's entry for every path the
+fix touches must be a regular file or absent, with no symlink or file above it, so no
+fix replaces or writes through a symlink, a submodule, or a directory, whichever form it
+came in. A patch must apply exactly: each file's base blob must be the one the patch
+names, each hunk must match at exactly the line it names (no fuzz, no offset, no
+three-way merge), and each result must be the blob git recorded on the patch's `index`
+line. A patch made against some other commit, or edited by hand, therefore fails rather
+than landing as something nobody tested, and the failure names the file. The whole sequence also runs under one
 time budget short of the function's own limit, so a slow GitHub cannot leave a record
 claimed with no settle.
 

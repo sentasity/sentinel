@@ -12,7 +12,7 @@ flowchart LR
     Receiver -->|fires| Routine[Unattended session]
     Routine -->|findings| Receiver
     Receiver -->|grants| Routine
-    Routine -->|fix files| Receiver
+    Routine -->|fix patch| Receiver
     Receiver -->|pull request| Repo[Target repo]
 ```
 
@@ -89,11 +89,13 @@ that is already running. The response body is the only channel there is.
 
 The session then checks out the base branch, confirms the defect is still there and that
 the branch has not moved in ways that invalidate the diagnosis, writes the fix and a
-test that fails without it, and sends the changed files back to the receiver as whole
-text, with the base commit and the pull request title and body. The receiver checks
-every path against the same policy the gate uses, mints a token scoped to one repository
-and two permissions, builds one commit on a new branch through GitHub's API, opens the
-pull request as the App, and posts the link into the Teams thread. The commit message
+test that fails without it, and sends the change back to the receiver as a patch
+against the base commit, with the pull request title and body. A patch is as large as
+the change, not as the files it touches, so a fix to a large generated file still
+travels. The receiver checks every path against the same policy the gate uses, mints a
+token scoped to one repository and two permissions, applies the patch to the base
+commit exactly or not at all, builds one commit on a new branch through GitHub's API,
+opens the pull request as the App, and posts the link into the Teams thread. The commit message
 and the pull request body both end with a `Fixes <short id>` line naming the issue the
 grant was for, so Sentry resolves that issue in the first release that ships the merge.
 A grant that never reports is failed into the thread once its hour is up.

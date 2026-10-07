@@ -149,7 +149,7 @@ AUTOFIX_RESPONSE_FIELDS = ("repo", "base_branch", "callback_url", "grants")
 
 GRANT_FIELDS = ("issue_id", "short_id", "dispatch_id", "callback_token", "cited_files")
 
-FIX_READY_FIELDS = ("dispatch_id", "base_sha", "files", "path", "content", "title", "body")
+FIX_READY_FIELDS = ("dispatch_id", "base_sha", "patch", "title", "body")
 
 
 def test_the_fix_phase_names_every_field_the_response_carries():
@@ -184,10 +184,37 @@ def test_the_fix_phase_names_the_receiver_caps():
     before sending. Derived from the constants so the two cannot drift."""
     body = " ".join(fix_phase().split())
 
+    mb = 1024 * 1024
     assert f"more than {autofix.FIX_FILE_LIMIT} changed files" in body
-    assert f"more than {autofix.FIX_CONTENT_BYTES_LIMIT // 1024} KB" in body
+    assert f"a patch over {autofix.FIX_PATCH_BYTES_LIMIT // mb} MB" in body
+    assert f"over {autofix.FIX_REWRITE_BYTES_LIMIT // mb} MB in total" in body
     assert f"a title over {autofix.FIX_TITLE_LIMIT} characters" in body
     assert f"a body over {autofix.FIX_BODY_LIMIT:,} characters" in body
+
+
+def test_the_fix_phase_sends_a_patch_made_the_way_the_receiver_reads_it():
+    """The receiver applies the patch to base_sha exactly and checks every
+    resulting blob, so the patch has to be git's own output: new files
+    included (git diff omits untracked files), binary changes as binary
+    hunks, nothing edited by hand. And it must not fall back to whole
+    files, which cannot carry a fix to a large file."""
+    body = " ".join(fix_phase().split())
+
+    assert "git add -N" in body
+    assert "git diff --binary --full-index -D <base_sha>" in body
+    assert "byte for byte" in body
+    assert "base64" in body
+    assert "--data-binary @" in body
+    assert '"files": [' not in body
+
+
+def test_the_fix_phase_no_longer_declines_deletes_and_renames():
+    """A patch carries deletions and renames, so declining them now turns
+    away fixes the receiver can land. Symlinks and submodules it refuses."""
+    body = " ".join(fix_phase().split())
+
+    assert "needs a file deleted or renamed" not in body
+    assert "symlink" in body and "submodule" in body
 
 
 def test_the_fix_phase_checks_the_callback_url_against_the_verified_origin():

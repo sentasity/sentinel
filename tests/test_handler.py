@@ -12,6 +12,7 @@ import pytest
 
 from receiver import handler, observability
 from receiver.config import ReceiverConfig
+from receiver.github_app import PullRequestOutcome
 from receiver.store import BatchState
 from tests.conftest import load_fixture
 
@@ -1095,7 +1096,7 @@ def test_a_fix_ready_callback_claims_then_opens_then_replies_with_the_link(
         # The claim must precede the first GitHub call, or the sweep could
         # expire the record while the pull request is being built.
         assert store.advance_autofix.call_args.args == ("d-1", "dispatched", "opening")
-        return url
+        return PullRequestOutcome(url=url)
 
     github_client.return_value.open_fix_pr.side_effect = open_after_claim
 
@@ -1114,6 +1115,7 @@ def test_a_fix_ready_callback_claims_then_opens_then_replies_with_the_link(
         "base_branch": cfg.autofix_base_branch,
         "branch": "autofix/checkout-4b2-d-1",
         "files": [("src/cart.py", "total = 0\n")],
+        "changes": [],
         "title": FIX_TITLE,
         "body": f"{FIX_BODY}\n\nFixes CHECKOUT-4B2",
         "commit_message": f"{FIX_TITLE}\n\nFixes CHECKOUT-4B2",
@@ -1212,7 +1214,7 @@ def test_a_pull_request_that_did_not_open_settles_failed_and_says_so(
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
-    github_client.return_value.open_fix_pr.return_value = None
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome()
 
     with caplog.at_level(logging.ERROR):
         response = route(fix_ready_event())
@@ -1227,6 +1229,105 @@ def test_a_pull_request_that_did_not_open_settles_failed_and_says_so(
     reply = bot_client.return_value.reply_in_thread.call_args.args[2]
     assert reply == "Autofix failed. No pull request was opened."
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+PATCH = (
+    b"diff --git a/src/cart.py b/src/cart.py\n"
+    b"index 5f1d6a1..2e3a1b0 100644\n"
+    b"--- a/src/cart.py\n"
+    b"+++ b/src/cart.py\n"
+    b"@@ -1 +1 @@\n"
+    b"-total = None\n"
+    b"+total = 0\n"
+)
+
+
+def patch_ready_event(**overrides):
+    fields = {"files": None, "patch": base64.b64encode(PATCH).decode()}
+    fields.update(overrides)
+    return fix_ready_event(**fields)
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_patch_reaches_github_as_parsed_changes(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    cfg = autofix_config(tmp_path)
+    config.return_value = cfg
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    url = f"https://github.com/{cfg.target_repo}/pull/42"
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(url=url)
+
+    response = route(patch_ready_event())
+
+    assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
+    kwargs = github_client.return_value.open_fix_pr.call_args.kwargs
+    assert kwargs["files"] == []
+    assert [(c.old_path, c.new_path) for c in kwargs["changes"]] == [
+        ("src/cart.py", "src/cart.py")
+    ]
+    assert kwargs["body"] == f"{FIX_BODY}\n\nFixes CHECKOUT-4B2"
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_patch_that_does_not_apply_settles_failed_with_its_reason(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    """The reason is the one thing the session can act on, and the one thing
+    an operator reading the record needs: which file, and why."""
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+    reason = "hunk 1 for src/cart.py does not match base_sha at line 1"
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(failure=reason)
+
+    with caplog.at_level(logging.ERROR):
+        response = route(patch_ready_event())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"status": "failed", "reason": reason}
+    assert store.advance_autofix.call_args == call(
+        "d-1", "opening", "failed", extra={"failure": reason}
+    )
+    reply = bot_client.return_value.reply_in_thread.call_args.args[2]
+    assert reply == "Autofix failed. No pull request was opened."
+    assert reason in caplog.text
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"files": [{"path": "src/cart.py", "content": ""}]},
+        {"patch": None},
+    ],
+    ids=["both", "neither"],
+)
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_fix_must_carry_exactly_one_form(
+    config, alert_store, bot_client, github_client, tmp_path, overrides
+):
+    config.return_value = autofix_config(tmp_path)
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+
+    response = route(patch_ready_event(**overrides))
+
+    assert response["statusCode"] == 400
+    assert json.loads(response["body"])["reason"] == "send exactly one of files or patch"
+    github_client.return_value.open_fix_pr.assert_not_called()
 
 
 @patch("receiver.handler.github_client")
@@ -1286,7 +1387,7 @@ def test_the_pull_request_url_is_encoded_for_the_thread_and_raw_for_the_session(
     store.get_autofix_dispatch.return_value = dispatch_record()
     store.advance_autofix.return_value = True
     url = "https://github.com/acme-tools/my_repo/pull/7"
-    github_client.return_value.open_fix_pr.return_value = url
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(url=url)
 
     response = route(fix_ready_event())
 
@@ -1326,7 +1427,7 @@ def test_a_settle_that_raises_after_the_pull_request_exists_retries_and_reports_
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     url = "https://github.com/acme-tools/checkout/pull/42"
-    github_client.return_value.open_fix_pr.return_value = url
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(url=url)
     store.advance_autofix.side_effect = [True, RuntimeError("throttled"), True]
 
     with caplog.at_level(logging.ERROR):
@@ -1358,7 +1459,7 @@ def test_a_settle_that_keeps_raising_still_tells_the_truth_about_the_pull_reques
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     url = "https://github.com/acme-tools/checkout/pull/42"
-    github_client.return_value.open_fix_pr.return_value = url
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(url=url)
     store.advance_autofix.side_effect = [True, RuntimeError("down"), RuntimeError("down")]
 
     with caplog.at_level(logging.ERROR):
@@ -1389,7 +1490,7 @@ def test_a_chat_transport_failure_after_the_pull_request_exists_never_records_fa
     store = alert_store.return_value
     store.get_autofix_dispatch.return_value = dispatch_record()
     url = "https://github.com/acme-tools/checkout/pull/42"
-    github_client.return_value.open_fix_pr.return_value = url
+    github_client.return_value.open_fix_pr.return_value = PullRequestOutcome(url=url)
     store.advance_autofix.side_effect = [True, RuntimeError("down"), RuntimeError("down")]
     bot_client.return_value.reply_in_thread.side_effect = ConnectionError("chat down")
 
