@@ -16,6 +16,12 @@ def lines(count: int, *, changed: dict[int, str] | None = None) -> str:
     return "".join(changed.get(i, f"line {i}") + "\n" for i in range(count))
 
 
+def binary(size: int, seed: int = 0) -> bytes:
+    """Content git treats as binary, which it decides by finding a NUL
+    byte. Random bytes can lack one and arrive as a text hunk instead."""
+    return b"\0" + bytes((i * 131 + seed * 7) % 256 for i in range(size - 1))
+
+
 def parse(data: bytes):
     return parse_patch(data, max_binary_bytes=LIMIT)
 
@@ -324,7 +330,7 @@ def test_a_malformed_patch_is_refused_with_its_rule(data, rule):
 def test_a_binary_hunk_larger_than_the_limit_is_refused_before_inflating(repo):
     repo.write("src/cart.py", "x = 1\n")
     base = repo.commit()
-    repo.write("assets/big.bin", os.urandom(4096))
+    repo.write("assets/big.bin", binary(4096))
 
     with pytest.raises(PatchError, match="larger than"):
         parse_patch(repo.patch(base), max_binary_bytes=1024)
@@ -335,7 +341,7 @@ def test_the_binary_limit_is_a_budget_for_the_whole_patch(repo):
     repo.write("src/cart.py", "x = 1\n")
     base = repo.commit()
     for i in range(3):
-        repo.write(f"assets/{i}.bin", os.urandom(600))
+        repo.write(f"assets/{i}.bin", binary(600, seed=i))
 
     parse_patch(repo.patch(base), max_binary_bytes=1800)
     with pytest.raises(PatchError, match="1700 bytes"):
