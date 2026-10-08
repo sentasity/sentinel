@@ -118,8 +118,8 @@ Steps:
    `short_id`, `dispatch_id`, `callback_token`, and `cited_files`.
 
    You hold no GitHub credential in this phase and need none. The receiver opens
-   the pull request: you write the fix here, run its test, and send the changed
-   files back through `callback_url` in step f. Never push, open a PR, or
+   the pull request: you write the fix here, run its test, and send the change
+   back as a patch through `callback_url` in step f. Never push, open a PR, or
    comment on GitHub through any other identity, connector, stored credential,
    cached login, `gh`, or GitHub MCP server, even where one is available in this
    session: they authenticate as the identity that configured them, and work
@@ -161,14 +161,17 @@ Steps:
    c. If the true fix is materially larger than your findings describe (new
       dependencies, schema changes, multi-subsystem edits), report
       `declined_in_session` through f and stop this grant. The same if the
-      fix would touch anything under .github/, or needs a file deleted or
-      renamed: report `declined_in_session` through f and stop this grant,
-      because the receiver writes whole files at the paths you send and
-      nothing else, so a fix that reshapes the file layout cannot travel.
+      fix would touch anything under .github/, or would create, change,
+      move, or remove a symlink or a submodule: report
+      `declined_in_session` through f and stop this grant, because the
+      receiver refuses them. Deleting, renaming, and changing the
+      executable bit of regular files are fine.
       The same if the finished fix would exceed what the receiver accepts:
-      more than 20 changed files, more than 512 KB of file contents in
-      total, a title over 200 characters, or a body over 40,000 characters:
-      report `declined_in_session` through f and stop this grant.
+      more than 20 changed files, a patch over 4 MB (the size of the git
+      diff output from f), existing files it modifies that come to over
+      48 MB in total (the receiver rewrites each whole), a title over 200
+      characters, or a body over 40,000 characters: report
+      `declined_in_session` through f and stop this grant.
    d. Write the fix, mirroring the codebase's existing conventions, and a
       test that fails without the fix and passes with it, mirroring an
       existing test pattern. Run the narrowest relevant test command and
@@ -200,14 +203,24 @@ Steps:
       `fix_ready` and the JSON body is
       {"dispatch_id": "<this grant's dispatch_id>", "status": "fix_ready",
        "base_sha": "<the commit recorded in a>",
-       "files": [{"path": "<repository-relative path>",
-                  "content": "<the whole file as text>"}, ...],
+       "patch": "<the patch, base64-encoded>",
        "title": "<the title from e>", "body": "<the body from e>"}.
-      `files` carries every file the fix created or changed, each entry's
-      `path` relative to the repository root and its `content` the whole
-      file, and nothing else: an unchanged file wastes a call, while a
-      changed file left out ships a broken fix that the test you ran cannot
-      catch. `base_sha`, `title`, and `body` are the values from a and e.
+      Make the patch from the workspace as d left it. First run
+      git add -N on every file the fix created, since git diff leaves out
+      files it does not track. Then check that git diff --stat <base_sha>
+      lists every file the fix created, changed, deleted, or renamed, and
+      nothing else: revert a file a test run rewrote and remove build
+      output, because everything listed ships, while a changed file left
+      out ships a broken fix that the test you ran cannot catch. The patch
+      is the output of git diff --binary --full-index -D <base_sha>, byte
+      for byte. `patch` is that output base64-encoded with the standard
+      alphabet on one line (for example piped through base64 -w0). Never
+      edit the patch by hand: the receiver applies it to `base_sha`
+      exactly and refuses it if any hunk, or any file it produces, differs
+      from what you had. `base_sha`, `title`, and `body` are the values
+      from a and e. Write the JSON body to a file and send it with
+      curl --data-binary @<that file>: a large patch overflows a single
+      command-line argument.
       For any other outcome the status is the one named by the step that
       stopped this grant and the body is
       {"dispatch_id": "<this grant's dispatch_id>", "status": "<status>"}.

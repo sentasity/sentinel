@@ -98,9 +98,20 @@ Also unmarked: a callback arriving for a dispatch the sweep already settled logs
 
 ### `AUTOFIX_FAILED ... rejected fix payload`
 
-The session sent a `fix_ready` body that broke one of the receiver's rules, and the line names the rule: a path under `.github/` or matching `autofix.exclude_paths`, a path that is not plain and repository-relative, more than twenty files, more than 512 KB of content, a title that is empty or wraps, or a base commit that is not a full SHA. The record is settled as failed, the thread has been told, and no GitHub call was made.
+The session sent a `fix_ready` body that broke one of the receiver's rules, and the line names the rule: both or neither of `files` and `patch`, a path under `.github/` or matching `autofix.exclude_paths` (on either side of a rename), a path that is not plain and repository-relative, more than twenty files, a symlink or submodule mode, more than 512 KB of whole-file content or a patch over 4 MB, a patch that is not plain `git diff` output (the line says where it stopped reading), a title that is empty or wraps, or a base commit that is not a full SHA. The record is settled as failed, the thread has been told, and no GitHub call was made.
 
 The one worth acting on is a path rejection, because it means the session decided a fix needed a file the operator ruled out. Read the transcript to see whether the exclusion is right or the finding was steered; either way the pull request did not happen, which is the design.
+
+### `AUTOFIX_FAILED ... at base_sha`
+
+The payload passed and the record was claimed, but the base tree refused the fix, and the line names the file and the reason. It is the session's fix that is wrong here, not the GitHub App, so nothing on the App checklist applies:
+
+- `differs at base_sha from the version the patch was made against`, `does not match base_sha at line N`, or `does not reproduce blob ...`: the patch was not taken against the base commit it names. The session diffed against some other commit, or edited the patch by hand. The receiver applies hunks only where they say and checks every result against git's own blob id, so this never lands as a near miss.
+- `does not exist at base_sha` or `already exists at base_sha`: the same mismatch, seen as a path the patch edits that is not there, or creates that already is.
+- `is a symlink at base_sha`, `is a submodule at base_sha`, `is a directory at base_sha`, or `runs through ... which is not a directory`: the fix would replace or write through something that is not a regular file. A pure rename carries no mode in a patch, so only the base tree can catch it.
+- `more than the ... bytes the receiver rewrites`: the files the patch modifies are larger in total than the receiver will read and upload in one invocation. GitHub builds blobs only from whole content, so a small change to a large file still costs the file's full size here.
+
+No branch was created for any of these. The session's response carried the same reason, and the transcript shows how it made the patch.
 
 ### `AUTOFIX_FAILED ... pull request not opened`
 

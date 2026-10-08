@@ -528,7 +528,8 @@ def safe_callback_url(value: str, *, field: str) -> str:
 
 
 # What the record and the session are told when the GitHub sequence did not
-# produce a pull request. The App client logged the underlying error.
+# produce a pull request and the fix itself was not the reason. The App
+# client logged the underlying error.
 OPENING_FAILURE = "pull request not opened"
 
 
@@ -597,20 +598,26 @@ def open_fix(record: dict, body: dict) -> dict:
         LOG.info("autofix fix_ready for %s already settled; ignoring", record["dispatch_id"])
         return respond_json(200, settled_outcome(record["dispatch_id"]))
 
-    url = github_client().open_fix_pr(
+    outcome = github_client().open_fix_pr(
         repo=cfg.target_repo,
         base_sha=payload.base_sha,
         base_branch=cfg.autofix_base_branch,
         branch=autofix.fix_branch(short_id, record["dispatch_id"]),
         files=list(payload.files),
+        changes=list(payload.changes),
         title=payload.title,
         body=autofix.with_fixes_line(payload.body, short_id),
         commit_message=autofix.with_fixes_line(payload.title, short_id),
     )
+    url = outcome.url
     if not url:
-        LOG.error("%s %s %s", AUTOFIX_FAILED_MARKER, short_id, OPENING_FAILURE)
-        settle_failed(record, OPENING_FAILURE, expected="opening")
-        return respond_json(200, {"status": "failed", "reason": OPENING_FAILURE})
+        # A fix the base tree refused (a patch that does not apply, a path
+        # that is a symlink there) names its own reason; a GitHub failure
+        # has only the App client's log line.
+        reason = outcome.failure or OPENING_FAILURE
+        LOG.error("%s %s %s", AUTOFIX_FAILED_MARKER, short_id, reason)
+        settle_failed(record, reason, expected="opening")
+        return respond_json(200, {"status": "failed", "reason": reason})
 
     # Stored raw, so a replay reads back the URL GitHub gave. Encoded only
     # for the thread, where markdown-significant characters would render

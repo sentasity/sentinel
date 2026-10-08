@@ -35,8 +35,8 @@ today.
    findings document back, which the receiver renders as a threaded reply.
 4. **Autofix.** A finding whose confidence and fixability both clear their configured
    minimums earns a grant, returned in the reply to that findings document. The same
-   session writes the fix and its test and sends the changed files back; the receiver
-   opens the pull request as the GitHub App.
+   session writes the fix and its test and sends the change back as a patch; the
+   receiver opens the pull request as the GitHub App.
 
 See [How it works](/sentinel/how-it-works/) for the same pipeline with its gates and
 failure handling, or [See it work](/sentinel/evidence/) for the artifacts it produces.

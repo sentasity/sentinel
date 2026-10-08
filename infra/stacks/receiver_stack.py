@@ -111,10 +111,18 @@ class ReceiverStack(Stack):
             function_name="sentinel-receiver",
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="receiver.handler.lambda_handler",
-            memory_size=256,
+            # A patch-form fix makes the receiver read each base file the
+            # patch modifies and upload the result whole, since GitHub builds
+            # blobs only from full content. A large generated file passes
+            # through memory several times over (the base bytes, its lines,
+            # the result, its base64), so memory is sized for the rewrite
+            # cap in receiver.autofix rather than for a webhook. It also
+            # buys CPU, which Lambda scales with memory.
+            memory_size=1024,
             # The callback route runs the whole GitHub sequence that opens an
-            # autofix pull request inside one invocation: a token mint, six
-            # fixed Git Data API calls, and one blob call per file, twenty at most.
+            # autofix pull request inside one invocation: a token mint, a few
+            # fixed Git Data API calls, and a base-blob read and a blob upload
+            # per changed file, twenty files at most.
             timeout=Duration.seconds(60),
             log_group=self.log_group,
             environment={

@@ -1,6 +1,8 @@
 """The autofix gate: ordered checks, disposition lines, completion replies."""
 
+import base64
 import re
+import textwrap
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -16,6 +18,7 @@ from receiver.autofix import (
 from receiver.config import load_config
 from receiver.findings import parse_findings
 from tests.conftest import load_fixture
+from tests.gitrepo import Repo
 from tests.test_config import AUTOFIX, VALID, write
 
 BATCH = "6f1d2c88-0a2b-4f77-9d31-8f0d6a7c1e42"
@@ -322,3 +325,154 @@ def test_the_fixes_line_stands_alone_on_an_empty_body():
 
 def test_no_short_id_leaves_the_text_untouched():
     assert autofix.with_fixes_line("Root cause.", "") == "Root cause."
+
+
+# --- Patch mode ------------------------------------------------------------
+
+
+def encoded(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+def patch_body(data: bytes, **overrides) -> dict:
+    body = fix_body(patch=encoded(data), **overrides)
+    del body["files"]
+    return body
+
+
+def made_patch(tmp_path, change) -> bytes:
+    """A real patch: commit a small tree, let `change` edit it, diff."""
+    repo = Repo(tmp_path / "repo")
+    repo.write("src/cart.py", "total = None\n")
+    repo.write("src/legacy.py", "old = 1\n")
+    base = repo.commit()
+    change(repo)
+    return repo.patch(base)
+
+
+def test_a_patch_payload_parses_into_changes(tmp_path):
+    def edit(repo):
+        repo.write("src/cart.py", "total = 0\n")
+        repo.write("tests/test_cart.py", "def test_total(): ...\n")
+
+    payload = autofix.parse_fix_payload(patch_body(made_patch(tmp_path, edit)))
+
+    assert payload.files == ()
+    assert [change.path for change in payload.changes] == ["src/cart.py", "tests/test_cart.py"]
+    assert payload.base_sha == SHA
+    assert payload.title.startswith("Autofix CHECKOUT-4B2")
+
+
+def test_a_patch_may_delete_and_rename(tmp_path):
+    def reshape(repo):
+        repo.remove("src/legacy.py")
+        repo.move("src/cart.py", "src/basket.py")
+
+    payload = autofix.parse_fix_payload(patch_body(made_patch(tmp_path, reshape)))
+
+    assert {(c.old_path, c.new_path) for c in payload.changes} == {
+        ("src/legacy.py", None),
+        ("src/cart.py", "src/basket.py"),
+    }
+
+
+def test_line_wrapped_base64_is_accepted(tmp_path):
+    data = made_patch(tmp_path, lambda repo: repo.write("src/cart.py", "total = 0\n"))
+    wrapped = "\n".join(textwrap.wrap(encoded(data), 76)) + "\n"
+
+    payload = autofix.parse_fix_payload({**patch_body(data), "patch": wrapped})
+
+    assert payload.changes[0].path == "src/cart.py"
+
+
+def hand_patch(path: str, *, mode: str = "100644") -> bytes:
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"new file mode {mode}\n"
+        "index 0000000..2e65efe\n"
+        "--- /dev/null\n"
+        f"+++ b/{path}\n"
+        "@@ -0,0 +1 @@\n"
+        "+a\n"
+    ).encode()
+
+
+SUBMODULE = (
+    b"diff --git a/vendor/lib b/vendor/lib\n"
+    b"index 1111111..2222222 160000\n"
+    b"--- a/vendor/lib\n"
+    b"+++ b/vendor/lib\n"
+    b"@@ -1 +1 @@\n"
+    b"-Subproject commit 1111111111111111111111111111111111111111\n"
+    b"+Subproject commit 2222222222222222222222222222222222222222\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "rule"),
+    [
+        (fix_body(patch="x"), "exactly one of files or patch"),
+        ({k: v for k, v in fix_body().items() if k != "files"}, "exactly one of files or patch"),
+        (fix_body(files=None), "exactly one of files or patch"),
+        (patch_body(b"") | {"patch": 42}, "patch must be a base64 string"),
+        (patch_body(b"") | {"patch": "not base64!"}, "patch is not base64"),
+        (patch_body(b""), "patch is empty"),
+        (patch_body(b"diff --git a/x b/x\nGARBAGE\n"), "unrecognized header line"),
+        (patch_body(b"x" * (4 * 1024 * 1024 + 1)), "patch exceeds 4194304 bytes"),
+        (patch_body(hand_patch(".github/workflows/ci.yml")), "path .github/workflows/ci.yml is excluded"),
+        (patch_body(hand_patch("src/../.env")), "dot segment"),
+        (patch_body(hand_patch("/etc/passwd")), "not a plain repository-relative path"),
+        (patch_body(hand_patch("link", mode="120000")), "path link is a symlink"),
+        (patch_body(SUBMODULE), "path vendor/lib is a submodule"),
+        (patch_body(hand_patch("src/cart.py", mode="100664")), "path src/cart.py has mode 100664"),
+        (
+            patch_body(b"".join(hand_patch(f"src/f{i}.py") for i in range(21))),
+            "more than 20 files",
+        ),
+        (
+            patch_body(hand_patch("src/cart.py") + hand_patch("src/cart.py")),
+            "listed twice",
+        ),
+        (patch_body(hand_patch("src/cart.py"), title=""), "title must be one non-empty line"),
+        (patch_body(hand_patch("src/cart.py"), base_sha="abc"), "full lowercase commit sha"),
+    ],
+)
+def test_each_patch_rule_rejects_with_its_own_reason(body, rule):
+    with pytest.raises(autofix.InvalidFixPayload, match=re.escape(rule)):
+        autofix.parse_fix_payload(body)
+
+
+def test_a_rename_is_checked_on_both_sides(tmp_path):
+    def into_infra(repo):
+        repo.move("src/cart.py", "infra/cart.py")
+
+    def out_of_infra(repo):
+        repo.write("infra/stack.py", "x = 1\n")
+
+    with pytest.raises(autofix.InvalidFixPayload, match="path infra/cart.py is excluded"):
+        autofix.parse_fix_payload(
+            patch_body(made_patch(tmp_path / "a", into_infra)), exclude_paths=("infra/**",)
+        )
+
+    repo = Repo(tmp_path / "b")
+    repo.write("infra/stack.py", "x = 1\n")
+    base = repo.commit()
+    repo.move("infra/stack.py", "src/stack.py")
+    with pytest.raises(autofix.InvalidFixPayload, match="path infra/stack.py is excluded"):
+        autofix.parse_fix_payload(
+            patch_body(repo.patch(base)), exclude_paths=("infra/**",)
+        )
+
+
+def test_both_forms_share_one_path_policy():
+    """A rule added to one form and not the other is a bypass: the session
+    picks whichever form lets the path through."""
+    for path, rule in (
+        (".github/workflows/ci.yml", "is excluded"),
+        ("src/../.env", "dot segment"),
+        ("/etc/passwd", "not a plain repository-relative path"),
+    ):
+        with pytest.raises(autofix.InvalidFixPayload, match=rule):
+            autofix.parse_fix_payload(fix_body(files=[{"path": path, "content": ""}]))
+        with pytest.raises(autofix.InvalidFixPayload, match=rule):
+            autofix.parse_fix_payload(patch_body(hand_patch(path)))
