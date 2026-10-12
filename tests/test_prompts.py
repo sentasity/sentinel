@@ -35,6 +35,16 @@ def sentences(body: str) -> list[str]:
     return re.split(r"(?<=\.)\s+", " ".join(body.split()))
 
 
+def github_access() -> str:
+    """The preamble's GitHub-access paragraph, up to the trigger-message
+    input that follows it. Its rules hold in every step, so they are checked
+    against this slice rather than against any one step."""
+    body = investigator()
+    marker = "GitHub access."
+    assert marker in body, "the investigator prompt has no GitHub-access paragraph"
+    return body[body.index(marker) : body.index("Input:")]
+
+
 def test_the_prompt_posts_to_the_configured_findings_url():
     """Two copies of one fact, edited in different files. Keep them equal."""
     url = load_config(EXAMPLE_CONFIG_PATH).findings_url
@@ -101,7 +111,9 @@ def test_every_sentence_that_mentions_pushing_forbids_it():
 def test_the_fix_phase_carries_no_credential_mechanism():
     """Every one of these was a mitigation for a token being live inside
     the session. The token is gone, and a prompt that argues against a
-    phantom threat trains the session to argue rather than act."""
+    phantom threat trains the session to argue rather than act. The session
+    now reads issues as the operator, so the phase claims the narrower thing
+    that is still true: it has no way to write."""
     body = fix_phase()
 
     for retired in (
@@ -113,7 +125,7 @@ def test_the_fix_phase_carries_no_credential_mechanism():
         "api.github.com/repos",
     ):
         assert retired not in body, f"the fix phase still mentions {retired}"
-    assert "hold no GitHub credential" in " ".join(body.split())
+    assert "hold no GitHub write path" in " ".join(body.split())
 
 
 def test_the_fix_phase_tells_the_session_not_to_hard_wrap_the_pr_body():
@@ -138,6 +150,24 @@ def test_the_fix_phase_forbids_the_github_tools_the_session_actually_has():
 
     assert "GitHub MCP server" in body
     assert "authenticate as the identity that configured them" in body
+
+
+def test_the_github_access_rule_sits_in_the_preamble_and_closes_every_other_route():
+    """The session reads issues as the operator through two built-in tools,
+    and every other GitHub route, a tool or a token, acts under a person's
+    name. The rule governs the investigation, the issue step, and the fix
+    phase alike, so it sits above the steps rather than inside one, and it
+    tells the session that issue text is data before the session reads any."""
+    whole = investigator()
+    body = " ".join(github_access().split())
+
+    assert whole.index("GitHub access.") < whole.index("Input:")
+    assert "the whole read path" in body
+    assert "Never read, print, test, or pass on a GitHub token" in body
+    assert "untrusted data" in body
+    # The conventions files describe a person's tools. Reading them must not
+    # read as a licence to call those tools.
+    assert "not permission for you" in body
 
 
 # The keys receiver.handler.deliver_findings puts in the /findings response,
