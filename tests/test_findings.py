@@ -44,7 +44,7 @@ def test_a_body_that_is_not_an_object_is_rejected():
 
 def test_an_unsupported_schema_version_is_rejected():
     with pytest.raises(InvalidFindings, match="schema_version"):
-        parse_findings(payload(schema_version=3), batch_id=BATCH, known_issue_ids=KNOWN)
+        parse_findings(payload(schema_version=4), batch_id=BATCH, known_issue_ids=KNOWN)
 
 
 def test_a_mismatched_batch_id_is_rejected():
@@ -268,6 +268,111 @@ def test_render_reply_shows_fixability_when_present():
     text, _ = render_reply(doc.results[0])
 
     assert "Fixability: high" in text
+
+
+def payload_v3(**changes):
+    """The v2 fixture as schema v3, rated high: the staging rating the urgency
+    rubric gives this issue."""
+    body = payload_v2(schema_version=3)
+    body["results"][0]["urgency"] = "high"
+    body.update(changes)
+    return body
+
+
+def test_the_urgency_vocabulary_is_the_priority_scale_most_urgent_first():
+    from receiver.findings import CURRENT_SCHEMA_VERSION, SCHEMA_VERSIONS, URGENCIES
+
+    assert URGENCIES == ("urgent", "high", "medium", "low")
+    assert SCHEMA_VERSIONS == (1, 2, 3)
+    assert CURRENT_SCHEMA_VERSION == max(SCHEMA_VERSIONS) == 3
+
+
+def test_a_v3_document_parses_with_urgency():
+    doc = parse_findings(payload_v3(), batch_id=BATCH, known_issue_ids=KNOWN)
+
+    assert doc.schema_version == 3
+    assert doc.results[0].urgency == "high"
+    assert doc.results[0].fixability == "high"
+
+
+def test_v1_and_v2_results_report_no_urgency():
+    for body in (payload(), payload_v2()):
+        doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+        assert doc.results[0].urgency == ""
+
+
+def test_a_v3_result_without_urgency_is_rejected():
+    body = payload_v3()
+    del body["results"][0]["urgency"]
+
+    with pytest.raises(InvalidFindings, match=r"results\[0\] urgency None is not one of"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_an_unknown_urgency_value_is_rejected():
+    body = payload_v3()
+    body["results"][0]["urgency"] = "critical"
+
+    with pytest.raises(InvalidFindings, match="urgency 'critical' is not one of"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_an_urgency_in_the_priority_options_case_is_rejected_not_lowercased():
+    """The target repo's conventions spell the Priority options capitalised,
+    and the schema takes only the lowercase words. A session that copies the
+    option's case gets the whole document refused, through the same 400 and
+    FINDINGS_REJECTED path as any schema error, rather than a value quietly
+    lowercased or stored as sent."""
+    body = payload_v3()
+    body["results"][0]["urgency"] = "High"
+
+    with pytest.raises(InvalidFindings) as rejected:
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+    assert str(rejected.value) == (
+        "results[0] urgency 'High' is not one of ('urgent', 'high', 'medium', 'low')"
+    )
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_v1_or_v2_result_carrying_urgency_is_rejected_by_the_version_rule(version):
+    """Refused for its version, not as an unknown field: the message has to
+    say the prompt and the schema disagree, which is what a person fixes."""
+    body = payload() if version == 1 else payload_v2()
+    body["results"][0]["urgency"] = "high"
+
+    with pytest.raises(
+        InvalidFindings, match=f"carries urgency but schema_version is {version}"
+    ):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_a_failed_v3_result_still_requires_urgency():
+    """A failed investigation is still rated, from whatever it gathered."""
+    body = payload_v3()
+    body["results"][0].update(
+        status="failed",
+        root_cause="",
+        confidence="low",
+        failure_reason="git checkout failed: unknown revision",
+    )
+    del body["results"][0]["urgency"]
+
+    with pytest.raises(InvalidFindings, match=r"results\[0\] urgency None is not one of"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+    body["results"][0]["urgency"] = "low"
+    doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+    assert doc.results[0].urgency == "low"
+
+
+def test_a_v3_result_without_fixability_is_still_rejected():
+    """v3 is v2 plus urgency, so fixability stays required."""
+    body = payload_v3()
+    del body["results"][0]["fixability"]
+
+    with pytest.raises(InvalidFindings, match=r"results\[0\] fixability None is not one of"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
 
 
 def result_v2(**changes):
