@@ -666,16 +666,23 @@ def test_an_op_that_died_mid_filing_gets_the_may_not_have_finished_notice():
 
 
 def test_a_failed_search_is_named_in_the_notice():
+    """In the thread's own words: the issue-body line says Sentinel filed
+    the issue, which contradicts a notice that nothing was filed."""
     from receiver.issues import SEARCH_UNAVAILABLE_LINE
+    from receiver.sweep import TRACKING_SEARCH_UNAVAILABLE_NOTICE
 
     store = tracking_store(expired_grant(search_unavailable=True))
     bot = MagicMock()
 
     expire_tracking(store=store, bot=bot)
 
-    assert bot.reply_in_thread.call_args.args[2] == (
-        f"{TRACKING_UNTRACKED_NOTICE}\n\n{SEARCH_UNAVAILABLE_LINE}"
+    text = bot.reply_in_thread.call_args.args[2]
+    assert text == f"{TRACKING_UNTRACKED_NOTICE}\n\n{TRACKING_SEARCH_UNAVAILABLE_NOTICE}"
+    assert TRACKING_SEARCH_UNAVAILABLE_NOTICE == (
+        "The duplicate search was also unavailable for this alert, so an existing "
+        "issue may already describe it."
     )
+    assert SEARCH_UNAVAILABLE_LINE not in text
 
 
 def test_a_grant_a_late_op_settled_first_gets_no_notice():

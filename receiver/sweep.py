@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 
 from receiver.autofix import SESSION_REPORTED_FAILURE
 from receiver.findings import reply_summary
-from receiver.issues import SEARCH_UNAVAILABLE_LINE
 from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
@@ -383,6 +382,13 @@ TRACKING_UNFINISHED_NOTICE = (
     "⚠️ Sentinel may not have finished filing this alert in GitHub; check the "
     "repository for an issue before filing one."
 )
+# Follows either notice when the session's duplicate search had failed. The
+# issue-body line for that case says Sentinel filed the issue, which would
+# contradict a notice that nothing was filed, so the thread gets its own.
+TRACKING_SEARCH_UNAVAILABLE_NOTICE = (
+    "The duplicate search was also unavailable for this alert, so an existing "
+    "issue may already describe it."
+)
 
 # Dispatch outcomes that end a granted result without a pull request and
 # that the session files itself, so a grant still open at expiry is a gap.
@@ -453,7 +459,7 @@ def expire_tracking(*, store, bot) -> int:
         )
         text = TRACKING_UNFINISHED_NOTICE if unfinished else TRACKING_UNTRACKED_NOTICE
         if g.get("search_unavailable"):
-            text = f"{text}\n\n{SEARCH_UNAVAILABLE_LINE}"
+            text = f"{text}\n\n{TRACKING_SEARCH_UNAVAILABLE_NOTICE}"
         try:
             bot.reply_in_thread(g["conversation_id"], g["message_id"], text)
             noticed += 1
