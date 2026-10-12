@@ -323,7 +323,7 @@ class FakeGitHub:
             entries.append(entry)
         return entries
 
-    def get(self, url, headers=None, timeout=None, params=None):
+    def get(self, url, headers=None, timeout=None, params=None, allow_redirects=True):
         self.calls.append(("get", url))
         tree_sha = self.repo.git("rev-parse", f"{self.base}^{{tree}}").decode().strip()
         if url.endswith("/installation"):
@@ -347,7 +347,7 @@ class FakeGitHub:
             return got
         raise AssertionError(f"unexpected GET {url}")
 
-    def post(self, url, headers=None, timeout=None, json=None):
+    def post(self, url, headers=None, timeout=None, json=None, allow_redirects=True):
         self.calls.append(("post", url))
         if url.endswith("/access_tokens"):
             return response(201, MINT_BODY)
@@ -697,6 +697,22 @@ def test_a_mint_the_installation_refuses_returns_none(encode):
     session.get.return_value = response(200, {"id": 77})
     session.post.return_value = response(422)
 
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is None
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_the_mint_refuses_redirects_on_both_of_its_calls(encode):
+    """Like every issue-proxy call, the mint's lookup and token request pass
+    `allow_redirects=False` and treat a 3xx as failure."""
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(201, MINT_BODY)
+
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is not None
+    assert session.get.call_args.kwargs["allow_redirects"] is False
+    assert session.post.call_args.kwargs["allow_redirects"] is False
+
+    session.get.return_value = response(302, {"id": 77})
     assert client_with(session).mint_token(REPO, {"issues": "write"}) is None
 
 

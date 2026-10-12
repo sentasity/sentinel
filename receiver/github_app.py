@@ -243,14 +243,20 @@ class GitHubAppClient:
         self, repo: str, permissions: dict[str, str], *, deadline: float | None = None
     ) -> dict:
         """Mint a token for `repo`'s installation, downscoped to exactly
-        `permissions` and to that one repository. Raises on failure."""
+        `permissions` and to that one repository. Raises on failure.
+
+        Both calls refuse redirects and treat any answer outside 200 to 299
+        as failure, as every issue-proxy call does: `raise_for_status` alone
+        would let a 3xx through."""
         app_jwt = self._app_jwt()
         lookup = self.session.get(
             f"{API_BASE}/repos/{repo}/installation",
             headers=self._headers(app_jwt),
             timeout=self._timeout(deadline),
+            allow_redirects=False,
         )
-        lookup.raise_for_status()
+        if not 200 <= lookup.status_code < 300:
+            raise GitHubCallFailed("look up the installation", lookup.status_code)
         minted = self.session.post(
             f"{API_BASE}/app/installations/{lookup.json()['id']}/access_tokens",
             headers=self._headers(app_jwt),
@@ -259,8 +265,10 @@ class GitHubAppClient:
                 "permissions": permissions,
             },
             timeout=self._timeout(deadline),
+            allow_redirects=False,
         )
-        minted.raise_for_status()
+        if not 200 <= minted.status_code < 300:
+            raise GitHubCallFailed("mint the token", minted.status_code)
         return minted.json()
 
     def mint_token(
