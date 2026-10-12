@@ -2782,3 +2782,32 @@ def test_issue_op_with_no_thread_to_reply_in_still_answers_done(proxy, thread, c
     assert proxy.store.settle_tracked.call_args.kwargs["via"] == "file_issue"
     assert "no thread to reply in for CHECKOUT-4B2" in caplog.text
     assert observability.DELIVERY_FAILURE_MARKER not in caplog.text
+
+
+def test_issue_op_crash_after_the_write_landed_keeps_the_tracking_claim(proxy, caplog):
+    """The write landed and its record settled `done`, then marking the alert
+    tracked failed on a transient store error. The guard must not release the
+    claim: a retry is answered from the `done` record, and the grant keeps
+    `tracking_op`, so the backstop's expiry notice says filing may not have
+    finished rather than that no issue was filed."""
+
+    class FlakyStore(FakeTrackingStore):
+        def settle_tracked(self, *args, **kwargs):
+            raise RuntimeError("dynamo throttled")
+
+    store = FlakyStore(grant_row())
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    with patch.object(handler, "alert_store", return_value=store), caplog.at_level(logging.ERROR):
+        first = route(issues_event(**FILE_ISSUE))
+        retried = route(issues_event(**FILE_ISSUE))
+
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert status_of(first) == (502, {"status": "failed", "reason": "receiver crashed"})
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2 file_issue crashed" in caplog.text
+    assert store.ops[key]["state"] == "done"
+    assert store.grant["status"] == "open"
+    assert store.grant.get("tracking_op") == key
+    replay = done_body(retried)
+    assert (replay["issue_number"], replay["replayed"]) == (9, True)
+    assert proxy.github.file_issue.call_count == 1

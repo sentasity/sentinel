@@ -1102,7 +1102,13 @@ def run_issue_op(
     claim this op held, logs the marker and answers 502, so a crash never
     strands a record at `sending`. A Lambda timeout is the one exit the
     guard cannot see: the record stays `sending`, the function's Errors
-    alarm reports it, and the backstop tells the thread."""
+    alarm reports it, and the backstop tells the thread.
+
+    A crash after the record settled `done` means the GitHub write landed,
+    so the failed settle finds nothing to change and the claim is kept: a
+    retry is answered from the `done` record, and the backstop's notice at
+    expiry says filing may not have finished rather than that nothing was
+    filed."""
     try:
         return perform_issue_op(
             cfg, grant, op, key, token, deadline, issue=issue, repo_labels=repo_labels or []
@@ -1111,8 +1117,10 @@ def run_issue_op(
         short_id = grant.get("short_id", "")
         LOG.error("%s %s %s crashed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc)
         try:
-            alert_store().settle_issue_op(grant["tracking_id"], key, "failed", error="receiver crashed")
-            if issues.is_tracking_op(op):
+            failed = alert_store().settle_issue_op(
+                grant["tracking_id"], key, "failed", error="receiver crashed"
+            )
+            if failed and issues.is_tracking_op(op):
                 alert_store().release_tracking_issue(grant["tracking_id"], key)
         except Exception as settle_exc:  # noqa: BLE001 - logged; the backstop covers the thread
             LOG.error(
