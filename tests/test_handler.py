@@ -2246,3 +2246,496 @@ def test_issue_route_hands_the_claimed_op_to_the_back_half(proxy, handed_off):
     assert args[2] == {"tracking_id": "t-1", **DUPLICATE}
     assert args[3] == handler.issues.op_key({"tracking_id": "t-1", **DUPLICATE})
     assert args[4] == "ghs_issue"
+
+
+# ---- Issue tracking: the /issues route, performing the op ----
+
+CREATED = {
+    "number": 9,
+    "html_url": "https://github.com/acme-tools/checkout/issues/9",
+    "node_id": "I_9",
+    "labels": [{"name": "Backend"}],
+    "type": {"name": "Bug"},
+}
+
+
+def done_body(response) -> dict:
+    assert response["statusCode"] == 200, response["body"]
+    return json.loads(response["body"])
+
+
+def test_issue_op_files_a_new_issue_and_links_it_in_the_thread(proxy):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body == {
+        "status": "done", "op": "file_issue", "issue_number": 9,
+        "url": CREATED["html_url"], "warnings": [], "replayed": False, "thread_notified": True,
+    }
+    call = proxy.github.file_issue.call_args
+    assert call.args == ("acme-tools/checkout",)
+    assert call.kwargs["token"] == "ghs_issue"
+    assert call.kwargs["title"] == "Fix: empty cart total is None"
+    assert call.kwargs["body"] == (
+        "Problem.\n\nSentinel · Sentry CHECKOUT-4B2 · staging · release 79bad4b"
+    )
+    # The repository's own spelling of the label goes out, not the session's.
+    assert call.kwargs["labels"] == ["Backend"]
+    assert call.kwargs["issue_type"] == "Bug"
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.claim_tracking_issue.call_args == call("t-1", key, search_unavailable=False)
+    settled = proxy.store.settle_issue_op.call_args
+    assert settled.args == ("t-1", key, "done")
+    assert settled.kwargs["result"]["issue_number"] == 9
+    assert proxy.store.settle_tracked.call_args == call(
+        "t-1", key, issue_number=9, url=CREATED["html_url"], via="file_issue", node_id="I_9"
+    )
+    conversation_id, message_id, reply = proxy.bot.reply_in_thread.call_args.args
+    assert (conversation_id, message_id) == ("conv-1", "msg-9")
+    assert reply == "📌 Tracked in GitHub: https://github.com/acme-tools/checkout/issues/9"
+
+
+def test_issue_op_settles_before_it_replies(proxy):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+    order = []
+    proxy.store.settle_tracked.side_effect = lambda *a, **k: order.append("settle") or True
+    proxy.bot.reply_in_thread.side_effect = lambda *a: order.append("reply")
+
+    route(issues_event(**FILE_ISSUE))
+
+    assert order == ["settle", "reply"]
+
+
+def test_issue_op_redacts_the_title_and_body_it_sends(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    with caplog.at_level(logging.INFO):
+        route(issues_event(**{**FILE_ISSUE, "title": "Fix: fails for ops@example.com", "body": "From 10.0.0.1."}))
+
+    call = proxy.github.file_issue.call_args
+    assert call.kwargs["title"] == "Fix: fails for [redacted: email]"
+    assert call.kwargs["body"].startswith("From [redacted: ip].")
+    assert "REDACTIONS_APPLIED 2 for CHECKOUT-4B2" in caplog.text
+
+
+def test_issue_op_puts_the_search_line_first_and_says_so_in_the_thread(proxy):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    route(issues_event(**{**FILE_ISSUE, "search_unavailable": True}))
+
+    sent = proxy.github.file_issue.call_args.kwargs["body"]
+    assert sent.startswith(handler.issues.SEARCH_UNAVAILABLE_LINE + "\n\nProblem.")
+    assert proxy.store.claim_tracking_issue.call_args.kwargs == {"search_unavailable": True}
+    reply = proxy.bot.reply_in_thread.call_args.args[2]
+    assert reply == (
+        "📌 Tracked in GitHub: https://github.com/acme-tools/checkout/issues/9\n\n"
+        "⚠️ The duplicate search was unavailable, so this issue may duplicate an existing one."
+    )
+
+
+def test_issue_op_drops_an_unknown_label_loudly(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    with caplog.at_level(logging.ERROR):
+        body = done_body(route(issues_event(**{**FILE_ISSUE, "labels": ["backend", "made-up"]})))
+
+    assert proxy.github.file_issue.call_args.kwargs["labels"] == ["Backend"]
+    assert body["warnings"] == ["label made-up is not defined in the repository and was not sent"]
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2 file_issue #9 landed with warnings" in caplog.text
+
+
+def test_issue_op_reports_a_label_or_type_github_did_not_keep(proxy):
+    proxy.github.file_issue.return_value = IssueCall(
+        ok=True, status=201, body={**CREATED, "labels": [], "type": None}
+    )
+
+    body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body["warnings"] == [
+        "label Backend did not land on the issue",
+        "type Bug did not land on the issue",
+    ]
+    # The issue still counts as created.
+    assert proxy.store.settle_tracked.call_args.kwargs["via"] == "file_issue"
+
+
+def test_issue_op_maps_githubs_422_on_create_to_a_rejection(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=False, status=422, step="create the issue")
+
+    with caplog.at_level(logging.ERROR):
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (
+        400, {"status": "rejected", "reason": "GitHub refused the issue as sent"},
+    )
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.settle_issue_op.call_args == call(
+        "t-1", key, "failed", error="GitHub refused the issue as sent"
+    )
+    assert proxy.store.release_tracking_issue.call_args == call("t-1", key)
+    assert observability.ISSUE_TRACKING_FAILED_MARKER in caplog.text
+    proxy.bot.reply_in_thread.assert_not_called()
+
+
+def test_issue_op_answers_502_naming_the_failed_step_and_frees_a_retry(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=False, status=503, step="create the issue")
+
+    with caplog.at_level(logging.ERROR):
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (502, {"status": "failed", "reason": "create the issue"})
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.settle_issue_op.call_args == call("t-1", key, "failed", error="create the issue")
+    assert proxy.store.release_tracking_issue.call_args == call("t-1", key)
+    proxy.store.settle_tracked.assert_not_called()
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2 file_issue failed" in caplog.text
+
+
+def test_issue_op_refuses_a_second_tracking_op_that_lost_the_claim(proxy):
+    proxy.store.claim_tracking_issue.return_value = False
+    proxy.store.get_tracking_grant.side_effect = [grant_row(), grant_row(status="tracked", tracked_issue=5)]
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        409, {"status": "refused", "reason": "already tracked in #5"},
+    )
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.settle_issue_op.call_args == call(
+        "t-1", key, "failed", error="already tracked in #5"
+    )
+    proxy.github.file_issue.assert_not_called()
+
+
+def test_issue_op_refuses_while_another_tracking_op_holds_the_grant(proxy):
+    proxy.store.claim_tracking_issue.return_value = False
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        409, {"status": "refused", "reason": "another tracking operation is in progress"},
+    )
+    proxy.github.file_issue.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("state", "reply"),
+    [
+        ("open", "📌 Already tracked in GitHub; this occurrence was added to {url}"),
+        ("closed", "📌 Already tracked in GitHub by a closed issue; this occurrence was added to {url}"),
+    ],
+)
+def test_issue_op_tracks_the_alert_with_a_duplicate_comment(proxy, state, reply):
+    comment_url = "https://github.com/acme-tools/checkout/issues/42#issuecomment-1"
+    proxy.github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue(state))
+    proxy.github.comment_on_issue.return_value = IssueCall(ok=True, status=201, body={"html_url": comment_url})
+
+    body = done_body(route(issues_event(**DUPLICATE)))
+
+    assert body["issue_number"] == 42
+    assert body["url"] == comment_url
+    call_args = proxy.github.comment_on_issue.call_args
+    assert call_args.args == ("acme-tools/checkout", 42)
+    assert call_args.kwargs["body"] == (
+        "Seen again.\n\nSentinel · Sentry CHECKOUT-4B2 · staging · release 79bad4b"
+    )
+    assert proxy.store.settle_tracked.call_args.kwargs["via"] == "duplicate"
+    assert proxy.bot.reply_in_thread.call_args.args[2] == reply.format(url=comment_url)
+
+
+def test_issue_op_posts_nothing_for_a_related_comment(proxy):
+    proxy.github.comment_on_issue.return_value = IssueCall(ok=True, status=201, body={"html_url": "c"})
+
+    body = done_body(route(issues_event(**{**DUPLICATE, "relation": "related"})))
+
+    assert body["thread_notified"] is False
+    proxy.store.claim_tracking_issue.assert_not_called()
+    proxy.store.settle_tracked.assert_not_called()
+    proxy.bot.reply_in_thread.assert_not_called()
+
+
+def test_issue_op_reopens_with_its_comment_and_says_so(proxy):
+    proxy.github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue("closed"))
+    proxy.github.reopen_issue.return_value = IssueCall(
+        ok=True, status=200, body=an_issue("open")
+    )
+
+    body = done_body(route(issues_event(**REOPEN)))
+
+    assert body["url"] == "https://github.com/acme-tools/checkout/issues/42"
+    assert proxy.github.reopen_issue.call_args.kwargs["body"].startswith("It came back.\n\nSentinel")
+    assert proxy.store.settle_tracked.call_args.kwargs["via"] == "reopen"
+    assert proxy.bot.reply_in_thread.call_args.args[2] == (
+        "📌 Reopened in GitHub, since this error came back after the issue was closed: "
+        "https://github.com/acme-tools/checkout/issues/42"
+    )
+
+
+def test_issue_op_names_the_reopen_step_when_the_reopen_fails_after_its_comment(proxy):
+    proxy.github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue("closed"))
+    proxy.github.reopen_issue.return_value = IssueCall(ok=False, status=500, step="reopen the issue")
+
+    assert status_of(route(issues_event(**REOPEN))) == (
+        502, {"status": "failed", "reason": "reopen the issue"},
+    )
+
+
+def own_issue():
+    return grant_row(
+        status="tracked", tracked_issue=42, tracked_url=an_issue()["html_url"],
+        created_issue=42, created_node_id="I_42",
+    )
+
+
+def test_issue_op_sets_fields_on_the_alerts_own_issue_quietly(proxy):
+    proxy.store.get_tracking_grant.return_value = own_issue()
+    proxy.github.set_fields.return_value = FieldsOutcome(ok=True, fields={"Priority": "High"})
+
+    body = done_body(route(issues_event(op="set_fields", issue_number=42, fields={"Priority": "high"})))
+
+    assert body["fields"] == {"Priority": "High"}
+    assert body["url"] == an_issue()["html_url"]
+    call_args = proxy.github.set_fields.call_args
+    assert call_args.args == ("acme-tools/checkout",)
+    assert call_args.kwargs["node_id"] == "I_42"
+    assert call_args.kwargs["fields"] == {"Priority": "high"}
+    proxy.bot.reply_in_thread.assert_not_called()
+    proxy.store.settle_tracked.assert_not_called()
+
+
+def test_issue_op_rejects_an_unknown_option_and_fails_a_value_that_did_not_persist(proxy):
+    proxy.store.get_tracking_grant.return_value = own_issue()
+    proxy.github.set_fields.return_value = FieldsOutcome(
+        ok=False, rejected="unknown option for field Priority"
+    )
+
+    assert status_of(route(issues_event(op="set_fields", issue_number=42, fields={"Priority": "x"}))) == (
+        400, {"status": "rejected", "reason": "unknown option for field Priority"},
+    )
+
+    proxy.github.set_fields.return_value = FieldsOutcome(ok=False, step="field values did not persist")
+    assert status_of(route(issues_event(op="set_fields", issue_number=42, fields={"Priority": "y"}))) == (
+        502, {"status": "failed", "reason": "field values did not persist"},
+    )
+    proxy.store.release_tracking_issue.assert_not_called()
+
+
+def test_issue_op_adds_the_alerts_own_issue_to_the_board_quietly(proxy):
+    proxy.store.get_tracking_grant.return_value = own_issue()
+    proxy.github.add_to_project.return_value = IssueCall(ok=True, status=200, body={"item_id": "PVTI_1"})
+
+    body = done_body(route(issues_event(op="add_to_project", issue_number=42)))
+
+    assert body["issue_number"] == 42
+    call_args = proxy.github.add_to_project.call_args
+    assert call_args.args == ("acme-tools/checkout", 3)
+    assert call_args.kwargs["node_id"] == "I_42"
+    proxy.bot.reply_in_thread.assert_not_called()
+
+
+def test_issue_op_still_answers_done_when_the_thread_reply_fails(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+    proxy.bot.reply_in_thread.side_effect = BotError("teams down")
+
+    with caplog.at_level(logging.ERROR):
+        body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body["thread_notified"] is False
+    assert f"{observability.DELIVERY_FAILURE_MARKER} issue tracking reply for CHECKOUT-4B2" in caplog.text
+    proxy.store.release_tracking_issue.assert_not_called()
+
+
+def test_issue_op_reports_an_issue_that_landed_after_the_grant_closed(proxy, caplog):
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+    proxy.store.settle_tracked.return_value = False
+
+    with caplog.at_level(logging.ERROR):
+        body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body["issue_number"] == 9
+    assert "landed on #9 after the grant closed" in caplog.text
+    proxy.bot.reply_in_thread.assert_called_once()
+
+
+def test_issue_op_crash_settles_failed_and_releases_the_tracking_claim(proxy, caplog):
+    proxy.github.file_issue.side_effect = RuntimeError("boom")
+
+    with caplog.at_level(logging.ERROR):
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (502, {"status": "failed", "reason": "receiver crashed"})
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.settle_issue_op.call_args == call("t-1", key, "failed", error="receiver crashed")
+    assert proxy.store.release_tracking_issue.call_args == call("t-1", key)
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2 file_issue crashed" in caplog.text
+
+
+def test_issue_op_crash_with_the_store_down_still_answers_502(proxy, caplog):
+    proxy.github.file_issue.side_effect = RuntimeError("boom")
+    proxy.store.settle_issue_op.side_effect = RuntimeError("dynamo down")
+
+    with caplog.at_level(logging.ERROR):
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (502, {"status": "failed", "reason": "receiver crashed"})
+    assert "could not settle file_issue after the crash" in caplog.text
+
+
+def test_issue_op_a_related_comment_crash_releases_nothing(proxy):
+    proxy.github.comment_on_issue.side_effect = RuntimeError("boom")
+
+    route(issues_event(**{**DUPLICATE, "relation": "related"}))
+
+    proxy.store.release_tracking_issue.assert_not_called()
+
+
+def test_issue_op_encodes_the_link_for_the_thread_and_not_for_the_session(proxy):
+    raw = "https://github.com/acme-tools/my_repo/issues/9"
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body={**CREATED, "html_url": raw})
+
+    body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body["url"] == raw
+    assert proxy.bot.reply_in_thread.call_args.args[2] == (
+        "📌 Tracked in GitHub: https://github.com/acme-tools/my%5Frepo/issues/9"
+    )
+
+
+class FakeTrackingStore:
+    """The tracking half of AlertStore, kept in memory, so a sequence of
+    /issues calls sees each other's writes the way DynamoDB's conditional
+    updates would."""
+
+    def __init__(self, grant: dict):
+        self.grant = dict(grant)
+        self.ops: dict[str, dict] = {}
+        self.days: dict[str, int] = {}
+
+    def get_tracking_grant(self, tracking_id):
+        return dict(self.grant) if tracking_id == self.grant["tracking_id"] else None
+
+    def get_issue_op(self, tracking_id, key):
+        record = self.ops.get(key)
+        return dict(record) if record else None
+
+    def claim_grant_cap(self, tracking_id, op, cap):
+        spent = self.grant.get(f"n_{op}", 0)
+        if spent >= cap:
+            return False
+        self.grant[f"n_{op}"] = spent + 1
+        return True
+
+    def claim_daily_issue_cap(self, counter, day, cap):
+        if self.days.get(counter, 0) >= cap:
+            return False
+        self.days[counter] = self.days.get(counter, 0) + 1
+        return True
+
+    def claim_issue_op(self, tracking_id, key, *, op, max_attempts):
+        record = self.ops.get(key)
+        if record and not (record["state"] == "failed" and record["attempts"] < max_attempts):
+            return False
+        attempts = record["attempts"] + 1 if record else 1
+        self.ops[key] = {"state": "sending", "op": op, "attempts": attempts}
+        return True
+
+    def settle_issue_op(self, tracking_id, key, state, *, result=None, error=""):
+        record = self.ops.get(key)
+        if not record or record["state"] != "sending":
+            return False
+        record["state"] = state
+        if result is not None:
+            record["result"] = json.dumps(result, sort_keys=True)
+        if error:
+            record["error"] = error
+        return True
+
+    def claim_tracking_issue(self, tracking_id, key, *, search_unavailable=False):
+        if self.grant["status"] != "open" or self.grant.get("tracking_op") not in (None, key):
+            return False
+        self.grant["tracking_op"] = key
+        if search_unavailable:
+            self.grant["search_unavailable"] = True
+        return True
+
+    def release_tracking_issue(self, tracking_id, key):
+        if self.grant.get("tracking_op") != key:
+            return False
+        del self.grant["tracking_op"]
+        return True
+
+    def settle_tracked(self, tracking_id, key, *, issue_number, url, via, node_id=""):
+        if self.grant["status"] != "open" or self.grant.get("tracking_op") != key:
+            return False
+        self.grant.update(
+            status="tracked", tracked_issue=issue_number, tracked_url=url, tracked_via=via
+        )
+        if via == "file_issue":
+            self.grant.update(created_issue=issue_number, created_node_id=node_id)
+        del self.grant["tracking_op"]
+        return True
+
+
+def test_issue_op_files_on_the_documented_retry_after_github_refuses_the_type(proxy):
+    """GitHub refuses the type with a 422, which nothing was written for, so
+    the answer is a 400 and the session retries once without `type` and
+    `labels`. The retry files the issue and becomes the alert's tracking
+    issue, and the thread hears exactly once. The two attempts are the
+    grant's two file_issue attempts, and the rejected one still spent one
+    create and one write from the day's budget: the claims run before the
+    GitHub call, and a rejection refunds nothing."""
+    store = FakeTrackingStore(grant_row())
+    proxy.github.file_issue.side_effect = [
+        IssueCall(ok=False, status=422, step="create the issue"),
+        IssueCall(ok=True, status=201, body={**CREATED, "labels": [], "type": None}),
+    ]
+    retry = {key: value for key, value in FILE_ISSUE.items() if key not in ("type", "labels")}
+
+    with patch.object(handler, "alert_store", return_value=store):
+        first = route(issues_event(**FILE_ISSUE))
+        second = route(issues_event(**retry))
+        resent = route(issues_event(**retry))
+
+    assert status_of(first) == (
+        400, {"status": "rejected", "reason": "GitHub refused the issue as sent"},
+    )
+    body = done_body(second)
+    assert body["issue_number"] == 9
+    assert body["warnings"] == []
+    assert body["thread_notified"] is True
+    retried = proxy.github.file_issue.call_args.kwargs
+    assert (retried["issue_type"], retried["labels"]) == ("", [])
+    assert store.grant["status"] == "tracked"
+    assert (store.grant["tracked_issue"], store.grant["tracked_via"]) == (9, "file_issue")
+    assert store.grant["n_file_issue"] == 2
+    assert store.days == {"issue-creates": 2, "issue-writes": 2}
+    assert proxy.bot.reply_in_thread.call_count == 1
+    # A resent retry is answered from its record: no third create, no reply.
+    assert done_body(resent)["replayed"] is True
+    assert proxy.github.file_issue.call_count == 2
+    assert proxy.bot.reply_in_thread.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "thread",
+    [{"conversation_id": None}, {"message_id": None}, {"conversation_id": ""}],
+    ids=["no-conversation", "no-message", "empty-conversation"],
+)
+def test_issue_op_with_no_thread_to_reply_in_still_answers_done(proxy, thread, caplog):
+    """A grant whose alert card never posted has no thread. The op still
+    settles and answers done; the reply is skipped with a warning, with no
+    bot call and no delivery-failure line for an alarm to count."""
+    grant = grant_row()
+    for key, value in thread.items():
+        if value is None:
+            del grant[key]
+        else:
+            grant[key] = value
+    proxy.store.get_tracking_grant.return_value = grant
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    with caplog.at_level(logging.WARNING):
+        body = done_body(route(issues_event(**FILE_ISSUE)))
+
+    assert body["thread_notified"] is False
+    proxy.bot.reply_in_thread.assert_not_called()
+    assert proxy.store.settle_tracked.call_args.kwargs["via"] == "file_issue"
+    assert "no thread to reply in for CHECKOUT-4B2" in caplog.text
+    assert observability.DELIVERY_FAILURE_MARKER not in caplog.text

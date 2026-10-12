@@ -299,6 +299,42 @@ def shape_body(text: str, grant: dict, *, search_unavailable: bool = False) -> t
     return "\n\n".join(parts), count
 
 
+def match_labels(requested: list[str], available: list[str]) -> tuple[list[str], list[str]]:
+    """Each requested label in the repository's own spelling, matched
+    ignoring case and sent once, and the requested names the repository
+    does not define, which are dropped rather than sent: GitHub's create
+    reference does not promise to refuse an unknown label."""
+    spelled = {}
+    for name in available:
+        spelled.setdefault(name.lower(), name)
+    matched: list[str] = []
+    unknown: list[str] = []
+    for label in requested:
+        name = spelled.get(label.lower())
+        if name is None:
+            unknown.append(label)
+        elif name not in matched:
+            matched.append(name)
+    return matched, unknown
+
+
+def landing_warnings(issue: dict, labels: list[str], issue_type: str) -> list[str]:
+    """What a created issue does not carry of what was sent. GitHub drops a
+    label written by a caller without push access without saying so, so the
+    response is compared with the request rather than trusted."""
+    landed = {
+        str(label.get("name") or "").lower()
+        for label in issue.get("labels") or []
+        if isinstance(label, dict)
+    }
+    warnings = [f"label {label} did not land on the issue" for label in labels if label.lower() not in landed]
+    if issue_type:
+        held = issue.get("type") if isinstance(issue.get("type"), dict) else {}
+        if str(held.get("name") or "").lower() != issue_type.lower():
+            warnings.append(f"type {issue_type} did not land on the issue")
+    return warnings
+
+
 def tracking_reply(
     op: dict, *, url: str, issue_state: str = "", search_unavailable: bool = False
 ) -> str:

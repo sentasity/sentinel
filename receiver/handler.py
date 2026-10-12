@@ -1035,6 +1035,218 @@ def handle_issue_op(event: dict) -> dict:
     )
 
 
+def post_tracking_reply(grant: dict, text: str) -> bool:
+    """Post a tracking outcome into the alert's thread; True when it posted.
+
+    The op is settled by the time this runs, so a failure costs only the
+    reply: it is logged under the delivery marker, and nothing raised here
+    may reach the crash guard, which would report a settled op as crashed.
+    A grant with no thread (its alert card never posted) has nothing to
+    deliver to, so the reply is skipped with a warning instead.
+    """
+    conversation_id = str(grant.get("conversation_id") or "")
+    message_id = str(grant.get("message_id") or "")
+    if not conversation_id or not message_id:
+        LOG.warning(
+            "no thread to reply in for %s; tracking reply skipped", grant.get("short_id", "")
+        )
+        return False
+    try:
+        bot_client().reply_in_thread(conversation_id, message_id, text)
+    except Exception as exc:  # noqa: BLE001 - the op is settled; only the reply is lost
+        LOG.error(
+            "%s issue tracking reply for %s: %s",
+            DELIVERY_FAILURE_MARKER, grant.get("short_id", ""), exc,
+        )
+        return False
+    return True
+
+
+def settle_issue_failure(grant: dict, op: dict, key: str, reason: str, *, status: int = 502) -> dict:
+    """Settle a claimed op `failed`, release the tracking claim it held, log
+    the marker, and answer: 400 `rejected` when GitHub refused the request
+    itself and wrote nothing, otherwise 502 `failed`, naming the step. The
+    op record is left reclaimable, so the session's one retry can run."""
+    store = alert_store()
+    store.settle_issue_op(grant["tracking_id"], key, "failed", error=reason)
+    if issues.is_tracking_op(op):
+        store.release_tracking_issue(grant["tracking_id"], key)
+    outcome = "rejected" if status == 400 else "failed"
+    LOG.error(
+        "%s %s %s %s: %s",
+        ISSUE_TRACKING_FAILED_MARKER, grant.get("short_id", ""), op["op"], outcome, reason,
+    )
+    return respond_json(status, {"status": outcome, "reason": reason})
+
+
+def run_issue_op(
+    cfg: ReceiverConfig,
+    grant: dict,
+    op: dict,
+    key: str,
+    token: str,
+    deadline: float,
+    *,
+    issue: dict | None = None,
+    repo_labels: list[str] | None = None,
+) -> dict:
+    """Everything after an op's record is claimed, under the guard `fix_ready`
+    uses: whatever raises settles the record `failed`, releases a tracking
+    claim this op held, logs the marker and answers 502, so a crash never
+    strands a record at `sending`. A Lambda timeout is the one exit the
+    guard cannot see: the record stays `sending`, the function's Errors
+    alarm reports it, and the backstop tells the thread."""
+    try:
+        return perform_issue_op(
+            cfg, grant, op, key, token, deadline, issue=issue, repo_labels=repo_labels or []
+        )
+    except Exception as exc:  # noqa: BLE001 - a claimed op must settle, never strand at sending
+        short_id = grant.get("short_id", "")
+        LOG.error("%s %s %s crashed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc)
+        try:
+            alert_store().settle_issue_op(grant["tracking_id"], key, "failed", error="receiver crashed")
+            if issues.is_tracking_op(op):
+                alert_store().release_tracking_issue(grant["tracking_id"], key)
+        except Exception as settle_exc:  # noqa: BLE001 - logged; the backstop covers the thread
+            LOG.error(
+                "%s %s could not settle %s after the crash: %s",
+                ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], settle_exc,
+            )
+        return respond_json(502, {"status": "failed", "reason": "receiver crashed"})
+
+
+def perform_issue_op(
+    cfg: ReceiverConfig,
+    grant: dict,
+    op: dict,
+    key: str,
+    token: str,
+    deadline: float,
+    *,
+    issue: dict | None,
+    repo_labels: list[str],
+) -> dict:
+    """Make one claimed op's GitHub write as the App, settle it, and tell the
+    thread when it is the alert's tracking outcome.
+
+    A tracking op first claims the grant, so two different creates cannot
+    both reach GitHub. Every title and body is shaped before it is sent:
+    redacted, and closed by the footer naming the grant's Sentry issue. The
+    settle writes land before the reply, so an invocation that runs out of
+    time during the reply loses only the reply.
+    """
+    store = alert_store()
+    client = github_client()
+    tracking_id = grant["tracking_id"]
+    short_id = str(grant.get("short_id") or "")
+    name = op["op"]
+    tracking = issues.is_tracking_op(op)
+    search_unavailable = bool(op.get("search_unavailable"))
+
+    if tracking and not store.claim_tracking_issue(
+        tracking_id, key, search_unavailable=search_unavailable
+    ):
+        latest = store.get_tracking_grant(tracking_id) or {}
+        if latest.get("tracked_issue") is not None:
+            reason = f"already tracked in #{int(latest['tracked_issue'])}"
+        else:
+            reason = "another tracking operation is in progress"
+        store.settle_issue_op(tracking_id, key, "failed", error=reason)
+        return refuse_issue_op(short_id, reason)
+
+    warnings: list[str] = []
+    extra: dict = {}
+    number = int(op.get("issue_number") or 0)
+    url = str(grant.get("tracked_url") or "")
+    node_id = ""
+    if name == "file_issue":
+        labels, unknown = issues.match_labels(op.get("labels") or [], repo_labels)
+        warnings += [
+            f"label {label} is not defined in the repository and was not sent" for label in unknown
+        ]
+        title, title_redactions = issues.shape_title(op["title"])
+        body, body_redactions = issues.shape_body(
+            op["body"], grant, search_unavailable=search_unavailable
+        )
+        LOG.info("REDACTIONS_APPLIED %d for %s", title_redactions + body_redactions, short_id)
+        call = client.file_issue(
+            cfg.target_repo, token=token, title=title, body=body,
+            labels=labels, issue_type=op.get("type", ""), deadline=deadline,
+        )
+        if not call.ok:
+            if call.status == 422:
+                # GitHub validated the request and wrote nothing: an issue
+                # type it does not recognize is the usual cause.
+                return settle_issue_failure(
+                    grant, op, key, "GitHub refused the issue as sent", status=400
+                )
+            return settle_issue_failure(grant, op, key, call.step)
+        warnings += issues.landing_warnings(call.body, labels, op.get("type", ""))
+        number = int(call.body.get("number") or 0)
+        url = str(call.body.get("html_url") or "")
+        node_id = str(call.body.get("node_id") or "")
+    elif name in ("comment", "reopen"):
+        body, redactions = issues.shape_body(op["body"], grant)
+        LOG.info("REDACTIONS_APPLIED %d for %s", redactions, short_id)
+        write = client.comment_on_issue if name == "comment" else client.reopen_issue
+        call = write(cfg.target_repo, number, token=token, body=body, deadline=deadline)
+        if not call.ok:
+            return settle_issue_failure(grant, op, key, call.step)
+        url = str(call.body.get("html_url") or "")
+    elif name == "set_fields":
+        outcome = client.set_fields(
+            cfg.target_repo, token=token, node_id=str(grant.get("created_node_id") or ""),
+            fields=op["fields"], deadline=deadline,
+        )
+        if outcome.rejected:
+            return settle_issue_failure(grant, op, key, outcome.rejected, status=400)
+        if not outcome.ok:
+            return settle_issue_failure(grant, op, key, outcome.step)
+        extra["fields"] = outcome.fields
+    else:
+        call = client.add_to_project(
+            cfg.target_repo, cfg.issues_project_number, token=token,
+            node_id=str(grant.get("created_node_id") or ""), deadline=deadline,
+        )
+        if not call.ok:
+            return settle_issue_failure(grant, op, key, call.step)
+
+    result = {"op": name, "issue_number": number, "url": url, "warnings": warnings, **extra}
+    store.settle_issue_op(tracking_id, key, "done", result=result)
+    if warnings:
+        LOG.error(
+            "%s %s %s #%d landed with warnings: %s",
+            ISSUE_TRACKING_FAILED_MARKER, short_id, name, number, "; ".join(warnings),
+        )
+
+    thread_notified = False
+    if tracking:
+        via = "duplicate" if name == "comment" else name
+        if not store.settle_tracked(
+            tracking_id, key, issue_number=number, url=url, via=via, node_id=node_id
+        ):
+            # The backstop expired the grant while this op was in flight,
+            # and has told the thread filing may not have finished. The
+            # reply below says what actually happened.
+            LOG.error(
+                "%s %s %s landed on #%d after the grant closed",
+                ISSUE_TRACKING_FAILED_MARKER, short_id, name, number,
+            )
+        text = issues.tracking_reply(
+            op,
+            url=safe_callback_url(url, field="issue_url"),
+            issue_state=str((issue or {}).get("state") or ""),
+            search_unavailable=search_unavailable,
+        )
+        thread_notified = post_tracking_reply(grant, text)
+
+    LOG.info("issue op %s for %s done on #%d", name, short_id, number)
+    return respond_json(
+        200,
+        {"status": "done", **result, "replayed": False, "thread_notified": thread_notified},
+    )
+
+
 def route(event: dict) -> dict:
     """Map a Function URL request, or a scheduled invocation, to a response."""
     # EventBridge invokes the function directly, so a scheduled event carries

@@ -27,6 +27,8 @@ from receiver.issues import (
     footer,
     grant_lifetime_seconds,
     is_tracking_op,
+    landing_warnings,
+    match_labels,
     op_key,
     parse_issue_op,
     shape_body,
@@ -350,3 +352,35 @@ def test_every_reply_string_is_pinned():
     assert set(TRACKING_REPLIES) == {
         "file_issue", "duplicate_open", "duplicate_closed", "reopen", "search_unavailable",
     }
+
+
+def test_labels_match_ignoring_case_and_use_the_repositorys_spelling():
+    matched, unknown = match_labels(["backend", "FRONTEND", "nope"], ["Backend", "frontend"])
+
+    assert matched == ["Backend", "frontend"]
+    assert unknown == ["nope"]
+
+
+def test_two_spellings_of_one_label_are_sent_once():
+    assert match_labels(["backend", "Backend"], ["Backend"]) == (["Backend"], [])
+
+
+def test_nothing_that_landed_as_sent_is_warned_about():
+    issue = {"labels": [{"name": "Backend"}], "type": {"name": "Bug"}}
+
+    assert landing_warnings(issue, ["Backend"], "Bug") == []
+
+
+def test_a_label_or_type_that_did_not_land_is_warned_about():
+    """GitHub drops a label quietly for a caller without push access, so
+    the response is checked rather than trusted."""
+    issue = {"labels": [], "type": None}
+
+    assert landing_warnings(issue, ["Backend"], "Bug") == [
+        "label Backend did not land on the issue",
+        "type Bug did not land on the issue",
+    ]
+
+
+def test_no_type_sent_means_no_type_checked():
+    assert landing_warnings({"labels": [], "type": None}, [], "") == []
