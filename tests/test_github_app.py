@@ -625,6 +625,7 @@ from receiver.github_app import (  # noqa: E402 - grouped with the tests that us
     ISSUE_SEQUENCE_BUDGET_SECONDS,
     LABEL_PAGES,
     OP_PERMISSIONS,
+    FieldsOutcome,
     IssueCall,
 )
 from receiver.issues import OPS  # noqa: E402
@@ -851,3 +852,185 @@ def test_a_failed_label_page_fails_the_listing():
     client, _ = issue_client(gets=[reply(502)])
 
     assert client.list_label_names(REPO, token="t") is None
+
+
+FIELDS_DATA = {
+    "data": {
+        "organization": {
+            "issueFields": {
+                "nodes": [
+                    {
+                        "id": "F_pri",
+                        "name": "Priority",
+                        "options": [{"id": "O_high", "name": "High"}, {"id": "O_low", "name": "Low"}],
+                    },
+                    {
+                        "id": "F_eff",
+                        "name": "Effort",
+                        "options": [{"id": "O_quick", "name": "Quick Win"}],
+                    },
+                    {},
+                ]
+            }
+        }
+    }
+}
+
+
+def held(*pairs) -> dict:
+    return {
+        "data": {
+            "node": {
+                "issueFieldValues": {
+                    "nodes": [{"name": option, "field": {"name": name}} for name, option in pairs]
+                }
+            }
+        }
+    }
+
+
+def test_set_fields_resolves_names_sets_them_in_one_call_and_reads_them_back():
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"data": {"setIssueFieldValue": {"clientMutationId": None}}}),
+            reply(200, held(("Priority", "High"), ("Effort", "Quick Win"))),
+        ]
+    )
+
+    got = client.set_fields(
+        REPO, token="t", node_id="I_9", fields={"Priority": "high", "Effort": "Quick Win"}
+    )
+
+    assert got == FieldsOutcome(ok=True, fields={"Priority": "High", "Effort": "Quick Win"})
+    discovery, mutation, readback = session.post.call_args_list
+    assert discovery.args[0] == "https://api.github.com/graphql"
+    assert discovery.kwargs["json"]["variables"] == {"org": "acme-tools"}
+    sent = mutation.kwargs["json"]
+    assert "setIssueFieldValue" in sent["query"]
+    assert sent["variables"] == {
+        "issue": "I_9",
+        "field0": "F_pri", "option0": "O_high",
+        "field1": "F_eff", "option1": "O_quick",
+    }
+    assert readback.kwargs["json"]["variables"] == {"id": "I_9"}
+    assert all(call.kwargs["allow_redirects"] is False for call in session.post.call_args_list)
+    assert "GraphQL-Features" not in discovery.kwargs["headers"]
+
+
+def test_set_fields_never_carries_suggest():
+    """`suggest` returns success and writes nothing, so it must never be sent."""
+    client, session = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "High")))]
+    )
+
+    client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    sent = session.post.call_args_list[1].kwargs["json"]
+    assert "suggest" not in sent["query"]
+    assert "suggest" not in str(sent["variables"])
+
+
+def test_a_value_that_did_not_persist_fails_the_op():
+    client, _ = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "Low")))]
+    )
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert got == FieldsOutcome(ok=False, step="field values did not persist")
+
+
+def test_the_definitions_are_cached_for_the_container():
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "High"))),
+            reply(200, {"data": {}}), reply(200, held(("Priority", "Low"))),
+        ]
+    )
+
+    client.set_fields(REPO, token="t", node_id="I_1", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_2", fields={"Priority": "Low"})
+
+    assert second.ok
+    assert session.post.call_count == 5
+
+
+def test_an_unknown_option_triggers_one_refetch_before_it_is_rejected():
+    client, session = issue_client(posts=[reply(200, FIELDS_DATA), reply(200, FIELDS_DATA)])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "Someday"})
+
+    assert got == FieldsOutcome(ok=False, rejected="unknown option for field Priority")
+    assert session.post.call_count == 2
+
+
+def test_an_option_added_since_the_cache_is_found_by_the_refetch():
+    newer = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_urgent", "name": "Urgent"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, newer), reply(200, {"data": {}}), reply(200, held(("Priority", "Urgent")))]
+    )
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "Urgent"})
+
+    assert got.ok
+    assert session.post.call_args_list[2].kwargs["json"]["variables"]["option0"] == "O_urgent"
+
+
+def test_a_configured_field_that_is_not_single_select_fails_the_op():
+    client, _ = issue_client(posts=[reply(200, FIELDS_DATA), reply(200, FIELDS_DATA)])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Size": "Large"})
+
+    assert got == FieldsOutcome(ok=False, step="field Size is not single-select")
+
+
+def test_a_graphql_errors_array_is_a_failure_even_inside_a_200():
+    client, _ = issue_client(posts=[reply(200, {"errors": [{"message": "Resource not accessible"}]})])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert got == FieldsOutcome(ok=False, step="read the issue fields")
+
+
+def test_add_to_project_resolves_the_board_once_and_adds_the_issue():
+    client, session = issue_client(
+        posts=[
+            reply(200, {"data": {"organization": {"projectV2": {"id": "P_1"}}}}),
+            reply(200, {"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_1"}}}}),
+            reply(200, {"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_2"}}}}),
+        ]
+    )
+
+    first = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+    second = client.add_to_project(REPO, 3, token="t", node_id="I_2")
+
+    assert first == IssueCall(ok=True, status=200, body={"item_id": "PVTI_1"})
+    assert second.body == {"item_id": "PVTI_2"}
+    lookup, add, _ = session.post.call_args_list
+    assert lookup.kwargs["json"]["variables"] == {"org": "acme-tools", "number": 3}
+    assert add.kwargs["json"]["variables"] == {"project": "P_1", "content": "I_1"}
+
+
+def test_a_board_that_does_not_exist_fails_the_op():
+    client, _ = issue_client(posts=[reply(200, {"data": {"organization": {"projectV2": None}}})])
+
+    got = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+
+    assert got == IssueCall(ok=False, status=200, step="read the project")
+
+
+def test_a_redirect_on_a_graphql_call_is_a_failure():
+    client, _ = issue_client(posts=[reply(307)])
+
+    got = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+
+    assert got == IssueCall(ok=False, status=307, step="read the project")
