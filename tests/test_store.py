@@ -4,6 +4,7 @@ import copy
 import re
 from unittest.mock import MagicMock, patch
 
+import pytest
 from botocore.exceptions import ClientError
 
 from receiver.models import parse_alert
@@ -540,3 +541,279 @@ def test_requeue_failed_returns_false_when_the_row_is_not_failed_or_the_budget_i
     assert store.requeue_failed(
         "123", "prod", "abc", "c", "m", "t", max_requeues=1, notice_kinds=()
     ) is False
+
+
+# ---- Issue tracking ----
+
+
+def tracking_record(**overrides):
+    record = {
+        "tracking_id": "t-1",
+        "issue_id": "1000000007",
+        "short_id": "CHECKOUT-4B2",
+        "environment": "staging",
+        "release": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
+        "conversation_id": "conv-1",
+        "message_id": "msg-9",
+        "token_hash": "hash",
+        "expect": "always",
+        "expires_at": "2026-10-12T12:30:00Z",
+    }
+    record.update(overrides)
+    return record
+
+
+def test_a_tracking_grant_enters_the_due_index_until_it_expires():
+    store, table = make_store()
+
+    store.put_tracking_grant(tracking_record())
+
+    kwargs = table.put_item.call_args.kwargs
+    item = kwargs["Item"]
+    assert item["pk"] == "tracking:t-1"
+    assert item["sk"] == "grant"
+    assert item["status"] == "open"
+    assert item["due_pk"] == "tracking"
+    assert item["due_at"] == "2026-10-12T12:30:00Z"
+    assert item["expires_at"] == "2026-10-12T12:30:00Z"
+    assert item["token_hash"] == "hash"
+    assert kwargs["ConditionExpression"] == "attribute_not_exists(pk)"
+
+
+def test_an_open_grant_is_a_waiting_state_the_sweep_reads():
+    from receiver.store import WAITING_STATES
+
+    assert WAITING_STATES["open"] == "tracking"
+
+
+def test_a_tracking_grant_is_read_consistently():
+    store, table = make_store()
+    table.get_item.return_value = {"Item": {"tracking_id": "t-1"}}
+
+    assert store.get_tracking_grant("t-1") == {"tracking_id": "t-1"}
+    assert table.get_item.call_args.kwargs == {
+        "Key": {"pk": "tracking:t-1", "sk": "grant"}, "ConsistentRead": True,
+    }
+
+
+def test_a_grant_cap_claim_counts_attempts_per_op():
+    store, table = make_store()
+
+    assert store.claim_grant_cap("t-1", "comment", 6)
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": "tracking:t-1", "sk": "grant"}
+    assert resolved(kwargs) == "SET n_comment = if_not_exists(n_comment, :zero) + :one"
+    assert kwargs["ConditionExpression"] == (
+        "attribute_exists(pk) AND (attribute_not_exists(#n) OR #n < :cap)"
+    )
+    assert kwargs["ExpressionAttributeValues"][":cap"] == 6
+
+
+def test_a_spent_grant_cap_refuses_the_claim():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.claim_grant_cap("t-1", "file_issue", 2)
+
+
+@pytest.mark.parametrize("counter", ["issue-creates", "issue-writes"])
+def test_the_daily_issue_caps_are_conditional_counters(counter):
+    store, table = make_store()
+
+    assert store.claim_daily_issue_cap(counter, "2026-10-12", 25)
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": f"{counter}:2026-10-12", "sk": "counter"}
+    assert kwargs["ExpressionAttributeValues"][":cap"] == 25
+
+
+def test_a_spent_daily_issue_cap_refuses_the_claim():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.claim_daily_issue_cap("issue-writes", "2026-10-12", 100)
+
+
+def test_an_unknown_daily_counter_is_a_bug_not_a_new_counter():
+    store, table = make_store()
+
+    with pytest.raises(ValueError, match="issue-deletes"):
+        store.claim_daily_issue_cap("issue-deletes", "2026-10-12", 1)
+    table.update_item.assert_not_called()
+
+
+def test_an_op_record_is_read_consistently_under_its_grant():
+    store, table = make_store()
+    table.get_item.return_value = {}
+
+    assert store.get_issue_op("t-1", "abc") is None
+    assert table.get_item.call_args.kwargs == {
+        "Key": {"pk": "tracking:t-1", "sk": "op:abc"}, "ConsistentRead": True,
+    }
+
+
+def test_an_op_claim_creates_the_record_or_reclaims_a_failed_one():
+    store, table = make_store()
+
+    assert store.claim_issue_op("t-1", "abc", op="comment", max_attempts=2)
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": "tracking:t-1", "sk": "op:abc"}
+    assert resolved(kwargs) == (
+        "SET state = :sending, op = :op, attempts = if_not_exists(attempts, :zero) + :one, "
+        "updated_at = :now REMOVE error"
+    )
+    condition = kwargs["ConditionExpression"]
+    for placeholder, name in kwargs["ExpressionAttributeNames"].items():
+        condition = condition.replace(placeholder, name)
+    assert condition == "attribute_not_exists(pk) OR (state = :failed AND attempts < :max)"
+    assert kwargs["ExpressionAttributeValues"][":max"] == 2
+
+
+def test_an_op_that_is_sending_done_or_out_of_attempts_is_not_claimed():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.claim_issue_op("t-1", "abc", op="comment", max_attempts=2)
+
+
+def test_a_done_op_stores_its_result_as_json():
+    """JSON rather than a map: DynamoDB hands numbers back as Decimal, which
+    the replay response could not serialize."""
+    store, table = make_store()
+
+    assert store.settle_issue_op(
+        "t-1", "abc", "done", result={"issue_number": 42, "url": "https://x/42"}
+    )
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["ConditionExpression"] == "#state = :sending"
+    values = kwargs["ExpressionAttributeValues"]
+    assert values[":state"] == "done"
+    assert values[":result"] == '{"issue_number": 42, "url": "https://x/42"}'
+
+
+def test_a_failed_op_stores_its_error():
+    store, table = make_store()
+
+    assert store.settle_issue_op("t-1", "abc", "failed", error="post the comment")
+
+    values = table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+    assert values[":state"] == "failed"
+    assert values[":error"] == "post the comment"
+    assert ":result" not in values
+
+
+def test_an_op_settles_only_from_sending():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.settle_issue_op("t-1", "abc", "failed", error="x")
+
+
+def test_an_op_settles_only_to_done_or_failed():
+    store, _ = make_store()
+
+    with pytest.raises(ValueError):
+        store.settle_issue_op("t-1", "abc", "sending")
+
+
+def test_the_tracking_claim_holds_an_open_grant_for_one_op():
+    store, table = make_store()
+
+    assert store.claim_tracking_issue("t-1", "abc")
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": "tracking:t-1", "sk": "grant"}
+    assert resolved(kwargs) == "SET tracking_op = :key"
+    assert kwargs["ConditionExpression"] == (
+        "#s = :open AND (attribute_not_exists(#op) OR #op = :key)"
+    )
+
+
+def test_a_create_that_lost_its_search_marks_the_grant_when_it_claims():
+    store, table = make_store()
+
+    store.claim_tracking_issue("t-1", "abc", search_unavailable=True)
+
+    kwargs = table.update_item.call_args.kwargs
+    assert resolved(kwargs) == "SET tracking_op = :key, search_unavailable = :true"
+    assert kwargs["ExpressionAttributeValues"][":true"] is True
+
+
+def test_a_held_or_closed_grant_refuses_a_second_tracking_claim():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.claim_tracking_issue("t-1", "other")
+
+
+def test_releasing_the_tracking_claim_is_conditioned_on_the_same_op():
+    store, table = make_store()
+
+    assert store.release_tracking_issue("t-1", "abc")
+
+    kwargs = table.update_item.call_args.kwargs
+    assert resolved(kwargs) == "REMOVE tracking_op"
+    assert kwargs["ConditionExpression"] == "#op = :key"
+    assert kwargs["ExpressionAttributeValues"] == {":key": "abc"}
+
+
+def test_a_tracked_create_records_the_issue_and_leaves_the_due_index():
+    store, table = make_store()
+
+    assert store.settle_tracked(
+        "t-1", "abc", issue_number=42, url="https://x/42", via="file_issue", node_id="I_1"
+    )
+
+    kwargs = table.update_item.call_args.kwargs
+    expression = resolved(kwargs)
+    sets, removes = expression.split(" REMOVE ", 1)
+    for assignment in (
+        "status = :tracked", "tracked_issue = :issue", "tracked_url = :url",
+        "tracked_via = :via", "created_issue = :issue", "created_node_id = :node",
+    ):
+        assert assignment in sets
+    assert removes == "tracking_op, due_pk, due_at"
+    assert kwargs["ConditionExpression"] == "#s = :open AND #op = :key"
+    assert kwargs["ExpressionAttributeValues"][":node"] == "I_1"
+    # expires_at stays: a tracked grant still takes related comments,
+    # set_fields and add_to_project until it expires.
+    assert "expires_at" not in expression
+
+
+def test_a_tracked_duplicate_records_no_created_issue():
+    store, table = make_store()
+
+    store.settle_tracked("t-1", "abc", issue_number=7, url="https://x/7", via="duplicate")
+
+    expression = resolved(table.update_item.call_args.kwargs)
+    assert "tracked_via = :via" in expression
+    assert "created_issue" not in expression
+
+
+def test_a_grant_no_longer_open_refuses_the_tracked_settle():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.settle_tracked("t-1", "abc", issue_number=7, url="u", via="reopen")
+
+
+def test_the_sweep_advances_an_open_grant_out_of_the_due_index():
+    store, table = make_store()
+
+    assert store.advance_tracking("t-1", "open", "untracked")
+
+    kwargs = table.update_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": "tracking:t-1", "sk": "grant"}
+    assert resolved(kwargs) == "SET status = :status, updated_at = :now REMOVE due_pk, due_at"
+    assert kwargs["ConditionExpression"] == "#s = :expected"
+    assert kwargs["ExpressionAttributeValues"][":expected"] == "open"
+
+
+def test_a_grant_a_late_op_already_tracked_is_not_advanced_again():
+    store, table = make_store()
+    table.update_item.side_effect = conditional_failure("UpdateItem")
+
+    assert not store.advance_tracking("t-1", "open", "released")
