@@ -5,7 +5,7 @@ from pathlib import Path
 
 from receiver import autofix
 from receiver.config import EXAMPLE_CONFIG_PATH, PLACEHOLDER_PREFIX, load_config
-from receiver.findings import RESULT_FIELDS
+from receiver.findings import CURRENT_SCHEMA_VERSION, RESULT_FIELDS, URGENCIES
 from receiver.models import INVESTIGATED_INFO_TITLES
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
@@ -369,13 +369,46 @@ def test_the_prompt_sends_the_investigator_through_the_repo_docs():
     assert "at most 50 files" in body
 
 
-def test_the_prompt_emits_schema_version_2_with_the_fixability_rubric():
+def test_the_prompt_emits_schema_version_3_with_both_rubrics():
+    """The prompt emits the version the receiver calls current, offers
+    exactly the urgency values the receiver accepts, and carries both
+    rubrics. Phrases are matched whitespace-normalised, because the file is
+    hard-wrapped and a phrase can straddle a line break."""
     body = investigator()
+    flat = " ".join(body.split())
 
-    assert '"schema_version": 2' in body
+    assert CURRENT_SCHEMA_VERSION == 3
+    assert f'"schema_version": {CURRENT_SCHEMA_VERSION}' in body
     assert '"fixability"' in body
+    assert '"urgency": ' + " | ".join(f'"{u}"' for u in URGENCIES) in body
     for phrase in ("single contained change", "existing test pattern"):
-        assert phrase in body, f"the fixability rubric dropped: {phrase}"
+        assert phrase in flat, f"the fixability rubric dropped: {phrase}"
+    for phrase in (
+        "never urgent",
+        "one level below",
+        "issue conventions files",
+        "report low when you gathered nothing",
+    ):
+        assert phrase in flat, f"the urgency rubric dropped: {phrase}"
+    # The evidence the rubric weighs has to be gathered in step 2.
+    for phrase in ("affected-user count", "every environment the issue has events in"):
+        assert phrase in flat, f"step 2 no longer gathers: {phrase}"
+
+
+def test_step_3_names_the_conventions_files_only_through_their_placeholder():
+    """The public prompt names no repository's files. The operator writes the
+    `issues.conventions` paths over this placeholder when pasting the prompt,
+    the same way the receiver's origin is written over its own."""
+    body = investigator()
+    flat = " ".join(body.split())
+    step_3 = body[body.index("\n3. ") : body.index("\n4. ")]
+
+    assert body.count("REPLACE_WITH_ISSUE_CONVENTIONS") == 1
+    assert "REPLACE_WITH_ISSUE_CONVENTIONS" in step_3
+    assert "repository-relative paths: REPLACE_WITH_ISSUE_CONVENTIONS." in flat
+    # CLAUDE.md and README.md are the generic root docs any repository may
+    # have; any other markdown path here would be one deployment's file.
+    assert set(re.findall(r"[\w./-]+\.md\b", body)) <= {"CLAUDE.md", "README.md"}
 
 
 def probe() -> str:
