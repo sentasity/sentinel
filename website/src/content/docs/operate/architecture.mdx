@@ -16,11 +16,14 @@ The engine is one Lambda (the receiver), one DynamoDB table, a one-minute EventB
 | `POST /findings` | The investigator session | Findings document for a fired batch; the response vends any autofix grants it earned |
 | `POST /findings/probe` | The probe session | Configuration probe report |
 | `POST /autofix-result` | The same session's fix phase | Outcome callback, capability-token auth |
+| `POST /issues` | The investigator session | One named issue operation, tracking-token auth; the receiver makes the GitHub write as the App |
 | `GET /health` | Operators | Liveness |
 
 The same Lambda is also invoked directly (not over the URL) by the EventBridge rule that drives the sweep, so the scheduled path is not reachable from the internet.
 
-State lives in one DynamoDB table (`receiver/store.py`): posted alert cards and their Teams message ids, the pending-investigation queue, dedupe and skip caches, autofix dispatches and their callback tokens.
+State lives in one DynamoDB table (`receiver/store.py`): posted alert cards and their Teams message ids, the pending-investigation queue, dedupe and skip caches, autofix dispatches and their callback tokens, and tracking grants with a record of each issue operation made under them.
+
+**The issue proxy** (`issues.py`, with the route in `handler.py` and the calls in `github_app.py`). While `issues.enabled` is on for a batch's environment, the `/findings` response carries a `tracking` block beside `autofix`: one grant per delivered result, each a tracking id and a token stored only as its hash, scoped to that alert's thread and dead 30 minutes after findings, or 90 when the result also earned an autofix grant, whose fix phase comes first. A session that ends a finding without a pull request calls `POST /issues` with one of five named operations: `file_issue`, `comment`, `reopen`, `set_fields`, `add_to_project`. The receiver checks the request against fixed rules, checks that a numbered issue is an issue in `target_repo` (never a pull request, never one transferred away), claims the per-alert and per-day caps, and makes the write as the GitHub App with a token minted for that one operation, redacting the text and closing it with a line naming the Sentry issue. One new issue, duplicate comment or reopen becomes the alert's tracking issue, and that outcome's link is posted in the alert's thread; `set_fields` and `add_to_project` touch only the issue the alert itself filed. A resent operation is answered from its stored record instead of being written twice. When a grant expires with no tracking outcome, the sweep posts a notice in the thread, so an alert a session never filed still shows.
 
 ## Alert to Teams card
 
