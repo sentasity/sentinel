@@ -3,7 +3,7 @@ title: How it works
 description: The pipeline from a Sentry webhook to a pull request, and the gates at each step.
 ---
 
-Four stages, each with a gate that can stop the issue going further.
+Five stages, each with a gate that can stop the issue going further.
 
 ```mermaid
 flowchart LR
@@ -14,6 +14,8 @@ flowchart LR
     Receiver -->|grants| Routine
     Routine -->|fix patch| Receiver
     Receiver -->|pull request| Repo[Target repo]
+    Routine -->|issue operations| Receiver
+    Receiver -->|issue| Repo
 ```
 
 ## 1. Alert
@@ -108,9 +110,27 @@ and the pull request body both end with a `Fixes <short id>` line naming the iss
 grant was for, so Sentry resolves that issue in the first release that ships the merge.
 A grant that never reports is failed into the thread once its hour is up.
 
-The gate stays on the receiver rather than moving into the session, and so does the
-only GitHub credential in the pipeline. [The security model](/sentinel/security-model/)
-explains why both of those matter.
+The gate stays on the receiver rather than moving into the session, and so does every
+GitHub write: the session reads as the operator through the platform's GitHub tools and
+has no write path. [The security model](/sentinel/security-model/) explains why both of
+those matter.
+
+## 5. Track
+
+A finding that ends without a pull request is filed as a GitHub issue, so it is tracked
+somewhere other than a chat thread. That covers a finding the gate did not grant, a
+partial or failed investigation, and a fix attempt that stopped short. A finding sent
+back as a finished fix is never filed, even when the receiver then fails to open the
+pull request, because that failure is the receiver's own.
+
+The session searches the target repository's issues, through two read-only GitHub tools,
+for one that already describes the same defect. It comments on a duplicate, reopens a
+closed one whose fix the investigated release already contains, or files a new issue the
+way the repository's own issue conventions describe, with a Priority taken from the
+finding's urgency and links to related issues. It makes none of those writes itself. It
+asks the receiver for each one by name, under a token issued with the findings for that
+one alert, and the receiver makes the write as the App and links the issue in the
+alert's thread.
 
 ## The gates, in one table
 
@@ -131,6 +151,7 @@ Defaults as they ship in `config/receiver.yaml.example`.
 | `autofix.min_fixability` | `medium` | Minimum fixability for a fix attempt |
 | `autofix.exclude_paths` | empty | Cited paths that veto a fix attempt |
 | `autofix.daily_pr_cap` | 5 | Most pull requests opened in a day |
+| `issues.enabled` | `false` | Whether a finding that ends without a pull request is filed as a GitHub issue |
 
 Every one of these is a config value, so tightening a gate is a deploy rather than a
 code change. [Configure and deploy](/sentinel/deploy/configure/) covers setting them.
