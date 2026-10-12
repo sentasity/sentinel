@@ -52,6 +52,14 @@ RAW_BLOB = "application/vnd.github.raw+json"
 # push one.
 AUTOFIX_PERMISSIONS = {"contents": "write", "pull_requests": "write"}
 
+# The installation's permission key for the organization's Issue fields,
+# read-only. GitHub's App settings page names the permission but not its
+# key, and the installation-token reference does not list it, so the key was
+# read back from the approved installation (`GET /app/installations/{id}`)
+# and proved by minting a token that carries it. `set_fields` needs it to
+# resolve field and option names; no other mint carries it.
+ISSUE_FIELDS_PERMISSION = "issue_fields"
+
 # The mode a whole file gets when the base tree does not already carry the
 # path. A path the base carries as an executable keeps its executable bit;
 # one it carries as anything but a regular file is refused outright.

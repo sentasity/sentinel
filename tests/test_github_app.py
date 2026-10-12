@@ -2,13 +2,19 @@
 
 import base64
 import os
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from receiver import autofix
 
-from receiver.github_app import AUTOFIX_PERMISSIONS, GitHubAppClient, PullRequestOutcome
+from receiver.github_app import (
+    AUTOFIX_PERMISSIONS,
+    ISSUE_FIELDS_PERMISSION,
+    GitHubAppClient,
+    PullRequestOutcome,
+)
 from receiver.patch import blob_sha, parse_patch
 from tests.gitrepo import Repo
 
@@ -60,6 +66,17 @@ def test_the_autofix_grant_never_includes_workflows():
     # the scope is the enforcement, so this invariant gets its own test.
     assert AUTOFIX_PERMISSIONS == {"contents": "write", "pull_requests": "write"}
     assert "workflows" not in AUTOFIX_PERMISSIONS
+
+
+def test_the_issue_fields_permission_is_a_github_permission_key():
+    """Read back from the approved installation rather than guessed. GitHub's
+    permission keys are lowercase snake_case, and this one is none of the
+    other permissions an issue op or a fix mints."""
+    assert re.fullmatch(r"[a-z]+(?:_[a-z]+)*", ISSUE_FIELDS_PERMISSION)
+    assert "issue" in ISSUE_FIELDS_PERMISSION
+    assert ISSUE_FIELDS_PERMISSION not in {
+        "issues", "organization_projects", "contents", "pull_requests", "workflows",
+    }
 
 
 @patch("receiver.github_app.jwt.encode", return_value="app.jwt")
