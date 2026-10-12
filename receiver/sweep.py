@@ -390,11 +390,6 @@ TRACKING_SEARCH_UNAVAILABLE_NOTICE = (
     "issue may already describe it."
 )
 
-# Dispatch outcomes that end a granted result without a pull request and
-# that the session files itself, so a grant still open at expiry is a gap.
-# A session-reported `failed` joins them through its `failure` value.
-SESSION_ENDED_WITHOUT_PR = ("declined_in_session", "not_reproducible", "aborted_drift")
-
 # A dispatch still waiting on its callback or mid-sequence: its grant is
 # not decided yet, and the next tick will see it settled.
 UNSETTLED_DISPATCH = ("dispatched", "opening")
