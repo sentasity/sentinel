@@ -89,3 +89,12 @@ PROBE_LOG_LIMIT = 4000
 AUTOFIX_DISPATCHED_MARKER = "AUTOFIX_DISPATCHED"
 AUTOFIX_DECLINED_MARKER = "AUTOFIX_DECLINED"
 AUTOFIX_FAILED_MARKER = "AUTOFIX_FAILED"
+
+# Issue tracking. Alarmed: every line under it is an alert that may now be
+# tracked nowhere but its Teams thread (a grant not written, an alert left
+# untracked when its grant expired), a receiver and prompt that disagree (a
+# rejected op), or a GitHub write that failed or did not land as sent.
+# Refusals are deliberately not under it: a cap or a state check said no,
+# and if that leaves an alert untracked the backstop logs this marker once,
+# at the grant's expiry. Imported by the CDK stack rather than repeated.
+ISSUE_TRACKING_FAILED_MARKER = "ISSUE_TRACKING_FAILED"

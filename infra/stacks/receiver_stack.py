@@ -28,6 +28,7 @@ from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
+    ISSUE_TRACKING_FAILED_MARKER,
     WINDOW_EXHAUSTED_MARKER,
 )
 
@@ -267,7 +268,7 @@ class ReceiverStack(Stack):
             cloudwatch_actions.SnsAction(self.alarm_topic)
         )
 
-        # Two more log-derived metrics, both alarmed. Deliberately absent: any
+        # More log-derived metrics, every one alarmed. Deliberately absent: any
         # alarm on a paused routine. A pause is the operator's own budget kill
         # switch, and paging somebody about a thing they just did would train
         # them to ignore the exhaustion alarm below, which nobody chose.
@@ -289,6 +290,13 @@ class ReceiverStack(Stack):
                 AUTOFIX_FAILED_MARKER,
                 "An autofix dispatch failed or never called back. The thread "
                 "was promised a fix attempt and got a failure line.",
+            ),
+            (
+                "IssueTrackingFailures",
+                ISSUE_TRACKING_FAILED_MARKER,
+                "An alert's GitHub issue tracking failed: a grant was not "
+                "written, an issue operation was rejected or failed, a write "
+                "did not land as sent, or an alert was left untracked.",
             ),
         ):
             metric_filter = self.log_group.add_metric_filter(

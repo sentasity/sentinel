@@ -399,6 +399,38 @@ def test_an_autofix_failure_is_extracted_and_alarmed(template):
     )
 
 
+def test_an_issue_tracking_failure_is_extracted_and_alarmed(template):
+    template.has_resource_properties(
+        "AWS::Logs::MetricFilter",
+        Match.object_like(
+            {
+                "FilterPattern": f'"{observability.ISSUE_TRACKING_FAILED_MARKER}"',
+                "MetricTransformations": Match.array_with(
+                    [
+                        Match.object_like(
+                            {
+                                "MetricName": "IssueTrackingFailures",
+                                "MetricNamespace": "Sentinel",
+                                "DefaultValue": 0,
+                            }
+                        )
+                    ]
+                ),
+            }
+        ),
+    )
+    template.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        Match.object_like(
+            {
+                "MetricName": "IssueTrackingFailures",
+                "Namespace": "Sentinel",
+                "Threshold": 1,
+            }
+        ),
+    )
+
+
 def test_the_lambda_bundle_is_built_for_the_function_architecture():
     """The bundle's platform must match the architecture the function runs on.
 
