@@ -423,7 +423,7 @@ def test_findings_for_an_already_delivered_batch_is_200_with_no_repost():
 
     assert response["statusCode"] == 200
     assert response["headers"]["content-type"] == "application/json"
-    assert json.loads(response["body"]) == {"autofix": None}
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     deliver.assert_not_called()
 
 
@@ -840,7 +840,7 @@ def test_a_declined_finding_returns_a_null_autofix_block(
 
     response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
 
-    assert json.loads(response["body"]) == {"autofix": None}
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix declined: project not opted in." in json.dumps(card)
     github_client.return_value.mint_autofix_token.assert_not_called()
@@ -969,7 +969,7 @@ def test_a_disabled_gate_leaves_the_reply_untouched(
 
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix" not in json.dumps(card)
-    assert json.loads(response["body"]) == {"autofix": None}
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     github_client.return_value.mint_autofix_token.assert_not_called()
 
 
@@ -1000,9 +1000,215 @@ def test_a_gate_crash_never_costs_the_findings_reply(
     bot_client.return_value.reply_card_in_thread.assert_called_once()
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix" not in json.dumps(card)
-    assert json.loads(response["body"]) == {"autofix": None}
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     github_client.return_value.mint_autofix_token.assert_not_called()
     assert observability.AUTOFIX_FAILED_MARKER in caplog.text
+
+
+# ---- Issue tracking: the grant at findings time ----
+
+from receiver.issues import GRANT_FIELDS, TRACKING_CAPS, TRACKING_FIELDS
+
+
+def tracking_cfg(tmp_path, *, autofix=False, environments="[staging]"):
+    """A config with issue filing on; the rows these tests deliver are staging."""
+    from receiver.config import load_config
+    from tests.test_config import AUTOFIX, ISSUES, VALID, write
+
+    issues_block = ISSUES.replace("environments: [staging]", f"environments: {environments}")
+    return load_config(write(tmp_path, VALID + (AUTOFIX if autofix else "") + issues_block))
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_grants_one_entry_per_delivered_result(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from receiver.store import AlertStore
+
+    config.return_value = tracking_cfg(tmp_path)
+    store = alert_store.return_value
+    store.advance.return_value = True
+
+    response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    body = json.loads(response["body"])
+    assert body["autofix"] is None
+    block = body["tracking"]
+    # The key sets are a contract with the investigator prompt, which reads
+    # these names verbatim, so the whole shape is pinned.
+    assert set(block) == set(TRACKING_FIELDS)
+    assert block["repo"] == "acme-tools/checkout"
+    assert block["issues_url"] == "https://example.test/issues"
+    assert block["issue_types"] == ["Bug", "Task"]
+    assert block["fields"] == ["Priority", "Effort"]
+    assert block["project"] is True
+    assert block["caps"] == TRACKING_CAPS
+    assert [g["short_id"] for g in block["grants"]] == ["CHECKOUT-4B2", SECOND_SHORT_ID]
+    records = [c.args[0] for c in store.put_tracking_grant.call_args_list]
+    assert len(records) == 2
+    for record, grant, row in zip(records, block["grants"], two_autofix_rows()):
+        assert set(grant) == set(GRANT_FIELDS)
+        assert grant["issue_id"] == row["issue_id"]
+        assert record["tracking_id"] == grant["tracking_id"]
+        assert record["expires_at"] == grant["expires_at"]
+        # Only the hash is stored, as for the autofix callback token.
+        assert record["token_hash"] == AlertStore.hash_token(grant["tracking_token"])
+        assert grant["tracking_token"] not in str(record)
+        assert record["expect"] == "always"
+        assert "dispatch_id" not in record
+        for key in ("issue_id", "environment", "release", "conversation_id", "message_id"):
+            assert record[key] == row[key]
+        assert record["short_id"] == row["short_id"]
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_gives_a_granted_result_the_fix_phase_and_then_its_window(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from datetime import datetime
+
+    def at(stamp: str) -> datetime:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+    config.return_value = tracking_cfg(tmp_path, autofix=True)
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+
+    before = handler._deadline(3600 + 1800)
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    after = handler._deadline(3600 + 1800)
+
+    body = json.loads(response["body"])
+    record = store.put_tracking_grant.call_args.args[0]
+    assert record["expect"] == "unless_pr"
+    assert record["dispatch_id"] == body["autofix"]["grants"][0]["dispatch_id"]
+    assert at(before) <= at(record["expires_at"]) <= at(after)
+    assert body["tracking"]["grants"][0]["tracking_id"] == record["tracking_id"]
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_grants_a_failed_investigation_too(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """Whatever its status, a delivered result gets a grant; the session
+    decides whether to file it."""
+    config.return_value = tracking_cfg(tmp_path)
+    store = alert_store.return_value
+    store.advance.return_value = True
+    payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
+    payload["results"][0]["status"] = "failed"
+    payload["results"][0]["failure_reason"] = "the session ran out of turns"
+
+    response = deliver_findings(payload, [autofix_row()])
+
+    assert len(json.loads(response["body"])["tracking"]["grants"]) == 1
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_is_null_when_issue_filing_is_off(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    config.return_value = load_config(write(tmp_path, VALID))
+    store = alert_store.return_value
+    store.advance.return_value = True
+
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
+    store.put_tracking_grant.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_is_null_for_an_environment_not_listed(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    config.return_value = tracking_cfg(tmp_path, environments="[prod]")
+    store = alert_store.return_value
+    store.advance.return_value = True
+
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+
+    assert json.loads(response["body"])["tracking"] is None
+    store.put_tracking_grant.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_covers_every_environment_when_none_is_listed(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    config.return_value = tracking_cfg(tmp_path, environments="[]")
+    store = alert_store.return_value
+    store.advance.return_value = True
+
+    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+
+    assert len(json.loads(response["body"])["tracking"]["grants"]) == 1
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_grant_crash_never_costs_the_findings_reply(
+    config, alert_store, bot_client, github_client, tmp_path, caplog
+):
+    config.return_value = tracking_cfg(tmp_path)
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.put_tracking_grant.side_effect = RuntimeError("dynamo down")
+
+    with caplog.at_level(logging.ERROR):
+        response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+
+    assert response["statusCode"] == 200
+    bot_client.return_value.reply_card_in_thread.assert_called_once()
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2" in caplog.text
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_tracking_is_null_when_no_row_wins_the_delivery_claim(
+    config, alert_store, bot_client, github_client, tmp_path
+):
+    """Every row already delivered, or lost to the deadline sweep: nothing
+    was delivered, so nothing is granted, and the block is null rather than
+    an object with an empty `grants` list."""
+    config.return_value = tracking_cfg(tmp_path)
+    store = alert_store.return_value
+    store.advance.return_value = False
+
+    response = deliver_findings(two_passing_results(), two_autofix_rows())
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
+    store.put_tracking_grant.assert_not_called()
+    bot_client.return_value.reply_card_in_thread.assert_not_called()
 
 
 from receiver.handler import route

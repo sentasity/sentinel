@@ -15,7 +15,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from receiver import autofix
+from receiver import autofix, issues
 from receiver.bot import BotError, TeamsBotClient
 from receiver.cards import card_summary, render_card
 from receiver.config import (
@@ -42,6 +42,7 @@ from receiver.observability import (
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
     FINDINGS_SCHEMA_OUTDATED_MARKER,
+    ISSUE_TRACKING_FAILED_MARKER,
     PROBE_LOG_LIMIT,
     PROBE_MARKER,
     flush_sentry,
@@ -350,15 +351,78 @@ def _post_findings_reply(d: dict) -> None:
         schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
 
 
+def tracking_grant(result, row: dict, dispatch_id: str | None) -> dict:
+    """Write one delivered result's tracking grant; return its entry for the
+    findings response.
+
+    Every delivered result gets one while issue filing is on for its
+    environment, whatever its status or level: the session decides whether
+    to file, and a grant that expires unused is what tells the backstop
+    sweep to say so in the thread. The thread is copied from the row, so it
+    is the receiver's to name, never the session's. The token is returned
+    here and stored only as its hash, as the autofix callback token is, so a
+    table read cannot replay it. A result that also earned an autofix grant
+    files only after its fix phase, so its window starts after that phase's
+    deadline.
+    """
+    expect = "unless_pr" if dispatch_id else "always"
+    tracking_id = str(uuid.uuid4())
+    tracking_token = secrets.token_urlsafe(32)
+    expires_at = _deadline(issues.grant_lifetime_seconds(expect))
+    record = {
+        "tracking_id": tracking_id,
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "environment": row["environment"],
+        "release": row["release"],
+        "conversation_id": row["conversation_id"],
+        "message_id": row["message_id"],
+        "token_hash": AlertStore.hash_token(tracking_token),
+        "expect": expect,
+        "expires_at": expires_at,
+    }
+    if dispatch_id:
+        record["dispatch_id"] = dispatch_id
+    alert_store().put_tracking_grant(record)
+    return {
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "tracking_id": tracking_id,
+        "tracking_token": tracking_token,
+        "expires_at": expires_at,
+    }
+
+
+def tracking_block(cfg: ReceiverConfig, grants: list[dict]) -> dict | None:
+    """The findings response's `tracking` object, or None when no grant was
+    written. `issue_types`, `fields` and `project` echo the operator config
+    so the session sends only what `/issues` will accept; `caps` are the
+    limits it enforces."""
+    if not grants:
+        return None
+    return {
+        "repo": cfg.target_repo,
+        "issues_url": cfg.issues_proxy_url,
+        "issue_types": list(cfg.issues_issue_types),
+        "fields": list(cfg.issues_fields),
+        "project": cfg.issues_project_number > 0,
+        "caps": dict(issues.TRACKING_CAPS),
+        "grants": grants,
+    }
+
+
 def deliver_findings(body, rows: list[dict]) -> dict:
     """Validate one batch's findings, reply under each card, and answer the
-    session with any autofix grants it has earned.
+    session with any autofix grants it has earned and, while issue filing is
+    on for the batch's environment, one tracking grant per delivered result.
 
     The response body is the only message the receiver can ever send the
-    session that POSTed these findings, and a grant is all it carries.
-    The session writes the fix and posts the files back, and the receiver
-    opens the pull request itself, so no credential travels down this
-    channel and nothing here can fail between the gate and the reply.
+    session that POSTed these findings, and grants are all it carries. The
+    session writes the fix and posts the files back, and the receiver opens
+    the pull request itself; a finding that ends without one is filed
+    through `/issues`, where the receiver makes the GitHub write. No GitHub
+    credential travels down this channel, and nothing here can fail between
+    the gate and the reply.
     """
     by_issue = {r["issue_id"]: r for r in rows}
     try:
@@ -403,8 +467,23 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
             LOG.error("%s %s gate crashed: %s", AUTOFIX_FAILED_MARKER, result.short_id, exc)
             disposition, grant = "", None
+        tracking = None
+        if cfg.issues_enabled_for(row["environment"]):
+            try:
+                tracking = tracking_grant(result, row, grant["dispatch_id"] if grant else None)
+            except Exception as exc:  # noqa: BLE001 - issue tracking must never cost the reply
+                LOG.error(
+                    "%s %s grant not written: %s",
+                    ISSUE_TRACKING_FAILED_MARKER, result.short_id, exc,
+                )
         deliveries.append(
-            {"result": result, "row": row, "disposition": disposition, "grant": grant}
+            {
+                "result": result,
+                "row": row,
+                "disposition": disposition,
+                "grant": grant,
+                "tracking": tracking,
+            }
         )
 
     for d in deliveries:
@@ -431,17 +510,19 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             )
 
     grants = [d["grant"] for d in deliveries if d["grant"]]
-    if not grants:
-        return respond_json(200, {"autofix": None})
+    autofix_block = None
+    if grants:
+        autofix_block = {
+            "repo": cfg.target_repo,
+            "base_branch": cfg.autofix_base_branch,
+            "callback_url": cfg.autofix_callback_url,
+            "grants": grants,
+        }
     return respond_json(
         200,
         {
-            "autofix": {
-                "repo": cfg.target_repo,
-                "base_branch": cfg.autofix_base_branch,
-                "callback_url": cfg.autofix_callback_url,
-                "grants": grants,
-            }
+            "autofix": autofix_block,
+            "tracking": tracking_block(cfg, [d["tracking"] for d in deliveries if d["tracking"]]),
         },
     )
 
@@ -474,11 +555,13 @@ def handle_findings(event: dict) -> dict:
         # Same shape as every other 200 from this route: the session parses
         # this body rather than reading the status code, and a retried POST
         # is exactly when it would meet a body it cannot parse. There are no
-        # grants to re-vend, since the batch that earned them already got
-        # them. The 401s above stay plain text: an error carries nothing for
-        # the session to read.
+        # grants to re-vend, autofix or tracking, since the batch that earned
+        # them already got them and their tokens are stored only as hashes;
+        # a tracking grant the session never received expires into the
+        # backstop's thread notice. The 401s above stay plain text: an error
+        # carries nothing for the session to read.
         LOG.info("findings for an already-delivered batch; ignoring")
-        return respond_json(200, {"autofix": None})
+        return respond_json(200, {"autofix": None, "tracking": None})
 
     try:
         body = raw_body(event)
