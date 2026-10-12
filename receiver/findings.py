@@ -136,6 +136,9 @@ def render_reply(result: "Result") -> tuple[str, int]:
     """
     lines = [f"**Automated investigation: {escape_prose(result.short_id)}**"]
 
+    if result.urgency:
+        lines.append(f"Urgency: {result.urgency}")
+
     if result.status == "investigated":
         lines.append(f"Confidence: {result.confidence}")
         if result.fixability:
@@ -259,7 +262,11 @@ def render_reply_card(result: "Result", disposition: str = "") -> tuple[dict, in
     instead of eight. Cards render no code spans, so identifiers get the same
     markdown escaping as prose instead of `code()`.
     """
+    # Urgency leads: it is what a person scanning the channel uses to decide
+    # what to open first. One of four fixed words, so it needs no escaping.
     status_bits = []
+    if result.urgency:
+        status_bits.append(f"Urgency: {result.urgency}")
     if result.status == "investigated":
         status_bits.append(f"Confidence: {result.confidence}")
         if result.fixability:

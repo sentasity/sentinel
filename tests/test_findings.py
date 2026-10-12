@@ -382,6 +382,13 @@ def result_v2(**changes):
     return doc.results[0]
 
 
+def result_v3(**changes):
+    body = payload_v3()
+    body["results"][0].update(changes)
+    doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+    return doc.results[0]
+
+
 def visible_texts(card):
     """Text of every block outside the collapsed details container."""
     return [b["text"] for b in card["body"] if b.get("type") == "TextBlock"]
@@ -396,12 +403,12 @@ def detail_texts(card):
 
 
 def test_the_reply_card_leads_with_the_tldr():
-    card, redactions = render_reply_card(result_v2())
+    card, redactions = render_reply_card(result_v3())
 
     assert card["body"][0]["text"] == "Automated investigation: CHECKOUT-4B2"
     assert card["body"][0]["weight"] == "Bolder"
     assert card["body"][1]["text"] == (
-        "Confidence: high · Fixability: high · Release: 79bad4b79fb0"
+        "Urgency: high · Confidence: high · Fixability: high · Release: 79bad4b79fb0"
     )
     assert (
         "submit\\_order wraps capture\\_intent in a bare except, so the gateway "
@@ -413,6 +420,41 @@ def test_the_reply_card_leads_with_the_tldr():
         in visible_texts(card)
     )
     assert redactions == 0
+
+
+def test_a_v2_reply_card_keeps_its_status_line():
+    """Findings from an older prompt carry no urgency and render as before."""
+    card, _ = render_reply_card(result_v2())
+
+    assert card["body"][1]["text"] == (
+        "Confidence: high · Fixability: high · Release: 79bad4b79fb0"
+    )
+
+
+def test_a_failed_v3_reply_card_still_leads_with_its_urgency():
+    result = result_v3(
+        status="failed",
+        urgency="low",
+        confidence="low",
+        root_cause="",
+        failure_reason="git checkout failed: unknown revision",
+    )
+
+    card, _ = render_reply_card(result)
+
+    assert card["body"][1]["text"] == (
+        "Urgency: low · Status: failed (confidence: low) · Release: 79bad4b79fb0"
+    )
+
+
+def test_render_reply_puts_urgency_on_the_line_after_the_title():
+    text, _ = render_reply(result_v3())
+
+    assert text.split("\n")[:3] == [
+        "**Automated investigation: CHECKOUT-4B2**",
+        "Urgency: high",
+        "Confidence: high",
+    ]
 
 
 def test_the_reply_card_collapses_evidence_behind_the_details_toggle():
