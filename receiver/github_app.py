@@ -1,8 +1,10 @@
-"""GitHub App auth and the pull requests the receiver opens for autofix.
+"""GitHub App auth, the pull requests the receiver opens for autofix, and
+the issue writes it makes for the issue proxy.
 
 Modeled on receiver.routines.RoutineClient's posture: public methods never
-raise; a failure returns None and the caller decides. Tokens are minted per
-pull request, spent inside the invocation that minted them, and never
+raise; a failure returns None or a failure object and the caller decides.
+Tokens are minted per pull request or per issue operation, downscoped to
+what that one needs, spent inside the invocation that minted them, and never
 persisted or handed to anything outside this process.
 """
 
@@ -12,7 +14,7 @@ import base64
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jwt
 import requests
@@ -60,6 +62,30 @@ AUTOFIX_PERMISSIONS = {"contents": "write", "pull_requests": "write"}
 # resolve field and option names; no other mint carries it.
 ISSUE_FIELDS_PERMISSION = "issue_fields"
 
+# Each issue op's mint, downscoped to what that op needs, the way
+# AUTOFIX_PERMISSIONS scopes a fix. No entry carries `contents`,
+# `pull_requests`, `workflows` or any administration permission, so an
+# issue op's token cannot write a file or open a pull request whatever its
+# request said.
+OP_PERMISSIONS = {
+    "file_issue": {"issues": "write"},
+    "comment": {"issues": "write"},
+    "reopen": {"issues": "write"},
+    "set_fields": {"issues": "write", ISSUE_FIELDS_PERMISSION: "read"},
+    "add_to_project": {"issues": "read", "organization_projects": "write"},
+}
+
+# The GitHub part of one issue op, from the mint to its last call. The
+# longest op is six calls (the two-call mint, three label pages, the
+# create), each capped at TIMEOUT_SECONDS; what is left of the Lambda's 60
+# seconds covers the settle writes and the Teams reply.
+ISSUE_SEQUENCE_BUDGET_SECONDS = 35
+
+# A repository's labels are listed 100 a page for at most this many pages.
+# A requested label past the last page reads as unknown and is dropped
+# loudly, rather than spending the op's budget on more pages.
+LABEL_PAGES = 3
+
 # The mode a whole file gets when the base tree does not already carry the
 # path. A path the base carries as an executable keeps its executable bit;
 # one it carries as anything but a regular file is refused outright.
@@ -84,6 +110,28 @@ class MintedToken:
 
     token: str
     expires_at: str  # ISO-8601, straight from the GitHub response
+
+
+@dataclass(frozen=True)
+class IssueCall:
+    """What one issue-proxy call did. On a 2xx, `ok` is True and `body` is
+    GitHub's JSON. Otherwise `status` is GitHub's answer (0 when none came
+    back) and `step` names the call that failed, which the handler returns
+    as the reason for its 502."""
+
+    ok: bool
+    status: int = 0
+    body: dict = field(default_factory=dict)
+    step: str = ""
+
+
+class GitHubCallFailed(RuntimeError):
+    """One issue-proxy call answered outside 200 to 299, or not at all."""
+
+    def __init__(self, step: str, status: int, detail: str = ""):
+        super().__init__(f"{step}: HTTP {status} {detail}".strip())
+        self.step = step
+        self.status = status
 
 
 class GitHubAppClient:
@@ -148,23 +196,31 @@ class GitHubAppClient:
         minted.raise_for_status()
         return minted.json()
 
-    def mint_autofix_token(
-        self, repo: str, *, deadline: float | None = None
+    def mint_token(
+        self, repo: str, permissions: dict[str, str], *, deadline: float | None = None
     ) -> MintedToken | None:
-        """A one-hour token scoped to `repo` with AUTOFIX_PERMISSIONS.
+        """A one-hour token scoped to `repo` and downscoped to `permissions`.
 
-        None on any failure. Never raises: the caller sits in the callback
-        request path, where an exception would leave a claimed record
-        unsettled.
+        None on any failure, including a permission the installation does
+        not hold. Never raises: every caller sits in a request path, where an
+        exception would leave a claimed record unsettled.
         """
         try:
-            body = self._installation_token(repo, AUTOFIX_PERMISSIONS, deadline=deadline)
+            body = self._installation_token(repo, permissions, deadline=deadline)
             return MintedToken(
                 token=body["token"], expires_at=str(body.get("expires_at") or "")
             )
         except Exception as exc:  # noqa: BLE001 - auth/transport must classify, not crash
-            LOG.error("autofix token mint failed for %s: %s", repo, exc)
+            LOG.error(
+                "token mint failed for %s (%s): %s", repo, ", ".join(sorted(permissions)), exc
+            )
             return None
+
+    def mint_autofix_token(
+        self, repo: str, *, deadline: float | None = None
+    ) -> MintedToken | None:
+        """A one-hour token scoped to `repo` with AUTOFIX_PERMISSIONS."""
+        return self.mint_token(repo, AUTOFIX_PERMISSIONS, deadline=deadline)
 
     def _call(
         self,
@@ -447,6 +503,137 @@ class GitHubAppClient:
         if blob_sha(content) != sha:
             raise RuntimeError(f"blob {sha} came back as other content")
         return content
+
+    # ---- Issue proxy ----
+    #
+    # The calls behind the five issue ops. Every one takes its repository
+    # from the caller, which passes the configured target repository and
+    # never anything from a request; passes `allow_redirects=False`, because
+    # `requests` follows a GET's redirect by default and a transferred issue
+    # answers with one into another repository; and treats any status
+    # outside 200 to 299 as failure, where `_call`'s `raise_for_status`
+    # would let a 3xx through. Each takes the token its op minted.
+
+    def _strict(
+        self, method: str, url: str, token: str, *, step: str, deadline: float | None, **kwargs
+    ) -> requests.Response:
+        """One issue-proxy call. Raises GitHubCallFailed on any answer outside
+        200 to 299, a transport error, or a spent budget."""
+        try:
+            got = getattr(self.session, method)(
+                url,
+                headers=self._headers(token),
+                timeout=self._timeout(deadline),
+                allow_redirects=False,
+                **kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 - transport and budget failures classify, never crash
+            raise GitHubCallFailed(step, 0, str(exc)) from exc
+        if not 200 <= got.status_code < 300:
+            raise GitHubCallFailed(step, got.status_code)
+        return got
+
+    def _issue_call(
+        self, method: str, url: str, token: str, *, step: str, deadline: float | None, **kwargs
+    ) -> IssueCall:
+        """`_strict` with the never-raise posture: the outcome as an IssueCall."""
+        try:
+            got = self._strict(method, url, token, step=step, deadline=deadline, **kwargs)
+            return IssueCall(ok=True, status=got.status_code, body=got.json())
+        except GitHubCallFailed as exc:
+            LOG.error("issue call failed: %s", exc)
+            return IssueCall(ok=False, status=exc.status, step=exc.step)
+        except Exception as exc:  # noqa: BLE001 - an unreadable body classifies, never crashes
+            LOG.error("issue call %s returned an unreadable body: %s", step, exc)
+            return IssueCall(ok=False, step=step)
+
+    def fetch_issue(
+        self, repo: str, number: int, *, token: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Read issue `number` in `repo`, redirects disabled, so the handler
+        can check it is an issue in that repository before writing to it."""
+        return self._issue_call(
+            "get", f"{API_BASE}/repos/{repo}/issues/{number}", token,
+            step="read the issue", deadline=deadline,
+        )
+
+    def list_label_names(
+        self, repo: str, *, token: str, deadline: float | None = None
+    ) -> list[str] | None:
+        """The repository's label names, following `Link: rel="next"` for
+        at most LABEL_PAGES pages of 100. None on any failure."""
+        url = f"{API_BASE}/repos/{repo}/labels"
+        params: dict | None = {"per_page": 100}
+        names: list[str] = []
+        try:
+            for _ in range(LABEL_PAGES):
+                got = self._strict(
+                    "get", url, token, step="list the labels", deadline=deadline, params=params
+                )
+                names += [str(label.get("name") or "") for label in got.json()]
+                url = str((got.links.get("next") or {}).get("url") or "")
+                params = None  # the next link carries its own query
+                if not url:
+                    break
+                if not url.startswith(f"{API_BASE}/"):
+                    raise GitHubCallFailed("list the labels", got.status_code, "next page off the API host")
+            else:
+                if url:
+                    LOG.warning(
+                        "%s has more than %d pages of labels; later ones read as unknown",
+                        repo, LABEL_PAGES,
+                    )
+        except Exception as exc:  # noqa: BLE001 - the handler answers 502, never a traceback
+            LOG.error("label list failed for %s: %s", repo, exc)
+            return None
+        return [name for name in names if name]
+
+    def file_issue(
+        self,
+        repo: str,
+        *,
+        token: str,
+        title: str,
+        body: str,
+        labels: Sequence[str] = (),
+        issue_type: str = "",
+        deadline: float | None = None,
+    ) -> IssueCall:
+        """Create an issue. `type` is the issue type's name, which the
+        create-issue reference accepts with the Issues permission alone."""
+        payload: dict = {"title": title, "body": body, "labels": list(labels)}
+        if issue_type:
+            payload["type"] = issue_type
+        return self._issue_call(
+            "post", f"{API_BASE}/repos/{repo}/issues", token,
+            step="create the issue", deadline=deadline, json=payload,
+        )
+
+    def comment_on_issue(
+        self, repo: str, number: int, *, token: str, body: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Comment on issue `number`; `body` is GitHub's comment, with its
+        own `html_url`."""
+        return self._issue_call(
+            "post", f"{API_BASE}/repos/{repo}/issues/{number}/comments", token,
+            step="post the comment", deadline=deadline, json={"body": body},
+        )
+
+    def reopen_issue(
+        self, repo: str, number: int, *, token: str, body: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Comment on closed issue `number`, then reopen it. The comment goes
+        first so a reopened issue never lacks its explanation; a failed
+        reopen after it names its own step, and a retry runs both again,
+        since a second comment is a smaller harm than a closed issue."""
+        comment = self.comment_on_issue(repo, number, token=token, body=body, deadline=deadline)
+        if not comment.ok:
+            return comment
+        return self._issue_call(
+            "patch", f"{API_BASE}/repos/{repo}/issues/{number}", token,
+            step="reopen the issue", deadline=deadline,
+            json={"state": "open", "state_reason": "reopened"},
+        )
 
 
 def _deletion(path: str, entry: dict) -> dict:

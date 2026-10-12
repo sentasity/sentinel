@@ -617,3 +617,237 @@ def test_a_blob_github_answers_wrongly_is_not_patched(encode, repo):
 
     assert outcome == PullRequestOutcome()
     assert fake.tree_request is None
+
+
+# --- The issue proxy -----------------------------------------------------------
+
+from receiver.github_app import (  # noqa: E402 - grouped with the tests that use them
+    ISSUE_SEQUENCE_BUDGET_SECONDS,
+    LABEL_PAGES,
+    OP_PERMISSIONS,
+    IssueCall,
+)
+from receiver.issues import OPS  # noqa: E402
+
+ISSUE_URL = f"https://api.github.com/repos/{REPO}/issues"
+
+
+def reply(status: int, body=None, *, links=None):
+    """A response for the issue calls: `links` is what requests parses
+    from a `Link` header, which the label listing follows."""
+    mock = response(status, body)
+    mock.json.return_value = body if body is not None else {}
+    mock.links = links or {}
+    return mock
+
+
+def issue_client(*, gets=(), posts=(), patches=()) -> tuple[GitHubAppClient, MagicMock]:
+    session = MagicMock()
+    session.get.side_effect = list(gets)
+    session.post.side_effect = list(posts)
+    session.patch.side_effect = list(patches)
+    return client_with(session), session
+
+
+def test_every_op_has_a_downscoped_mint():
+    assert set(OP_PERMISSIONS) == set(OPS)
+
+
+def test_no_issue_op_mint_can_write_code_or_pull_requests():
+    for permissions in OP_PERMISSIONS.values():
+        assert not {"contents", "pull_requests", "workflows"} & set(permissions)
+        assert not any(key.startswith("administration") for key in permissions)
+        assert not any("administration" in key for key in permissions)
+
+
+def test_each_op_mints_exactly_what_it_needs():
+    assert OP_PERMISSIONS["file_issue"] == {"issues": "write"}
+    assert OP_PERMISSIONS["comment"] == {"issues": "write"}
+    assert OP_PERMISSIONS["reopen"] == {"issues": "write"}
+    assert OP_PERMISSIONS["set_fields"] == {"issues": "write", ISSUE_FIELDS_PERMISSION: "read"}
+    assert OP_PERMISSIONS["add_to_project"] == {
+        "issues": "read", "organization_projects": "write",
+    }
+
+
+def test_the_issue_budget_leaves_the_lambda_time_to_settle_and_reply():
+    assert ISSUE_SEQUENCE_BUDGET_SECONDS == 35
+
+
+@pytest.mark.parametrize("op", OPS)
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_mint_token_posts_the_ops_permissions(encode, op):
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(201, MINT_BODY)
+
+    minted = client_with(session).mint_token(REPO, OP_PERMISSIONS[op])
+
+    assert minted.token == "ghs_inst"
+    assert session.post.call_args.kwargs["json"] == {
+        "repositories": ["checkout"], "permissions": OP_PERMISSIONS[op],
+    }
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_mint_the_installation_refuses_returns_none(encode):
+    """A permission the installation lacks is refused at the mint."""
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(422)
+
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is None
+
+
+def test_the_autofix_mint_is_the_general_mint_with_the_autofix_permissions():
+    client = client_with(MagicMock())
+    with patch.object(client, "mint_token", return_value="minted") as mint:
+        assert client.mint_autofix_token(REPO, deadline=12.0) == "minted"
+
+    mint.assert_called_once_with(REPO, AUTOFIX_PERMISSIONS, deadline=12.0)
+
+
+def test_fetch_issue_reads_with_redirects_disabled_and_the_ops_token():
+    client, session = issue_client(gets=[reply(200, {"number": 7, "state": "open"})])
+
+    got = client.fetch_issue(REPO, 7, token="ghs_issue")
+
+    assert got == IssueCall(ok=True, status=200, body={"number": 7, "state": "open"})
+    call = session.get.call_args
+    assert call.args[0] == f"{ISSUE_URL}/7"
+    assert call.kwargs["allow_redirects"] is False
+    assert call.kwargs["headers"]["Authorization"] == "Bearer ghs_issue"
+    assert 0 < call.kwargs["timeout"] <= 15
+
+
+@pytest.mark.parametrize("status", [301, 302, 404, 410, 500])
+def test_a_fetch_outside_2xx_is_a_failure_naming_its_step(status):
+    """A 3xx is what a transferred issue answers, and `raise_for_status`
+    would have let it through."""
+    client, _ = issue_client(gets=[reply(status, {"url": "elsewhere"})])
+
+    got = client.fetch_issue(REPO, 7, token="ghs_issue")
+
+    assert got == IssueCall(ok=False, status=status, step="read the issue")
+
+
+def test_a_transport_error_is_a_failure_with_no_status():
+    client, session = issue_client()
+    session.get.side_effect = OSError("connection reset")
+
+    assert client.fetch_issue(REPO, 7, token="t") == IssueCall(ok=False, step="read the issue")
+
+
+def test_file_issue_sends_title_body_labels_and_type():
+    client, session = issue_client(posts=[reply(201, {"number": 9, "html_url": "u"})])
+
+    got = client.file_issue(
+        REPO, token="ghs_issue", title="Fix: x", body="b", labels=["Backend"], issue_type="Bug"
+    )
+
+    assert got.ok and got.body["number"] == 9
+    call = session.post.call_args
+    assert call.args[0] == ISSUE_URL
+    assert call.kwargs["json"] == {"title": "Fix: x", "body": "b", "labels": ["Backend"], "type": "Bug"}
+    assert call.kwargs["allow_redirects"] is False
+
+
+def test_file_issue_without_a_type_sends_none():
+    client, session = issue_client(posts=[reply(201, {"number": 9})])
+
+    client.file_issue(REPO, token="t", title="Fix: x", body="b")
+
+    assert session.post.call_args.kwargs["json"] == {"title": "Fix: x", "body": "b", "labels": []}
+
+
+def test_a_refused_create_reports_githubs_status():
+    client, _ = issue_client(posts=[reply(422)])
+
+    got = client.file_issue(REPO, token="t", title="Fix: x", body="b", issue_type="Nope")
+
+    assert got == IssueCall(ok=False, status=422, step="create the issue")
+
+
+def test_comment_on_issue_posts_one_comment():
+    client, session = issue_client(posts=[reply(201, {"html_url": "c"})])
+
+    got = client.comment_on_issue(REPO, 7, token="t", body="Seen again.")
+
+    assert got.body == {"html_url": "c"}
+    assert session.post.call_args.args[0] == f"{ISSUE_URL}/7/comments"
+    assert session.post.call_args.kwargs["json"] == {"body": "Seen again."}
+
+
+def test_reopen_comments_first_then_reopens():
+    client, session = issue_client(
+        posts=[reply(201, {"html_url": "c"})],
+        patches=[reply(200, {"number": 7, "state": "open", "html_url": "i"})],
+    )
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got.ok and got.body["html_url"] == "i"
+    assert session.post.call_args.args[0] == f"{ISSUE_URL}/7/comments"
+    patch_call = session.patch.call_args
+    assert patch_call.args[0] == f"{ISSUE_URL}/7"
+    assert patch_call.kwargs["json"] == {"state": "open", "state_reason": "reopened"}
+    assert patch_call.kwargs["allow_redirects"] is False
+
+
+def test_a_failed_reopen_comment_never_reopens():
+    client, session = issue_client(posts=[reply(500)])
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got == IssueCall(ok=False, status=500, step="post the comment")
+    session.patch.assert_not_called()
+
+
+def test_a_reopen_that_fails_after_its_comment_names_the_reopen():
+    client, _ = issue_client(posts=[reply(201, {})], patches=[reply(403)])
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got == IssueCall(ok=False, status=403, step="reopen the issue")
+
+
+def test_labels_are_listed_across_pages():
+    page2 = "https://api.github.com/repositories/1/labels?per_page=100&page=2"
+    client, session = issue_client(
+        gets=[
+            reply(200, [{"name": "Backend"}], links={"next": {"url": page2}}),
+            reply(200, [{"name": "frontend"}]),
+        ]
+    )
+
+    assert client.list_label_names(REPO, token="t") == ["Backend", "frontend"]
+    first, second = session.get.call_args_list
+    assert first.args[0] == f"https://api.github.com/repos/{REPO}/labels"
+    assert first.kwargs["params"] == {"per_page": 100}
+    assert second.args[0] == page2
+    assert second.kwargs["params"] is None
+
+
+def test_labels_stop_after_three_pages():
+    pages = [
+        reply(200, [{"name": f"l{i}"}], links={"next": {"url": f"https://api.github.com/x?page={i + 2}"}})
+        for i in range(LABEL_PAGES)
+    ]
+    client, session = issue_client(gets=pages)
+
+    assert client.list_label_names(REPO, token="t") == ["l0", "l1", "l2"]
+    assert session.get.call_count == LABEL_PAGES == 3
+
+
+def test_a_next_page_off_the_api_host_fails_the_listing():
+    client, _ = issue_client(
+        gets=[reply(200, [{"name": "a"}], links={"next": {"url": "https://evil.example/labels"}})]
+    )
+
+    assert client.list_label_names(REPO, token="t") is None
+
+
+def test_a_failed_label_page_fails_the_listing():
+    client, _ = issue_client(gets=[reply(502)])
+
+    assert client.list_label_names(REPO, token="t") is None
