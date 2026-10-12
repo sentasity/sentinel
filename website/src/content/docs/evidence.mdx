@@ -40,8 +40,13 @@ wraps it in a bare `except` and reports the capture as sent, so the failure neve
 surfaces. The suggested fix mirrors `refund_intent`, which already has an explicit
 timeout branch.
 
-Confidence is **high** and fixability is **high**. Those two values are the only thing
-that decides what happens next.
+Urgency is **high**. A capture reported as sent when it was not puts payment data at
+risk, which would make this urgent in production, but the issue has only been seen in
+`staging`, so it is rated one level lower. Urgency says how much the issue matters and
+leads the status line so it is the first thing a reader scans.
+
+Confidence is **high** and fixability is **high**. Those two values decide whether the
+session goes on to attempt a fix; urgency plays no part in that decision.
 
 ## 3. The fix
 

@@ -66,6 +66,14 @@ and daily fire caps, and fires one session per batch. The session checks the rep
 out at the release SHA, investigates each issue in the batch, and posts a findings
 document back to the receiver, which renders it as a reply in the alert's thread.
 
+Each finding carries an urgency rating, from urgent down to low, judged against the
+target repository's own meanings for its issue priorities, or against generic defaults
+when the repository defines none. An issue seen only outside production is rated one
+level lower than the same evidence would earn in production, and never urgent, because
+it is not reaching users yet. Urgency leads the reply's status line, so a reader
+scanning the channel knows what to open first. The receiver shows and records the
+rating but never acts on it: the autofix gate below does not read it.
+
 A batch whose findings never arrive is failed loudly into the thread once its deadline
 passes. This matters more than it looks: the failure mode you cannot see is a session
 that dies quietly and leaves an alert looking investigated when nothing happened.

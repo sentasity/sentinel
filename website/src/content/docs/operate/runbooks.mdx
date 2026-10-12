@@ -162,6 +162,8 @@ Without `--reset`, a repeat issue posts a fresh card that points at the earlier 
 
 A routine holds one prompt, and the receiver's contract with it changes whenever step 7 of `prompts/investigator.md` does. The public routines API cannot read or write a routine's configuration, so the update happens on the routine's own page at claude.ai: substitute the receiver's origin for `REPLACE_WITH_FUNCTION_URL` in the repository file, paste the result into the routine's prompt, save, then reopen the routine and compare its prompt against the substituted file. A Claude Code session with routine tooling can make the same edit and read it back, which is how the comparison is automated when one is at hand. Either way, a prompt that differs from the file is a partial update. The probe routine keeps its own prompt and is not touched by this.
 
+After an update, a `FINDINGS_SCHEMA_OUTDATED schema_version <n>` warning in the receiver's log group means a session posted findings in a schema older than the one `prompts/investigator.md` emits, so it ran an older prompt. The receiver delivers those findings as usual, without an urgency line on the reply card, so nothing is lost, and the marker is counted rather than alarmed. It is expected only for sessions that were already running when the prompt was swapped. Once those have finished, a new one means the routine still holds an older prompt: compare its prompt against the substituted file again.
+
 ## Configuration probe
 
 The prompts in `prompts/` are templates. `REPLACE_WITH_FUNCTION_URL` stands in
