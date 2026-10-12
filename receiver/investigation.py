@@ -76,10 +76,15 @@ def pointer_text(existing: dict, alert: SentryAlert, cfg: ReceiverConfig) -> str
             f"failed and has already been retried. Earlier thread: {link}"
         )
     text = f"{POINTER_PREFIX}this issue was already investigated on release {release}."
-    if existing.get("confidence"):
-        outcome = f"confidence {existing['confidence']}"
-        if existing.get("fixability"):
-            outcome += f", fixability {existing['fixability']}"
+    # Same order as the findings card's status line, each only when the row
+    # recorded it: rows from older findings, and rows written before a field
+    # existed, simply lack it.
+    outcome = ", ".join(
+        f"{name} {existing[name]}"
+        for name in ("urgency", "confidence", "fixability")
+        if existing.get(name)
+    )
+    if outcome:
         text += f" Findings ({outcome}): {link}"
     else:
         text += f" Findings: {link}"
