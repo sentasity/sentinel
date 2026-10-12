@@ -197,7 +197,7 @@ Issue filing logs one marker, `ISSUE_TRACKING_FAILED`, and the `IssueTrackingFai
 
 **The two backstop notices** are what the alert's thread reads when its grant expires with nothing tracked: `No GitHub issue was filed for this alert, so it is tracked only in this thread.`, or, when an operation died mid-filing, `Sentinel may not have finished filing this alert in GitHub; check the repository for an issue before filing one.` Either is followed by `The duplicate search was also unavailable for this alert, so an existing issue may already describe it.` when the session's duplicate search had failed. A grant whose result opened a pull request, or whose fix attempt failed on the receiver's side, is released without a notice: the pull request, or the `AUTOFIX_FAILED` line and its own thread reply, already says what happened.
 
-A thread reply or a notice that cannot be posted carries the receiver's general delivery-failure marker (`issue tracking reply for ...`, `tracking notice for ...`), not this one. A grant with no thread to reply in (its alert card never posted) skips the reply with a plain `no thread to reply in for ...` warning.
+A thread reply or a notice that cannot be posted carries the receiver's general delivery-failure marker (`issue tracking reply for ...`, `tracking notice for ...`), not this one. A grant with no thread to reply in (its alert card never posted) skips the reply with a plain `no thread to reply in for ...` warning, and the backstop skips its notice the same way (`no thread to post the tracking notice in for ...`), still logging the marker.
 
 ## Runbook: replaying an alert the receiver has already seen
 

@@ -1,5 +1,6 @@
 """Grouping, throttling, firing, and deadline enforcement."""
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -722,3 +723,31 @@ def test_the_sweep_runs_the_tracking_backstop_every_tick():
 
     assert summary["tracking_expired"] == 0
     assert "tracking" in [c.args[0] for c in store.query_due.call_args_list]
+
+
+@pytest.mark.parametrize(
+    "thread",
+    [{"conversation_id": None}, {"message_id": None}, {"conversation_id": ""}],
+    ids=["no-conversation", "no-message", "empty-conversation"],
+)
+def test_a_grant_with_no_thread_is_untracked_without_a_reply(thread, caplog):
+    """A grant whose alert card never posted has no thread. The alert still
+    ends untracked under the marker, but the notice is skipped with a warning,
+    the way the /issues route skips its reply, rather than failing into a
+    delivery-failure line for a thread that never existed."""
+    grant = expired_grant()
+    for key, value in thread.items():
+        if value is None:
+            del grant[key]
+        else:
+            grant[key] = value
+    store, bot = tracking_store(grant), MagicMock()
+
+    with caplog.at_level(logging.WARNING):
+        assert expire_tracking(store=store, bot=bot) == 0
+
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "untracked")
+    bot.reply_in_thread.assert_not_called()
+    assert f"{ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2" in caplog.text
+    assert "no thread to post the tracking notice in for CHECKOUT-4B2" in caplog.text
+    assert DELIVERY_FAILURE_MARKER not in caplog.text
