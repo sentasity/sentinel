@@ -30,6 +30,14 @@ WINDOW_EXHAUSTED_MARKER = "SUBSCRIPTION_WINDOW_EXHAUSTED"
 # of the two, not a budget event, and it leaves a thread with no findings.
 FINDINGS_REJECTED_MARKER = "FINDINGS_REJECTED"
 
+# A findings document parsed and was delivered, but in a schema older than the
+# one the shipped prompt emits, so the routine that sent it is still running
+# an older prompt. Counted, never alarmed: nothing was lost, and sessions that
+# were already running when the prompt was swapped send one legitimately, so
+# an alarm would fire on every prompt update. Shares no prefix with
+# FINDINGS_REJECTED_MARKER, whose alarm must never match this line.
+FINDINGS_SCHEMA_OUTDATED_MARKER = "FINDINGS_SCHEMA_OUTDATED"
+
 
 # Bounded so a slow or unreachable Sentry cannot eat the invocation. The
 # handler's own timeout is 30s and delivery has already happened by the time

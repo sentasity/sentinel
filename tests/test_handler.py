@@ -500,6 +500,69 @@ def test_a_delivered_finding_records_its_confidence_for_repeat_alerts():
     assert store.advance.call_args.kwargs["extra"] == {"confidence": "high"}
 
 
+def findings_v3(urgency="high"):
+    """The v2 fixture as a schema v3 document: what the shipped prompt sends."""
+    payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
+    payload["schema_version"] = 3
+    payload["results"][0]["urgency"] = urgency
+    return payload
+
+
+def test_a_delivered_v3_finding_records_its_urgency_for_repeat_alerts():
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store):
+        handler.deliver_findings(findings_v3(), [awaiting_row()])
+
+    assert store.advance.call_args.kwargs["extra"] == {
+        "confidence": "high",
+        "fixability": "high",
+        "urgency": "high",
+    }
+
+
+@pytest.mark.parametrize(
+    "fixture, version",
+    [("findings-payload.json", 1), ("findings-payload-v2.json", 2)],
+)
+def test_an_outdated_schema_is_still_delivered_and_logs_its_marker(caplog, fixture, version):
+    """After the prompt moves to v3, an older document can only come from a
+    routine still running an older prompt. It keeps its findings: the card
+    posts as usual, and the marker makes the stale prompt findable."""
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store):
+        with caplog.at_level(logging.WARNING):
+            response = handler.deliver_findings(load_fixture(fixture), [awaiting_row()])
+
+    assert response["statusCode"] == 200
+    bot.reply_card_in_thread.assert_called_once()
+    assert (
+        f"{observability.FINDINGS_SCHEMA_OUTDATED_MARKER} schema_version {version}"
+        in caplog.text
+    )
+    assert observability.FINDINGS_REJECTED_MARKER not in caplog.text
+
+
+def test_a_current_schema_logs_no_outdated_marker(caplog):
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store):
+        with caplog.at_level(logging.WARNING):
+            handler.deliver_findings(findings_v3(), [awaiting_row()])
+
+    assert observability.FINDINGS_SCHEMA_OUTDATED_MARKER not in caplog.text
+
+
 def test_a_failed_reply_is_requeued_for_the_sweep_not_lost():
     """`delivered` is terminal, so stopping at a log line would drop findings
     that already passed validation and redaction."""

@@ -26,6 +26,7 @@ from receiver.config import (
     load_config,
 )
 from receiver.findings import (
+    CURRENT_SCHEMA_VERSION,
     InvalidFindings,
     parse_findings,
     render_reply_card,
@@ -40,6 +41,7 @@ from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
+    FINDINGS_SCHEMA_OUTDATED_MARKER,
     PROBE_LOG_LIMIT,
     PROBE_MARKER,
     flush_sentry,
@@ -369,6 +371,14 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         LOG.error("%s %s", FINDINGS_REJECTED_MARKER, exc)
         return respond(400, "unusable findings")
 
+    if doc.schema_version < CURRENT_SCHEMA_VERSION:
+        # Delivered as usual: the findings are valid, only the prompt that
+        # produced them is stale, and this line is how a person finds it.
+        LOG.warning(
+            "%s schema_version %d batch %s",
+            FINDINGS_SCHEMA_OUTDATED_MARKER, doc.schema_version, doc.batch_id,
+        )
+
     cfg = config()
     deliveries: list[dict] = []
     for result in doc.results:
@@ -380,6 +390,8 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         outcome = {"confidence": result.confidence}
         if result.fixability:
             outcome["fixability"] = result.fixability
+        if result.urgency:
+            outcome["urgency"] = result.urgency
         if not alert_store().advance(
             row["issue_id"], row["environment"], row["release"], "fired", "delivered",
             extra=outcome,

@@ -356,6 +356,17 @@ def test_a_paused_routine_is_never_alarmed(template):
     assert "RoutinePaused" not in names
 
 
+def test_an_outdated_findings_schema_is_never_alarmed(template):
+    """Sessions already running when the prompt is swapped send the older
+    schema legitimately, so an alarm on it would fire on every prompt update."""
+    filters = template.find_resources("AWS::Logs::MetricFilter")
+    patterns = [f["Properties"]["FilterPattern"] for f in filters.values()]
+
+    assert patterns, "the stack has no metric filters to check"
+    for pattern in patterns:
+        assert observability.FINDINGS_SCHEMA_OUTDATED_MARKER not in pattern
+
+
 def test_an_autofix_failure_is_extracted_and_alarmed(template):
     template.has_resource_properties(
         "AWS::Logs::MetricFilter",
