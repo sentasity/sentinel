@@ -206,7 +206,9 @@ class GitHubAppClient:
         self.session = requests.Session()
         # Per container: an organization's issue-field definitions, by field
         # name, and project node ids by (organization, number). Both change
-        # rarely, and a stale entry costs one refetch, never a wrong write.
+        # rarely. A missing name triggers one refetch and a refused field write
+        # drops the organization's entry, so a stale one costs at most one failed
+        # call, never a wrong write.
         self._issue_fields: dict[str, dict[str, dict]] = {}
         self._project_ids: dict[tuple[str, int], str] = {}
 
@@ -796,9 +798,17 @@ class GitHubAppClient:
                 f"{{issueId: $issue, issueFields: [{', '.join(entries)}]}}) "
                 "{ clientMutationId } }"
             )
-            self._graphql(
-                mutation, variables, token, step="set the field values", deadline=deadline
-            )
+            try:
+                self._graphql(
+                    mutation, variables, token, step="set the field values", deadline=deadline
+                )
+            except GitHubCallFailed:
+                # An option deleted and recreated under the same name keeps
+                # the name but not the id, which no name lookup notices. Drop
+                # the cached definitions so the session's retry reads them
+                # again rather than failing until the container recycles.
+                self._issue_fields.pop(org, None)
+                raise
 
             data = self._graphql(
                 FIELD_VALUES_QUERY, {"id": node_id}, token,

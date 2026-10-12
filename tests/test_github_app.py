@@ -1050,3 +1050,35 @@ def test_a_redirect_on_a_graphql_call_is_a_failure():
     got = client.add_to_project(REPO, 3, token="t", node_id="I_1")
 
     assert got == IssueCall(ok=False, status=307, step="read the project")
+
+
+def test_a_refused_field_write_drops_the_cached_definitions():
+    """An option deleted and recreated under the same name gets a new id that
+    no name lookup notices. A refused write drops the organization's cached
+    definitions, so the session's retry reads them again instead of failing
+    until the container recycles."""
+    recreated = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_high_2", "name": "High"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"errors": [{"message": "Could not resolve to a node with the global id of 'O_high'"}]}),
+            reply(200, recreated),
+            reply(200, {"data": {}}),
+            reply(200, held(("Priority", "High"))),
+        ]
+    )
+
+    first = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert first == FieldsOutcome(ok=False, step="set the field values")
+    assert second.ok
+    assert session.post.call_args_list[3].kwargs["json"]["variables"]["option0"] == "O_high_2"
