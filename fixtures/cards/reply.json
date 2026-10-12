@@ -11,7 +11,7 @@
     },
     {
       "type": "TextBlock",
-      "text": "Confidence: high · Fixability: high · Release: 79bad4b79fb0",
+      "text": "Urgency: high · Confidence: high · Fixability: high · Release: 79bad4b79fb0",
       "isSubtle": true,
       "wrap": true,
       "spacing": "Small"

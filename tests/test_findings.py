@@ -279,6 +279,16 @@ def payload_v3(**changes):
     return body
 
 
+def test_the_v3_fixture_is_the_v2_fixture_rated_for_urgency():
+    """One sample issue across all three versions, so the card gallery and
+    the parse tests describe the same finding."""
+    expected = load_fixture("findings-payload-v2.json")
+    expected["schema_version"] = 3
+    expected["results"][0]["urgency"] = "high"
+
+    assert load_fixture("findings-payload-v3.json") == expected
+
+
 def test_the_urgency_vocabulary_is_the_priority_scale_most_urgent_first():
     from receiver.findings import CURRENT_SCHEMA_VERSION, SCHEMA_VERSIONS, URGENCIES
 
