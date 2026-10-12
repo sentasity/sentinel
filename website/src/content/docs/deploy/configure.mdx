@@ -48,6 +48,28 @@ the template is the source of truth.
 The last three are required only once `autofix.enabled` is true, and `assert_ready`
 refuses to deploy while any of them is still a placeholder.
 
+Issue filing has its own block, inert as shipped:
+
+| Key | Default | What it means |
+|---|---|---|
+| `issues.enabled` | `false` | "enabled false ships the code inert; turning it on is a config deploy" |
+| `issues.environments` | `[]` | "Sentry environments whose outcomes are filed. Empty means every environment above; name one to stage the rollout" |
+| `issues.proxy_url` | placeholder | "The receiver's issue route. Must share findings_url's origin" |
+| `issues.conventions` | `[]` | "Repository-relative files in target_repo that say how an issue is filed there, including what each priority means. They are written into the investigator prompt when it is pasted, and the session reads them from its checkout; nothing here mirrors them" |
+| `issues.issue_types` | `[]` | "Issue types a new issue may carry, by name. Empty means none" |
+| `issues.fields` | `[]` | "Organization issue fields the receiver may set, by name. Any other field is refused" |
+| `issues.project_number` | 0 | "The organization project board new issues join, owned by target_repo's owner. 0 means no board" |
+| `issues.daily_create_cap` | 25 | "Ceilings on the receiver's issue writes per UTC day, across all alerts": the issues it creates |
+| `issues.daily_write_cap` | 100 | The same ceiling for every write, comments and field values included |
+
+With `issues.enabled` true, `assert_ready` refuses to deploy unless `proxy_url` is set
+and shares `findings_url`'s origin, `autofix.app_id` is set (the autofix App makes every
+issue write, even with autofix off), `conventions` names at least one file and no
+placeholder, every `environments` entry is one of the top-level `environments`, and the
+board number and the caps are integers. `fields` and `project_number` need an
+organization-owned `target_repo`; for a user-owned one, leave `fields` empty and
+`project_number` at 0.
+
 Note the ordering problem in `investigation.findings_url`: it is the receiver's own
 Function URL, which does not exist until the first deploy. That is precisely why
 `trigger_mode` ships as `shadow`. Deploy once, read the stack output, fill it in,
@@ -94,6 +116,14 @@ real traffic, then read what it recorded before letting it fire.
 Autofix is a second, separate switch. `autofix.enabled: true` should follow its own soak
 on findings you have read, because it is the one gate whose output lands in somebody
 else's repository.
+
+Issue filing is the third. `issues.enabled: true` files every investigated finding that
+ends without a pull request in `target_repo`'s issues, through the receiver and as the
+App. Stage it with `issues.environments`, naming one environment first. It needs the App
+to hold three more permissions, accepted by an organization owner: Issues read and
+write, organization Projects read and write, and organization Issue fields read-only.
+The order of the steps, and how to undo each, is the
+[enabling issue filing runbook](/sentinel/operate/runbooks/).
 
 Two things outside this file have to be true before it can work: the autofix App must be
 installed on `target_repo` with contents and pull-requests write, and the routine's cloud

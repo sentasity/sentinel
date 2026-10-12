@@ -38,13 +38,20 @@ def redact(text: str) -> tuple[str, int]:
         count += hits
     return text, count
 
-# v1 is the shipped investigation-only shape; v2 adds per-result fixability.
-# Both stay valid: a v1 document delivers findings and simply never passes
-# the autofix gate (reason schema_v1).
-SCHEMA_VERSIONS = (1, 2)
+# v1 is the shipped investigation-only shape; v2 adds per-result fixability;
+# v3 adds per-result urgency. All three stay valid: a v1 document delivers
+# findings and simply never passes the autofix gate (reason schema_v1), and
+# a v1 or v2 document delivers with no urgency line. CURRENT_SCHEMA_VERSION
+# is the version the shipped prompt emits; anything below it means a routine
+# is still running an older prompt.
+SCHEMA_VERSIONS = (1, 2, 3)
+CURRENT_SCHEMA_VERSION = 3
 FIXABILITIES = ("high", "medium", "low")
 STATUSES = ("investigated", "partial", "failed")
 CONFIDENCES = ("high", "medium", "low")
+# The target repository's Priority vocabulary, most urgent first. Rated by
+# the session and passed through untouched: no receiver decision reads it.
+URGENCIES = ("urgent", "high", "medium", "low")
 
 RESULT_FIELDS = {
     "issue_id",
@@ -54,6 +61,7 @@ RESULT_FIELDS = {
     "root_cause",
     "confidence",
     "fixability",
+    "urgency",
     "evidence",
     "assumptions",
     "next_step",
@@ -85,6 +93,7 @@ class Result:
     next_step: str
     failure_reason: str
     fixability: str = ""
+    urgency: str = ""
     evidence: tuple[Evidence, ...] = ()
     assumptions: tuple[str, ...] = ()
 
@@ -126,6 +135,9 @@ def render_reply(result: "Result") -> tuple[str, int]:
     text blob could not be treated differently from its own contents.
     """
     lines = [f"**Automated investigation: {escape_prose(result.short_id)}**"]
+
+    if result.urgency:
+        lines.append(f"Urgency: {result.urgency}")
 
     if result.status == "investigated":
         lines.append(f"Confidence: {result.confidence}")
@@ -250,7 +262,11 @@ def render_reply_card(result: "Result", disposition: str = "") -> tuple[dict, in
     instead of eight. Cards render no code spans, so identifiers get the same
     markdown escaping as prose instead of `code()`.
     """
+    # Urgency leads: it is what a person scanning the channel uses to decide
+    # what to open first. One of four fixed words, so it needs no escaping.
     status_bits = []
+    if result.urgency:
+        status_bits.append(f"Urgency: {result.urgency}")
     if result.status == "investigated":
         status_bits.append(f"Confidence: {result.confidence}")
         if result.fixability:
@@ -431,6 +447,17 @@ def parse_findings(body, *, batch_id: str, known_issue_ids: set[str]) -> Finding
                 f"results[{index}] carries fixability but schema_version is {version}"
             )
 
+        urgency = raw.get("urgency")
+        if version >= 3:
+            if urgency not in URGENCIES:
+                raise InvalidFindings(
+                    f"results[{index}] urgency {urgency!r} is not one of {URGENCIES}"
+                )
+        elif urgency is not None:
+            raise InvalidFindings(
+                f"results[{index}] carries urgency but schema_version is {version}"
+            )
+
         assumptions = raw.get("assumptions") or []
         if not isinstance(assumptions, list):
             raise InvalidFindings(f"results[{index}] assumptions is not a list")
@@ -448,6 +475,7 @@ def parse_findings(body, *, batch_id: str, known_issue_ids: set[str]) -> Finding
                 next_step=_text(raw.get("next_step"), "next_step"),
                 failure_reason=_text(raw.get("failure_reason"), "failure_reason"),
                 fixability=fixability or "",
+                urgency=urgency or "",
                 evidence=tuple(_evidence(e, index) for e in (raw.get("evidence") or [])),
                 assumptions=tuple(_text(a, "assumption") for a in assumptions),
             )

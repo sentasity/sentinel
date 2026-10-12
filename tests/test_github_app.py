@@ -2,13 +2,19 @@
 
 import base64
 import os
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from receiver import autofix
 
-from receiver.github_app import AUTOFIX_PERMISSIONS, GitHubAppClient, PullRequestOutcome
+from receiver.github_app import (
+    AUTOFIX_PERMISSIONS,
+    ISSUE_FIELDS_PERMISSION,
+    GitHubAppClient,
+    PullRequestOutcome,
+)
 from receiver.patch import blob_sha, parse_patch
 from tests.gitrepo import Repo
 
@@ -60,6 +66,17 @@ def test_the_autofix_grant_never_includes_workflows():
     # the scope is the enforcement, so this invariant gets its own test.
     assert AUTOFIX_PERMISSIONS == {"contents": "write", "pull_requests": "write"}
     assert "workflows" not in AUTOFIX_PERMISSIONS
+
+
+def test_the_issue_fields_permission_is_a_github_permission_key():
+    """Read back from the approved installation rather than guessed. GitHub's
+    permission keys are lowercase snake_case, and this one is none of the
+    other permissions an issue op or a fix mints."""
+    assert re.fullmatch(r"[a-z]+(?:_[a-z]+)*", ISSUE_FIELDS_PERMISSION)
+    assert "issue" in ISSUE_FIELDS_PERMISSION
+    assert ISSUE_FIELDS_PERMISSION not in {
+        "issues", "organization_projects", "contents", "pull_requests", "workflows",
+    }
 
 
 @patch("receiver.github_app.jwt.encode", return_value="app.jwt")
@@ -306,7 +323,7 @@ class FakeGitHub:
             entries.append(entry)
         return entries
 
-    def get(self, url, headers=None, timeout=None, params=None):
+    def get(self, url, headers=None, timeout=None, params=None, allow_redirects=True):
         self.calls.append(("get", url))
         tree_sha = self.repo.git("rev-parse", f"{self.base}^{{tree}}").decode().strip()
         if url.endswith("/installation"):
@@ -330,7 +347,7 @@ class FakeGitHub:
             return got
         raise AssertionError(f"unexpected GET {url}")
 
-    def post(self, url, headers=None, timeout=None, json=None):
+    def post(self, url, headers=None, timeout=None, json=None, allow_redirects=True):
         self.calls.append(("post", url))
         if url.endswith("/access_tokens"):
             return response(201, MINT_BODY)
@@ -600,3 +617,499 @@ def test_a_blob_github_answers_wrongly_is_not_patched(encode, repo):
 
     assert outcome == PullRequestOutcome()
     assert fake.tree_request is None
+
+
+# --- The issue proxy -----------------------------------------------------------
+
+from receiver.github_app import (  # noqa: E402 - grouped with the tests that use them
+    ISSUE_SEQUENCE_BUDGET_SECONDS,
+    LABEL_PAGES,
+    OP_PERMISSIONS,
+    FieldsOutcome,
+    IssueCall,
+)
+from receiver.issues import OPS  # noqa: E402
+
+ISSUE_URL = f"https://api.github.com/repos/{REPO}/issues"
+
+
+def reply(status: int, body=None, *, links=None):
+    """A response for the issue calls: `links` is what requests parses
+    from a `Link` header, which the label listing follows."""
+    mock = response(status, body)
+    mock.json.return_value = body if body is not None else {}
+    mock.links = links or {}
+    return mock
+
+
+def issue_client(*, gets=(), posts=(), patches=()) -> tuple[GitHubAppClient, MagicMock]:
+    session = MagicMock()
+    session.get.side_effect = list(gets)
+    session.post.side_effect = list(posts)
+    session.patch.side_effect = list(patches)
+    return client_with(session), session
+
+
+def test_every_op_has_a_downscoped_mint():
+    assert set(OP_PERMISSIONS) == set(OPS)
+
+
+def test_no_issue_op_mint_can_write_code_or_pull_requests():
+    for permissions in OP_PERMISSIONS.values():
+        assert not {"contents", "pull_requests", "workflows"} & set(permissions)
+        assert not any(key.startswith("administration") for key in permissions)
+        assert not any("administration" in key for key in permissions)
+
+
+def test_each_op_mints_exactly_what_it_needs():
+    assert OP_PERMISSIONS["file_issue"] == {"issues": "write"}
+    assert OP_PERMISSIONS["comment"] == {"issues": "write"}
+    assert OP_PERMISSIONS["reopen"] == {"issues": "write"}
+    assert OP_PERMISSIONS["set_fields"] == {"issues": "write", ISSUE_FIELDS_PERMISSION: "read"}
+    assert OP_PERMISSIONS["add_to_project"] == {
+        "issues": "read", "organization_projects": "write",
+    }
+
+
+def test_the_issue_budget_leaves_the_lambda_time_to_settle_and_reply():
+    assert ISSUE_SEQUENCE_BUDGET_SECONDS == 35
+
+
+@pytest.mark.parametrize("op", OPS)
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_mint_token_posts_the_ops_permissions(encode, op):
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(201, MINT_BODY)
+
+    minted = client_with(session).mint_token(REPO, OP_PERMISSIONS[op])
+
+    assert minted.token == "ghs_inst"
+    assert session.post.call_args.kwargs["json"] == {
+        "repositories": ["checkout"], "permissions": OP_PERMISSIONS[op],
+    }
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_a_mint_the_installation_refuses_returns_none(encode):
+    """A permission the installation lacks is refused at the mint."""
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(422)
+
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is None
+
+
+@patch("receiver.github_app.jwt.encode", return_value="app.jwt")
+def test_the_mint_refuses_redirects_on_both_of_its_calls(encode):
+    """Like every issue-proxy call, the mint's lookup and token request pass
+    `allow_redirects=False` and treat a 3xx as failure."""
+    session = MagicMock()
+    session.get.return_value = response(200, {"id": 77})
+    session.post.return_value = response(201, MINT_BODY)
+
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is not None
+    assert session.get.call_args.kwargs["allow_redirects"] is False
+    assert session.post.call_args.kwargs["allow_redirects"] is False
+
+    session.get.return_value = response(302, {"id": 77})
+    assert client_with(session).mint_token(REPO, {"issues": "write"}) is None
+
+
+def test_the_autofix_mint_is_the_general_mint_with_the_autofix_permissions():
+    client = client_with(MagicMock())
+    with patch.object(client, "mint_token", return_value="minted") as mint:
+        assert client.mint_autofix_token(REPO, deadline=12.0) == "minted"
+
+    mint.assert_called_once_with(REPO, AUTOFIX_PERMISSIONS, deadline=12.0)
+
+
+def test_fetch_issue_reads_with_redirects_disabled_and_the_ops_token():
+    client, session = issue_client(gets=[reply(200, {"number": 7, "state": "open"})])
+
+    got = client.fetch_issue(REPO, 7, token="ghs_issue")
+
+    assert got == IssueCall(ok=True, status=200, body={"number": 7, "state": "open"})
+    call = session.get.call_args
+    assert call.args[0] == f"{ISSUE_URL}/7"
+    assert call.kwargs["allow_redirects"] is False
+    assert call.kwargs["headers"]["Authorization"] == "Bearer ghs_issue"
+    assert 0 < call.kwargs["timeout"] <= 15
+
+
+@pytest.mark.parametrize("status", [301, 302, 404, 410, 500])
+def test_a_fetch_outside_2xx_is_a_failure_naming_its_step(status):
+    """A 3xx is what a transferred issue answers, and `raise_for_status`
+    would have let it through."""
+    client, _ = issue_client(gets=[reply(status, {"url": "elsewhere"})])
+
+    got = client.fetch_issue(REPO, 7, token="ghs_issue")
+
+    assert got == IssueCall(ok=False, status=status, step="read the issue")
+
+
+def test_a_transport_error_is_a_failure_with_no_status():
+    client, session = issue_client()
+    session.get.side_effect = OSError("connection reset")
+
+    assert client.fetch_issue(REPO, 7, token="t") == IssueCall(ok=False, step="read the issue")
+
+
+def test_file_issue_sends_title_body_labels_and_type():
+    client, session = issue_client(posts=[reply(201, {"number": 9, "html_url": "u"})])
+
+    got = client.file_issue(
+        REPO, token="ghs_issue", title="Fix: x", body="b", labels=["Backend"], issue_type="Bug"
+    )
+
+    assert got.ok and got.body["number"] == 9
+    call = session.post.call_args
+    assert call.args[0] == ISSUE_URL
+    assert call.kwargs["json"] == {"title": "Fix: x", "body": "b", "labels": ["Backend"], "type": "Bug"}
+    assert call.kwargs["allow_redirects"] is False
+
+
+def test_file_issue_without_a_type_sends_none():
+    client, session = issue_client(posts=[reply(201, {"number": 9})])
+
+    client.file_issue(REPO, token="t", title="Fix: x", body="b")
+
+    assert session.post.call_args.kwargs["json"] == {"title": "Fix: x", "body": "b", "labels": []}
+
+
+def test_a_refused_create_reports_githubs_status():
+    client, _ = issue_client(posts=[reply(422)])
+
+    got = client.file_issue(REPO, token="t", title="Fix: x", body="b", issue_type="Nope")
+
+    assert got == IssueCall(ok=False, status=422, step="create the issue")
+
+
+def test_comment_on_issue_posts_one_comment():
+    client, session = issue_client(posts=[reply(201, {"html_url": "c"})])
+
+    got = client.comment_on_issue(REPO, 7, token="t", body="Seen again.")
+
+    assert got.body == {"html_url": "c"}
+    assert session.post.call_args.args[0] == f"{ISSUE_URL}/7/comments"
+    assert session.post.call_args.kwargs["json"] == {"body": "Seen again."}
+
+
+def test_reopen_comments_first_then_reopens():
+    client, session = issue_client(
+        posts=[reply(201, {"html_url": "c"})],
+        patches=[reply(200, {"number": 7, "state": "open", "html_url": "i"})],
+    )
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got.ok and got.body["html_url"] == "i"
+    assert session.post.call_args.args[0] == f"{ISSUE_URL}/7/comments"
+    patch_call = session.patch.call_args
+    assert patch_call.args[0] == f"{ISSUE_URL}/7"
+    assert patch_call.kwargs["json"] == {"state": "open", "state_reason": "reopened"}
+    assert patch_call.kwargs["allow_redirects"] is False
+
+
+def test_a_failed_reopen_comment_never_reopens():
+    client, session = issue_client(posts=[reply(500)])
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got == IssueCall(ok=False, status=500, step="post the comment")
+    session.patch.assert_not_called()
+
+
+def test_a_reopen_that_fails_after_its_comment_names_the_reopen():
+    client, _ = issue_client(posts=[reply(201, {})], patches=[reply(403)])
+
+    got = client.reopen_issue(REPO, 7, token="t", body="It came back.")
+
+    assert got == IssueCall(ok=False, status=403, step="reopen the issue")
+
+
+def test_labels_are_listed_across_pages():
+    page2 = "https://api.github.com/repositories/1/labels?per_page=100&page=2"
+    client, session = issue_client(
+        gets=[
+            reply(200, [{"name": "Backend"}], links={"next": {"url": page2}}),
+            reply(200, [{"name": "frontend"}]),
+        ]
+    )
+
+    assert client.list_label_names(REPO, token="t") == ["Backend", "frontend"]
+    first, second = session.get.call_args_list
+    assert first.args[0] == f"https://api.github.com/repos/{REPO}/labels"
+    assert first.kwargs["params"] == {"per_page": 100}
+    assert second.args[0] == page2
+    assert second.kwargs["params"] is None
+
+
+def test_labels_stop_after_three_pages():
+    pages = [
+        reply(200, [{"name": f"l{i}"}], links={"next": {"url": f"https://api.github.com/x?page={i + 2}"}})
+        for i in range(LABEL_PAGES)
+    ]
+    client, session = issue_client(gets=pages)
+
+    assert client.list_label_names(REPO, token="t") == ["l0", "l1", "l2"]
+    assert session.get.call_count == LABEL_PAGES == 3
+
+
+def test_a_next_page_off_the_api_host_fails_the_listing():
+    client, _ = issue_client(
+        gets=[reply(200, [{"name": "a"}], links={"next": {"url": "https://evil.example/labels"}})]
+    )
+
+    assert client.list_label_names(REPO, token="t") is None
+
+
+def test_a_failed_label_page_fails_the_listing():
+    client, _ = issue_client(gets=[reply(502)])
+
+    assert client.list_label_names(REPO, token="t") is None
+
+
+FIELDS_DATA = {
+    "data": {
+        "organization": {
+            "issueFields": {
+                "nodes": [
+                    {
+                        "id": "F_pri",
+                        "name": "Priority",
+                        "options": [{"id": "O_high", "name": "High"}, {"id": "O_low", "name": "Low"}],
+                    },
+                    {
+                        "id": "F_eff",
+                        "name": "Effort",
+                        "options": [{"id": "O_quick", "name": "Quick Win"}],
+                    },
+                    {},
+                ]
+            }
+        }
+    }
+}
+
+
+def held(*pairs) -> dict:
+    return {
+        "data": {
+            "node": {
+                "issueFieldValues": {
+                    "nodes": [{"name": option, "field": {"name": name}} for name, option in pairs]
+                }
+            }
+        }
+    }
+
+
+def test_set_fields_resolves_names_sets_them_in_one_call_and_reads_them_back():
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"data": {"setIssueFieldValue": {"clientMutationId": None}}}),
+            reply(200, held(("Priority", "High"), ("Effort", "Quick Win"))),
+        ]
+    )
+
+    got = client.set_fields(
+        REPO, token="t", node_id="I_9", fields={"Priority": "high", "Effort": "Quick Win"}
+    )
+
+    assert got == FieldsOutcome(ok=True, fields={"Priority": "High", "Effort": "Quick Win"})
+    discovery, mutation, readback = session.post.call_args_list
+    assert discovery.args[0] == "https://api.github.com/graphql"
+    assert discovery.kwargs["json"]["variables"] == {"org": "acme-tools"}
+    sent = mutation.kwargs["json"]
+    assert "setIssueFieldValue" in sent["query"]
+    assert sent["variables"] == {
+        "issue": "I_9",
+        "field0": "F_pri", "option0": "O_high",
+        "field1": "F_eff", "option1": "O_quick",
+    }
+    assert readback.kwargs["json"]["variables"] == {"id": "I_9"}
+    assert all(call.kwargs["allow_redirects"] is False for call in session.post.call_args_list)
+    assert "GraphQL-Features" not in discovery.kwargs["headers"]
+
+
+def test_set_fields_never_carries_suggest():
+    """`suggest` returns success and writes nothing, so it must never be sent."""
+    client, session = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "High")))]
+    )
+
+    client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    sent = session.post.call_args_list[1].kwargs["json"]
+    assert "suggest" not in sent["query"]
+    assert "suggest" not in str(sent["variables"])
+
+
+def test_a_value_that_did_not_persist_fails_the_op():
+    client, _ = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "Low")))]
+    )
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert got == FieldsOutcome(ok=False, step="field values did not persist")
+
+
+def test_the_definitions_are_cached_for_the_container():
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA), reply(200, {"data": {}}), reply(200, held(("Priority", "High"))),
+            reply(200, {"data": {}}), reply(200, held(("Priority", "Low"))),
+        ]
+    )
+
+    client.set_fields(REPO, token="t", node_id="I_1", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_2", fields={"Priority": "Low"})
+
+    assert second.ok
+    assert session.post.call_count == 5
+
+
+def test_an_unknown_option_triggers_one_refetch_before_it_is_rejected():
+    client, session = issue_client(posts=[reply(200, FIELDS_DATA), reply(200, FIELDS_DATA)])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "Someday"})
+
+    assert got == FieldsOutcome(ok=False, rejected="unknown option for field Priority")
+    assert session.post.call_count == 2
+
+
+def test_an_option_added_since_the_cache_is_found_by_the_refetch():
+    newer = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_urgent", "name": "Urgent"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[reply(200, FIELDS_DATA), reply(200, newer), reply(200, {"data": {}}), reply(200, held(("Priority", "Urgent")))]
+    )
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "Urgent"})
+
+    assert got.ok
+    assert session.post.call_args_list[2].kwargs["json"]["variables"]["option0"] == "O_urgent"
+
+
+def test_a_configured_field_that_is_not_single_select_fails_the_op():
+    client, _ = issue_client(posts=[reply(200, FIELDS_DATA), reply(200, FIELDS_DATA)])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Size": "Large"})
+
+    assert got == FieldsOutcome(ok=False, step="field Size is not single-select")
+
+
+def test_a_graphql_errors_array_is_a_failure_even_inside_a_200():
+    client, _ = issue_client(posts=[reply(200, {"errors": [{"message": "Resource not accessible"}]})])
+
+    got = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert got == FieldsOutcome(ok=False, step="read the issue fields")
+
+
+def test_add_to_project_resolves_the_board_once_and_adds_the_issue():
+    client, session = issue_client(
+        posts=[
+            reply(200, {"data": {"organization": {"projectV2": {"id": "P_1"}}}}),
+            reply(200, {"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_1"}}}}),
+            reply(200, {"data": {"addProjectV2ItemById": {"item": {"id": "PVTI_2"}}}}),
+        ]
+    )
+
+    first = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+    second = client.add_to_project(REPO, 3, token="t", node_id="I_2")
+
+    assert first == IssueCall(ok=True, status=200, body={"item_id": "PVTI_1"})
+    assert second.body == {"item_id": "PVTI_2"}
+    lookup, add, _ = session.post.call_args_list
+    assert lookup.kwargs["json"]["variables"] == {"org": "acme-tools", "number": 3}
+    assert add.kwargs["json"]["variables"] == {"project": "P_1", "content": "I_1"}
+
+
+def test_a_board_that_does_not_exist_fails_the_op():
+    client, _ = issue_client(posts=[reply(200, {"data": {"organization": {"projectV2": None}}})])
+
+    got = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+
+    assert got == IssueCall(ok=False, status=200, step="read the project")
+
+
+def test_a_redirect_on_a_graphql_call_is_a_failure():
+    client, _ = issue_client(posts=[reply(307)])
+
+    got = client.add_to_project(REPO, 3, token="t", node_id="I_1")
+
+    assert got == IssueCall(ok=False, status=307, step="read the project")
+
+
+def test_a_refused_field_write_drops_the_cached_definitions():
+    """An option deleted and recreated under the same name gets a new id that
+    no name lookup notices. A refused write drops the organization's cached
+    definitions, so the session's retry reads them again instead of failing
+    until the container recycles."""
+    recreated = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_high_2", "name": "High"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"errors": [{"message": "Could not resolve to a node with the global id of 'O_high'"}]}),
+            reply(200, recreated),
+            reply(200, {"data": {}}),
+            reply(200, held(("Priority", "High"))),
+        ]
+    )
+
+    first = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert first == FieldsOutcome(ok=False, step="set the field values")
+    assert second.ok
+    assert session.post.call_args_list[3].kwargs["json"]["variables"]["option0"] == "O_high_2"
+
+
+def test_a_field_value_that_did_not_persist_drops_the_cached_definitions():
+    """A stale option id GitHub accepts without an error shows up only in the
+    read-back, so that mismatch drops the cache too and the retry rereads."""
+    recreated = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_high_2", "name": "High"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"data": {}}),
+            reply(200, held()),
+            reply(200, recreated),
+            reply(200, {"data": {}}),
+            reply(200, held(("Priority", "High"))),
+        ]
+    )
+
+    first = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert first == FieldsOutcome(ok=False, step="field values did not persist")
+    assert second.ok
+    assert session.post.call_args_list[4].kwargs["json"]["variables"]["option0"] == "O_high_2"

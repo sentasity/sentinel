@@ -53,6 +53,8 @@ def test_every_alarming_marker_is_a_distinct_string():
         obs.DELIVERY_FAILURE_MARKER,
         obs.WINDOW_EXHAUSTED_MARKER,
         obs.FINDINGS_REJECTED_MARKER,
+        obs.AUTOFIX_FAILED_MARKER,
+        obs.ISSUE_TRACKING_FAILED_MARKER,
     ]
 
     assert len(set(markers)) == len(markers)
@@ -60,3 +62,10 @@ def test_every_alarming_marker_is_a_distinct_string():
         for b in markers:
             if a is not b:
                 assert not a.startswith(b)
+
+
+def test_the_issue_tracking_marker_is_the_documented_string():
+    """The runbook tells operators to filter on this exact token."""
+    from receiver.observability import ISSUE_TRACKING_FAILED_MARKER
+
+    assert ISSUE_TRACKING_FAILED_MARKER == "ISSUE_TRACKING_FAILED"

@@ -40,8 +40,13 @@ wraps it in a bare `except` and reports the capture as sent, so the failure neve
 surfaces. The suggested fix mirrors `refund_intent`, which already has an explicit
 timeout branch.
 
-Confidence is **high** and fixability is **high**. Those two values are the only thing
-that decides what happens next.
+Urgency is **high**. A capture reported as sent when it was not puts payment data at
+risk, which would make this urgent in production, but the issue has only been seen in
+`staging`, so it is rated one level lower. Urgency says how much the issue matters and
+leads the status line so it is the first thing a reader scans.
+
+Confidence is **high** and fixability is **high**. Those two values decide whether the
+session goes on to attempt a fix; urgency plays no part in that decision.
 
 ## 3. The fix
 
@@ -52,10 +57,10 @@ a test for it, and sends the changed files back to the receiver with the base co
 the pull request text. The receiver opens the pull request as the App and reports the
 outcome into the same thread.
 
-Nothing merges automatically. The session never holds a GitHub credential; the receiver
-mints one that can write contents and open pull requests in one repository for one hour
-and nothing else, spends it, and the pull request waits for a human exactly like any
-other.
+Nothing merges automatically. The session has no way to write to GitHub; the receiver
+mints a token that can write contents and open pull requests in one repository for one
+hour and nothing else, spends it, and the pull request waits for a human exactly like
+any other.
 
 ## Severity variants
 

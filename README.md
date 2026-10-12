@@ -6,7 +6,7 @@
 
 **[Documentation](https://sentasity.github.io/sentinel/)**
 
-Unattended investigation of Sentry issues, with optional autofix pull requests. When a new or regressed issue fires, the engine posts an alert card to Microsoft Teams, then triggers an unattended Claude Code session that checks out the repo at the event's release SHA, investigates the stack trace, and replies to the alert thread with its findings. Findings that clear the receiver's gate go one step further: the same session writes the fix and its test and sends the change back as a patch, and the receiver opens a pull request as the GitHub App for human review. Nothing merges automatically.
+Unattended investigation of Sentry issues, with optional autofix pull requests. When a new or regressed issue fires, the engine posts an alert card to Microsoft Teams, then triggers an unattended Claude Code session that checks out the repo at the event's release SHA, investigates the stack trace, and replies to the alert thread with its findings. Findings that clear the receiver's gate go one step further: the same session writes the fix and its test and sends the change back as a patch, and the receiver opens a pull request as the GitHub App for human review. An investigated finding that ends without an autofix pull request is filed as, or matched to, an issue in the target repository. Nothing merges automatically.
 
 The investigation sessions run as Claude Code cloud routines.
 

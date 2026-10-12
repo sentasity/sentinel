@@ -141,6 +141,40 @@ def test_a_repeat_on_an_investigated_release_points_at_the_earlier_findings():
     store.requeue_failed.assert_not_called()
 
 
+def test_a_pointer_quotes_the_urgency_first_when_the_row_recorded_one():
+    """Urgency is what a person scanning the channel decides on, so the
+    pointer leads with it, in the same order as the findings card."""
+    store, bot = MagicMock(), MagicMock()
+    store.put_investigation.return_value = False
+    store.get_investigation.return_value = existing(
+        "delivered", urgency="high", confidence="high", fixability="medium"
+    )
+
+    enqueue(store, bot)
+
+    text = bot.reply_in_thread.call_args.args[2]
+    assert (
+        f"Findings (urgency high, confidence high, fixability medium): {EARLIER_LINK}"
+        in text
+    )
+
+
+def test_a_pointer_for_a_row_without_urgency_reads_as_before():
+    """Rows delivered from v1 or v2 findings, and every row written before
+    urgency existed, have no urgency attribute: not rated, not an error."""
+    store, bot = MagicMock(), MagicMock()
+    store.put_investigation.return_value = False
+    store.get_investigation.return_value = existing(
+        "delivered", confidence="high", fixability="medium"
+    )
+
+    enqueue(store, bot)
+
+    text = bot.reply_in_thread.call_args.args[2]
+    assert f"Findings (confidence high, fixability medium): {EARLIER_LINK}" in text
+    assert "urgency" not in text
+
+
 def test_a_pointer_omits_a_confidence_the_row_never_recorded():
     store, bot = MagicMock(), MagicMock()
     store.put_investigation.return_value = False

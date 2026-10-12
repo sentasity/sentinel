@@ -12,10 +12,11 @@ import logging
 import os
 import re
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from receiver import autofix
+from receiver import autofix, issues
 from receiver.bot import BotError, TeamsBotClient
 from receiver.cards import card_summary, render_card
 from receiver.config import (
@@ -26,12 +27,18 @@ from receiver.config import (
     load_config,
 )
 from receiver.findings import (
+    CURRENT_SCHEMA_VERSION,
     InvalidFindings,
     parse_findings,
     render_reply_card,
     reply_summary,
 )
-from receiver.github_app import GitHubAppClient
+from receiver.github_app import (
+    API_BASE,
+    ISSUE_SEQUENCE_BUDGET_SECONDS,
+    OP_PERMISSIONS,
+    GitHubAppClient,
+)
 from receiver.investigation import enqueue_investigation
 from receiver.models import InvalidAlertPayload, parse_alert
 from receiver.observability import (
@@ -40,6 +47,8 @@ from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FINDINGS_REJECTED_MARKER,
+    FINDINGS_SCHEMA_OUTDATED_MARKER,
+    ISSUE_TRACKING_FAILED_MARKER,
     PROBE_LOG_LIMIT,
     PROBE_MARKER,
     flush_sentry,
@@ -47,7 +56,7 @@ from receiver.observability import (
 )
 from receiver.routines import RoutineClient
 from receiver.sentry_api import resolve_issue_ref
-from receiver.store import AlertStore, BatchState
+from receiver.store import AlertStore, BatchState, utc_now
 from receiver.sweep import run_sweep, schedule_reply_retry
 
 LOG = logging.getLogger()
@@ -348,15 +357,78 @@ def _post_findings_reply(d: dict) -> None:
         schedule_reply_retry(row, json.dumps(card), store=alert_store(), error=exc)
 
 
+def tracking_grant(result, row: dict, dispatch_id: str | None) -> dict:
+    """Write one delivered result's tracking grant; return its entry for the
+    findings response.
+
+    Every delivered result gets one while issue filing is on for its
+    environment, whatever its status or level: the session decides whether
+    to file, and a grant that expires unused is what tells the backstop
+    sweep to say so in the thread. The thread is copied from the row, so it
+    is the receiver's to name, never the session's. The token is returned
+    here and stored only as its hash, as the autofix callback token is, so a
+    table read cannot replay it. A result that also earned an autofix grant
+    files only after its fix phase, so its window starts after that phase's
+    deadline.
+    """
+    expect = "unless_pr" if dispatch_id else "always"
+    tracking_id = str(uuid.uuid4())
+    tracking_token = secrets.token_urlsafe(32)
+    expires_at = _deadline(issues.grant_lifetime_seconds(expect))
+    record = {
+        "tracking_id": tracking_id,
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "environment": row["environment"],
+        "release": row["release"],
+        "conversation_id": row["conversation_id"],
+        "message_id": row["message_id"],
+        "token_hash": AlertStore.hash_token(tracking_token),
+        "expect": expect,
+        "expires_at": expires_at,
+    }
+    if dispatch_id:
+        record["dispatch_id"] = dispatch_id
+    alert_store().put_tracking_grant(record)
+    return {
+        "issue_id": row["issue_id"],
+        "short_id": result.short_id,
+        "tracking_id": tracking_id,
+        "tracking_token": tracking_token,
+        "expires_at": expires_at,
+    }
+
+
+def tracking_block(cfg: ReceiverConfig, grants: list[dict]) -> dict | None:
+    """The findings response's `tracking` object, or None when no grant was
+    written. `issue_types`, `fields` and `project` echo the operator config
+    so the session sends only what `/issues` will accept; `caps` are the
+    limits it enforces."""
+    if not grants:
+        return None
+    return {
+        "repo": cfg.target_repo,
+        "issues_url": cfg.issues_proxy_url,
+        "issue_types": list(cfg.issues_issue_types),
+        "fields": list(cfg.issues_fields),
+        "project": cfg.issues_project_number > 0,
+        "caps": dict(issues.TRACKING_CAPS),
+        "grants": grants,
+    }
+
+
 def deliver_findings(body, rows: list[dict]) -> dict:
     """Validate one batch's findings, reply under each card, and answer the
-    session with any autofix grants it has earned.
+    session with any autofix grants it has earned and, while issue filing is
+    on for the batch's environment, one tracking grant per delivered result.
 
     The response body is the only message the receiver can ever send the
-    session that POSTed these findings, and a grant is all it carries.
-    The session writes the fix and posts the files back, and the receiver
-    opens the pull request itself, so no credential travels down this
-    channel and nothing here can fail between the gate and the reply.
+    session that POSTed these findings, and grants are all it carries. The
+    session writes the fix and posts the files back, and the receiver opens
+    the pull request itself; a finding that ends without one is filed
+    through `/issues`, where the receiver makes the GitHub write. No GitHub
+    credential travels down this channel, and nothing here can fail between
+    the gate and the reply.
     """
     by_issue = {r["issue_id"]: r for r in rows}
     try:
@@ -369,6 +441,14 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         LOG.error("%s %s", FINDINGS_REJECTED_MARKER, exc)
         return respond(400, "unusable findings")
 
+    if doc.schema_version < CURRENT_SCHEMA_VERSION:
+        # Delivered as usual: the findings are valid, only the prompt that
+        # produced them is stale, and this line is how a person finds it.
+        LOG.warning(
+            "%s schema_version %d batch %s",
+            FINDINGS_SCHEMA_OUTDATED_MARKER, doc.schema_version, doc.batch_id,
+        )
+
     cfg = config()
     deliveries: list[dict] = []
     for result in doc.results:
@@ -380,6 +460,8 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         outcome = {"confidence": result.confidence}
         if result.fixability:
             outcome["fixability"] = result.fixability
+        if result.urgency:
+            outcome["urgency"] = result.urgency
         if not alert_store().advance(
             row["issue_id"], row["environment"], row["release"], "fired", "delivered",
             extra=outcome,
@@ -391,8 +473,23 @@ def deliver_findings(body, rows: list[dict]) -> dict:
         except Exception as exc:  # noqa: BLE001 - autofix must never cost the reply
             LOG.error("%s %s gate crashed: %s", AUTOFIX_FAILED_MARKER, result.short_id, exc)
             disposition, grant = "", None
+        tracking = None
+        if cfg.issues_enabled_for(row["environment"]):
+            try:
+                tracking = tracking_grant(result, row, grant["dispatch_id"] if grant else None)
+            except Exception as exc:  # noqa: BLE001 - issue tracking must never cost the reply
+                LOG.error(
+                    "%s %s grant not written: %s",
+                    ISSUE_TRACKING_FAILED_MARKER, result.short_id, exc,
+                )
         deliveries.append(
-            {"result": result, "row": row, "disposition": disposition, "grant": grant}
+            {
+                "result": result,
+                "row": row,
+                "disposition": disposition,
+                "grant": grant,
+                "tracking": tracking,
+            }
         )
 
     for d in deliveries:
@@ -419,17 +516,19 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             )
 
     grants = [d["grant"] for d in deliveries if d["grant"]]
-    if not grants:
-        return respond_json(200, {"autofix": None})
+    autofix_block = None
+    if grants:
+        autofix_block = {
+            "repo": cfg.target_repo,
+            "base_branch": cfg.autofix_base_branch,
+            "callback_url": cfg.autofix_callback_url,
+            "grants": grants,
+        }
     return respond_json(
         200,
         {
-            "autofix": {
-                "repo": cfg.target_repo,
-                "base_branch": cfg.autofix_base_branch,
-                "callback_url": cfg.autofix_callback_url,
-                "grants": grants,
-            }
+            "autofix": autofix_block,
+            "tracking": tracking_block(cfg, [d["tracking"] for d in deliveries if d["tracking"]]),
         },
     )
 
@@ -462,11 +561,13 @@ def handle_findings(event: dict) -> dict:
         # Same shape as every other 200 from this route: the session parses
         # this body rather than reading the status code, and a retried POST
         # is exactly when it would meet a body it cannot parse. There are no
-        # grants to re-vend, since the batch that earned them already got
-        # them. The 401s above stay plain text: an error carries nothing for
-        # the session to read.
+        # grants to re-vend, autofix or tracking, since the batch that earned
+        # them already got them and their tokens are stored only as hashes;
+        # a tracking grant the session never received expires into the
+        # backstop's thread notice. The 401s above stay plain text: an error
+        # carries nothing for the session to read.
         LOG.info("findings for an already-delivered batch; ignoring")
-        return respond_json(200, {"autofix": None})
+        return respond_json(200, {"autofix": None, "tracking": None})
 
     try:
         body = raw_body(event)
@@ -740,7 +841,14 @@ def handle_autofix_result(event: dict) -> dict:
             return respond_json(200, {"status": "failed", "reason": "receiver crashed"})
 
     run_url = safe_callback_url(str(body.get("run_url") or ""), field="run_url")
-    if not alert_store().advance_autofix(record["dispatch_id"], "dispatched", status):
+    if status == "failed":
+        advanced = alert_store().advance_autofix(
+            record["dispatch_id"], "dispatched", status,
+            extra={"failure": autofix.SESSION_REPORTED_FAILURE},
+        )
+    else:
+        advanced = alert_store().advance_autofix(record["dispatch_id"], "dispatched", status)
+    if not advanced:
         LOG.info("autofix callback for %s already settled; ignoring", record["dispatch_id"])
         return respond(200, "ok")
 
@@ -751,6 +859,462 @@ def handle_autofix_result(event: dict) -> dict:
         )
     post_completion(record, autofix.completion_reply(status, run_url=run_url))
     return respond(200, "ok")
+
+
+# ---- Issue tracking: the /issues route ----
+
+# A tracking id is a uuid4. A longer value is refused before it reaches
+# DynamoDB, whose key-size limit would otherwise turn an oversized id from
+# an unauthenticated caller into an exception and an error alarm.
+TRACKING_ID_MAX_LENGTH = 64
+
+# GitHub's answers to an issue read that mean the number names nothing the
+# receiver may write to in the target repository: a redirect, which is what
+# a transferred issue answers, or gone. Any other failed read is GitHub's
+# own failure and answers 502.
+NOT_IN_REPO_STATUSES = frozenset({301, 302, 307, 308, 404, 410})
+
+
+def refuse_issue_op(short_id: str, reason: str) -> dict:
+    """A 409: well formed, but a cap or a state forbids it now. Logged at
+    warning without the marker: if a refusal leaves an alert untracked, the
+    backstop logs the marker once, at the grant's expiry."""
+    LOG.warning("issue op for %s refused: %s", short_id, reason)
+    return respond_json(409, {"status": "refused", "reason": reason})
+
+
+def fail_issue_op(short_id: str, name: str, reason: str) -> dict:
+    """A 502 before any claim: the mint or a read failed at GitHub, nothing
+    was written and nothing was spent, so a retry is free."""
+    LOG.error("%s %s %s failed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, name, reason)
+    return respond_json(502, {"status": "failed", "reason": reason})
+
+
+def issue_target_problem(repo: str, issue: dict, op: dict) -> str:
+    """Why an existing issue cannot take `op`, or "". The repository is
+    compared by its API URL, ignoring case; a pull request carries a
+    `pull_request` key; a reopen needs a closed issue. A comment takes
+    either state, because a comment on a closed duplicate is a tracking
+    outcome too."""
+    if str(issue.get("repository_url") or "").lower() != f"{API_BASE}/repos/{repo}".lower():
+        return "the issue is not in the target repository"
+    if "pull_request" in issue:
+        return "the number names a pull request"
+    if op["op"] == "reopen" and issue.get("state") != "closed":
+        return "the issue is not closed"
+    return ""
+
+
+def handle_issue_op(event: dict) -> dict:
+    """Perform one named issue operation as the App, or say why not.
+
+    Authenticated by the per-result tracking token issued with the findings,
+    whose hash is the grant's only credential store. Everything before the
+    claims writes nothing: the flag, authentication, the grant's
+    environment, the op's own validation, the replay record, the grant's
+    fit, the mint and the reads with their target checks. The claims then
+    run cheapest first and the day's budget last, so an op refused or
+    rejected before them never spends budget. The repository is always
+    `cfg.target_repo`, never anything the request names.
+    """
+    cfg = config()
+    if not cfg.issues_enabled:
+        return respond(404, "not found")
+
+    token = bearer_token(event)
+    if not token or not token.isascii():
+        LOG.warning("rejected issue op with no usable bearer token")
+        return respond(401, "unauthorized")
+
+    try:
+        body = json.loads(raw_body(event) or "{}")
+    except (MalformedBody, ValueError):
+        LOG.warning("rejected issue op with an unusable body")
+        return respond(400, "unusable body")
+    if not isinstance(body, dict):
+        return respond(400, "unusable body")
+
+    store = alert_store()
+    tracking_id = body.get("tracking_id")
+    grant = None
+    if isinstance(tracking_id, str) and 0 < len(tracking_id) <= TRACKING_ID_MAX_LENGTH:
+        grant = store.get_tracking_grant(tracking_id)
+    # Hashed unconditionally, as the autofix callback does, so an unknown
+    # grant and a wrong token both pay for it.
+    token_hash = AlertStore.hash_token(token)
+    stored_hash = (grant or {}).get("token_hash") or ""
+    if not grant or not hmac.compare_digest(stored_hash, token_hash):
+        LOG.warning("rejected issue op: unknown grant or bad token")
+        return respond(401, "unauthorized")
+    short_id = str(grant.get("short_id") or "")
+    # Checked on read, as `claim_batch` checks its deadline, rather than left
+    # to the sweep, which runs once a minute.
+    if str(grant.get("expires_at") or "") <= utc_now():
+        LOG.warning("rejected issue op for %s: grant expired", short_id)
+        return respond(401, "expired")
+
+    # Asked again on every call: the operator may have narrowed
+    # `issues.environments` since this grant was issued.
+    if not cfg.issues_enabled_for(str(grant.get("environment") or "")):
+        return refuse_issue_op(short_id, "environment not enabled")
+
+    try:
+        op = issues.parse_issue_op(body, cfg)
+    except issues.InvalidIssueOp as exc:
+        # The prompt and the receiver disagree, as with a rejected findings
+        # document, so this one carries the marker.
+        LOG.error("%s %s issue op rejected: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, exc)
+        return respond_json(400, {"status": "rejected", "reason": str(exc)})
+    name = op["op"]
+
+    key = issues.op_key(op)
+    record = store.get_issue_op(grant["tracking_id"], key) or {}
+    state = str(record.get("state") or "")
+    if state == "done":
+        # A lost response or a retry: answer what the first attempt did,
+        # with no read, no claim and no write to GitHub.
+        result = json.loads(record.get("result") or "{}")
+        resume = result.pop("resume", None) or {}
+        thread_notified = False
+        if (
+            issues.is_tracking_op(op)
+            and grant.get("status") == "open"
+            and grant.get("tracking_op") == key
+        ):
+            # The write landed and settled, then the receiver crashed before
+            # marking the alert tracked. This retry finishes that, once:
+            # afterwards the grant is no longer open.
+            LOG.info("issue op %s for %s replayed; finishing its tracking", name, short_id)
+            try:
+                thread_notified = finish_tracking(
+                    grant, op, key,
+                    number=int(result.get("issue_number") or 0),
+                    url=str(result.get("url") or ""),
+                    node_id=str(resume.get("node_id") or ""),
+                    issue_state=str(resume.get("issue_state") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001 - the write stands; the backstop covers the thread
+                LOG.error(
+                    "%s %s %s replay could not finish tracking: %s",
+                    ISSUE_TRACKING_FAILED_MARKER, short_id, name, exc,
+                )
+        else:
+            LOG.info("issue op %s for %s replayed", name, short_id)
+        return respond_json(
+            200,
+            {**result, "status": "done", "replayed": True, "thread_notified": thread_notified},
+        )
+    if state == "sending":
+        # An invocation died mid-op, or is still running. Its outcome at
+        # GitHub is unknown, so it is never retried automatically; the
+        # backstop tells the thread if the alert ends untracked.
+        return refuse_issue_op(short_id, "in progress")
+    if state == "failed" and int(record.get("attempts") or 0) >= issues.OP_ATTEMPT_LIMIT:
+        return refuse_issue_op(short_id, "retry limit reached")
+
+    if issues.is_tracking_op(op) and grant.get("tracked_issue") is not None:
+        return refuse_issue_op(short_id, f"already tracked in #{int(grant['tracked_issue'])}")
+    if name in ("set_fields", "add_to_project") and op["issue_number"] != grant.get("created_issue"):
+        return refuse_issue_op(short_id, "only the issue this alert filed")
+
+    deadline = time.monotonic() + ISSUE_SEQUENCE_BUDGET_SECONDS
+    client = github_client()
+    minted = client.mint_token(cfg.target_repo, OP_PERMISSIONS[name], deadline=deadline)
+    if minted is None:
+        return fail_issue_op(short_id, name, "token mint failed")
+
+    issue = None
+    if name in ("comment", "reopen"):
+        read = client.fetch_issue(
+            cfg.target_repo, op["issue_number"], token=minted.token, deadline=deadline
+        )
+        if not read.ok:
+            if read.status in NOT_IN_REPO_STATUSES:
+                return refuse_issue_op(short_id, "the issue is not in the target repository")
+            return fail_issue_op(short_id, name, read.step)
+        problem = issue_target_problem(cfg.target_repo, read.body, op)
+        if problem:
+            return refuse_issue_op(short_id, problem)
+        issue = read.body
+
+    repo_labels: list[str] = []
+    if name == "file_issue" and op.get("labels"):
+        listed = client.list_label_names(cfg.target_repo, token=minted.token, deadline=deadline)
+        if listed is None:
+            return fail_issue_op(short_id, name, "list the labels")
+        repo_labels = listed
+
+    day = datetime.now(timezone.utc).date().isoformat()
+    if not store.claim_grant_cap(grant["tracking_id"], name, issues.GRANT_CAPS[name]):
+        return refuse_issue_op(short_id, f"{name} cap reached for this alert")
+    if name == "file_issue" and not store.claim_daily_issue_cap(
+        "issue-creates", day, cfg.issues_daily_create_cap
+    ):
+        return refuse_issue_op(short_id, "daily issue create cap reached")
+    if not store.claim_daily_issue_cap("issue-writes", day, cfg.issues_daily_write_cap):
+        return refuse_issue_op(short_id, "daily issue write cap reached")
+    if not store.claim_issue_op(
+        grant["tracking_id"], key, op=name, max_attempts=issues.OP_ATTEMPT_LIMIT
+    ):
+        return refuse_issue_op(short_id, "in progress")
+
+    return run_issue_op(
+        cfg, grant, op, key, minted.token, deadline, issue=issue, repo_labels=repo_labels
+    )
+
+
+def post_tracking_reply(grant: dict, text: str) -> bool:
+    """Post a tracking outcome into the alert's thread; True when it posted.
+
+    The op is settled by the time this runs, so a failure costs only the
+    reply: it is logged under the delivery marker, and nothing raised here
+    may reach the crash guard, which would report a settled op as crashed.
+    A grant with no thread (its alert card never posted) has nothing to
+    deliver to, so the reply is skipped with a warning instead.
+    """
+    conversation_id = str(grant.get("conversation_id") or "")
+    message_id = str(grant.get("message_id") or "")
+    if not conversation_id or not message_id:
+        LOG.warning(
+            "no thread to reply in for %s; tracking reply skipped", grant.get("short_id", "")
+        )
+        return False
+    try:
+        bot_client().reply_in_thread(conversation_id, message_id, text)
+    except Exception as exc:  # noqa: BLE001 - the op is settled; only the reply is lost
+        LOG.error(
+            "%s issue tracking reply for %s: %s",
+            DELIVERY_FAILURE_MARKER, grant.get("short_id", ""), exc,
+        )
+        return False
+    return True
+
+
+def settle_issue_failure(grant: dict, op: dict, key: str, reason: str, *, status: int = 502) -> dict:
+    """Settle a claimed op `failed`, release the tracking claim it held, log
+    the marker, and answer: 400 `rejected` when GitHub refused the request
+    itself and wrote nothing, otherwise 502 `failed`, naming the step. The
+    op record is left reclaimable, so the session's one retry can run."""
+    store = alert_store()
+    store.settle_issue_op(grant["tracking_id"], key, "failed", error=reason)
+    if issues.is_tracking_op(op):
+        store.release_tracking_issue(grant["tracking_id"], key)
+    outcome = "rejected" if status == 400 else "failed"
+    LOG.error(
+        "%s %s %s %s: %s",
+        ISSUE_TRACKING_FAILED_MARKER, grant.get("short_id", ""), op["op"], outcome, reason,
+    )
+    return respond_json(status, {"status": outcome, "reason": reason})
+
+
+def run_issue_op(
+    cfg: ReceiverConfig,
+    grant: dict,
+    op: dict,
+    key: str,
+    token: str,
+    deadline: float,
+    *,
+    issue: dict | None = None,
+    repo_labels: list[str] | None = None,
+) -> dict:
+    """Everything after an op's record is claimed, under the guard `fix_ready`
+    uses: whatever raises before the op's GitHub write returns settles the
+    record `failed`, releases a tracking claim this op held, logs the marker
+    and answers 502, so a crash never strands a record at `sending`. A Lambda
+    timeout is the one exit the guard cannot see: the record stays `sending`,
+    the function's Errors alarm reports it, and the backstop tells the thread.
+
+    Once the write has returned, the op happened at GitHub, so a crash after
+    it leaves the record and the claim as they are: a record still `sending`
+    cannot be reclaimed, so no retry repeats the write, and one that settled
+    `done` is answered from its record."""
+    progress = {"landed": False}
+    try:
+        return perform_issue_op(
+            cfg, grant, op, key, token, deadline,
+            issue=issue, repo_labels=repo_labels or [], progress=progress,
+        )
+    except Exception as exc:  # noqa: BLE001 - a claimed op must settle, never strand at sending
+        short_id = grant.get("short_id", "")
+        if progress["landed"]:
+            LOG.error(
+                "%s %s %s crashed after its GitHub write landed: %s",
+                ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc,
+            )
+            return respond_json(502, {"status": "failed", "reason": "receiver crashed"})
+        LOG.error("%s %s %s crashed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc)
+        try:
+            # The record may already be `failed`, when the crash came while a
+            # failure was being settled; the release still runs, so a claim
+            # that failure left behind is freed.
+            alert_store().settle_issue_op(grant["tracking_id"], key, "failed", error="receiver crashed")
+            if issues.is_tracking_op(op):
+                alert_store().release_tracking_issue(grant["tracking_id"], key)
+        except Exception as settle_exc:  # noqa: BLE001 - logged; the backstop covers the thread
+            LOG.error(
+                "%s %s could not settle %s after the crash: %s",
+                ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], settle_exc,
+            )
+        return respond_json(502, {"status": "failed", "reason": "receiver crashed"})
+
+
+def perform_issue_op(
+    cfg: ReceiverConfig,
+    grant: dict,
+    op: dict,
+    key: str,
+    token: str,
+    deadline: float,
+    *,
+    issue: dict | None,
+    repo_labels: list[str],
+    progress: dict,
+) -> dict:
+    """Make one claimed op's GitHub write as the App, settle it, and tell the
+    thread when it is the alert's tracking outcome. `progress["landed"]` is
+    set the moment the write returns, which is what the guard decides by.
+
+    A tracking op first claims the grant, so two different creates cannot
+    both reach GitHub. Every title and body is shaped before it is sent:
+    redacted, and closed by the footer naming the grant's Sentry issue. The
+    settle writes land before the reply, so an invocation that runs out of
+    time during the reply loses only the reply.
+    """
+    store = alert_store()
+    client = github_client()
+    tracking_id = grant["tracking_id"]
+    short_id = str(grant.get("short_id") or "")
+    name = op["op"]
+    tracking = issues.is_tracking_op(op)
+    search_unavailable = bool(op.get("search_unavailable"))
+
+    if tracking and not store.claim_tracking_issue(
+        tracking_id, key, search_unavailable=search_unavailable
+    ):
+        latest = store.get_tracking_grant(tracking_id) or {}
+        if latest.get("tracked_issue") is not None:
+            reason = f"already tracked in #{int(latest['tracked_issue'])}"
+        else:
+            reason = "another tracking operation is in progress"
+        store.settle_issue_op(tracking_id, key, "failed", error=reason)
+        return refuse_issue_op(short_id, reason)
+
+    warnings: list[str] = []
+    extra: dict = {}
+    number = int(op.get("issue_number") or 0)
+    url = str(grant.get("tracked_url") or "")
+    node_id = ""
+    if name == "file_issue":
+        labels, unknown = issues.match_labels(op.get("labels") or [], repo_labels)
+        warnings += [
+            f"label {label} is not defined in the repository and was not sent" for label in unknown
+        ]
+        title, title_redactions = issues.shape_title(op["title"])
+        body, body_redactions = issues.shape_body(
+            op["body"], grant, search_unavailable=search_unavailable
+        )
+        LOG.info("REDACTIONS_APPLIED %d for %s", title_redactions + body_redactions, short_id)
+        call = client.file_issue(
+            cfg.target_repo, token=token, title=title, body=body,
+            labels=labels, issue_type=op.get("type", ""), deadline=deadline,
+        )
+        if not call.ok:
+            if call.status == 422:
+                # GitHub validated the request and wrote nothing: an issue
+                # type it does not recognize is the usual cause.
+                return settle_issue_failure(
+                    grant, op, key, "GitHub refused the issue as sent", status=400
+                )
+            return settle_issue_failure(grant, op, key, call.step)
+        warnings += issues.landing_warnings(call.body, labels, op.get("type", ""))
+        number = int(call.body.get("number") or 0)
+        url = str(call.body.get("html_url") or "")
+        node_id = str(call.body.get("node_id") or "")
+    elif name in ("comment", "reopen"):
+        body, redactions = issues.shape_body(op["body"], grant)
+        LOG.info("REDACTIONS_APPLIED %d for %s", redactions, short_id)
+        write = client.comment_on_issue if name == "comment" else client.reopen_issue
+        call = write(cfg.target_repo, number, token=token, body=body, deadline=deadline)
+        if not call.ok:
+            return settle_issue_failure(grant, op, key, call.step)
+        url = str(call.body.get("html_url") or "")
+    elif name == "set_fields":
+        outcome = client.set_fields(
+            cfg.target_repo, token=token, node_id=str(grant.get("created_node_id") or ""),
+            fields=op["fields"], deadline=deadline,
+        )
+        if outcome.rejected:
+            return settle_issue_failure(grant, op, key, outcome.rejected, status=400)
+        if not outcome.ok:
+            return settle_issue_failure(grant, op, key, outcome.step)
+        extra["fields"] = outcome.fields
+    else:
+        call = client.add_to_project(
+            cfg.target_repo, cfg.issues_project_number, token=token,
+            node_id=str(grant.get("created_node_id") or ""), deadline=deadline,
+        )
+        if not call.ok:
+            return settle_issue_failure(grant, op, key, call.step)
+
+    progress["landed"] = True
+    issue_state = str((issue or {}).get("state") or "")
+    result = {"op": name, "issue_number": number, "url": url, "warnings": warnings, **extra}
+    stored = dict(result)
+    if tracking:
+        # What a replay needs to finish marking the alert tracked if the
+        # receiver crashes after this settle. Never sent to the session.
+        stored["resume"] = {"node_id": node_id, "issue_state": issue_state}
+    store.settle_issue_op(tracking_id, key, "done", result=stored)
+    if warnings:
+        LOG.error(
+            "%s %s %s #%d landed with warnings: %s",
+            ISSUE_TRACKING_FAILED_MARKER, short_id, name, number, "; ".join(warnings),
+        )
+
+    thread_notified = False
+    if tracking:
+        thread_notified = finish_tracking(
+            grant, op, key, number=number, url=url, node_id=node_id, issue_state=issue_state
+        )
+
+    LOG.info("issue op %s for %s done on #%d", name, short_id, number)
+    return respond_json(
+        200,
+        {"status": "done", **result, "replayed": False, "thread_notified": thread_notified},
+    )
+
+
+def finish_tracking(
+    grant: dict, op: dict, key: str, *, number: int, url: str, node_id: str, issue_state: str
+) -> bool:
+    """Mark the alert tracked by the issue a settled tracking op wrote, and
+    post its link in the thread; True when the reply posted. Run by the op
+    itself, and by a replay when the op crashed before getting this far.
+
+    `issue_state` is the state the duplicate was read in, which decides
+    whether the reply says the tracking issue is closed.
+    """
+    short_id = str(grant.get("short_id") or "")
+    name = op["op"]
+    via = "duplicate" if name == "comment" else name
+    if not alert_store().settle_tracked(
+        grant["tracking_id"], key, issue_number=number, url=url, via=via, node_id=node_id
+    ):
+        # The backstop expired the grant while this op was in flight, and
+        # has told the thread filing may not have finished. The reply below
+        # says what actually happened.
+        LOG.error(
+            "%s %s %s landed on #%d after the grant closed",
+            ISSUE_TRACKING_FAILED_MARKER, short_id, name, number,
+        )
+    text = issues.tracking_reply(
+        op,
+        url=safe_callback_url(url, field="issue_url"),
+        issue_state=issue_state,
+        search_unavailable=bool(op.get("search_unavailable")),
+    )
+    return post_tracking_reply(grant, text)
 
 
 def route(event: dict) -> dict:
@@ -772,6 +1336,8 @@ def route(event: dict) -> dict:
         return handle_sentry(event)
     if path == "/autofix-result" and method == "POST":
         return handle_autofix_result(event)
+    if path == "/issues" and method == "POST":
+        return handle_issue_op(event)
     # Checked before "/findings": exact-equality routing means the more
     # specific path must come first or it can never be reached.
     if path == "/findings/probe" and method == "POST":

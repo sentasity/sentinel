@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import json
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
@@ -42,7 +43,16 @@ class BatchState(enum.Enum):
 # Statuses that keep a row in the due index, mapped to the `due_pk` they carry
 # while there. Everything else is terminal for scheduling and has its index
 # attributes removed.
-WAITING_STATES = {"pending": "pending", "fired": "awaiting", "opening": "autofix"}
+WAITING_STATES = {
+    "pending": "pending",
+    "fired": "awaiting",
+    "opening": "autofix",
+    "open": "tracking",
+}
+
+# The two per-day counters the issue proxy spends: one for issues created,
+# one for every write of any kind.
+ISSUE_DAY_COUNTERS = ("issue-creates", "issue-writes")
 
 
 def utc_now() -> str:
@@ -520,6 +530,301 @@ class AlertStore:
                 ConditionExpression="#s = :expected",
                 ExpressionAttributeNames=names,
                 ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    # ---- Issue tracking ----
+    #
+    # One grant row per delivered result, `pk = tracking:<tracking_id>`,
+    # `sk = grant`, and beside it one record per distinct op the session
+    # sent, `sk = op:<op key>`. Every write is conditional, so the `/issues`
+    # route and the expiry sweep can both target a grant and exactly one of
+    # them wins.
+
+    @staticmethod
+    def _tracking_key(tracking_id: str, sk: str = "grant") -> dict[str, str]:
+        return {"pk": f"tracking:{tracking_id}", "sk": sk}
+
+    def put_tracking_grant(self, record: dict) -> None:
+        """Persist one result's tracking grant, `open` and in the due index
+        until its `expires_at`, so the sweep finds it if no tracking outcome
+        ever lands. `expires_at` itself is never removed: it is the token's
+        liveness, checked on every call, and a tracked grant still takes
+        related comments, field values and a board placement until then.
+
+        Conditional on the row being new. A tracking id is a fresh uuid4, so
+        a collision is not a case to absorb quietly; it raises.
+        """
+        self.table.put_item(
+            Item={
+                **self._tracking_key(record["tracking_id"]),
+                **record,
+                "status": "open",
+                "due_pk": WAITING_STATES["open"],
+                "due_at": record["expires_at"],
+                "created_at": utc_now(),
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+
+    def get_tracking_grant(self, tracking_id: str) -> dict | None:
+        """Return one grant, or None. Strongly consistent, because every
+        reader is about to decide something a conditional write just
+        changed."""
+        key = self._tracking_key(tracking_id)
+        return self.table.get_item(Key=key, ConsistentRead=True).get("Item")
+
+    def claim_grant_cap(self, tracking_id: str, op: str, cap: int) -> bool:
+        """Spend one of this grant's attempts at `op`. False when spent.
+
+        The counter lives on the grant row as `n_<op>`. `attribute_exists`
+        keeps the update from creating a stray row for a grant that was
+        never written, which an unconditioned update would do.
+        """
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id),
+                UpdateExpression="SET #n = if_not_exists(#n, :zero) + :one",
+                ConditionExpression=(
+                    "attribute_exists(pk) AND (attribute_not_exists(#n) OR #n < :cap)"
+                ),
+                ExpressionAttributeNames={"#n": f"n_{op}"},
+                ExpressionAttributeValues={":zero": 0, ":one": 1, ":cap": cap},
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def claim_daily_issue_cap(self, counter: str, day: str, cap: int) -> bool:
+        """Spend one of the day's issue creates or issue writes. False when
+        spent. The same conditional counter as `claim_autofix_pr`."""
+        if counter not in ISSUE_DAY_COUNTERS:
+            raise ValueError(f"unknown issue counter {counter!r}")
+        try:
+            self.table.update_item(
+                Key={"pk": f"{counter}:{day}", "sk": "counter"},
+                UpdateExpression="SET #c = if_not_exists(#c, :zero) + :one",
+                ConditionExpression="attribute_not_exists(#c) OR #c < :cap",
+                ExpressionAttributeNames={"#c": "spent"},
+                ExpressionAttributeValues={":zero": 0, ":one": 1, ":cap": cap},
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def get_issue_op(self, tracking_id: str, key: str) -> dict | None:
+        """Return the record of one op under a grant, or None."""
+        record_key = self._tracking_key(tracking_id, f"op:{key}")
+        return self.table.get_item(Key=record_key, ConsistentRead=True).get("Item")
+
+    def claim_issue_op(self, tracking_id: str, key: str, *, op: str, max_attempts: int) -> bool:
+        """Start one attempt at an op: create its record as `sending`, or move
+        a `failed` record back to `sending` while its attempts are under
+        `max_attempts`. False when the record is `sending` or `done`, or out
+        of attempts.
+
+        One conditional update covers both cases, so two retries of the same
+        failed op cannot both run.
+        """
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id, f"op:{key}"),
+                UpdateExpression=(
+                    "SET #state = :sending, #op = :op, "
+                    "#attempts = if_not_exists(#attempts, :zero) + :one, "
+                    "#updated = :now REMOVE #error"
+                ),
+                ConditionExpression=(
+                    "attribute_not_exists(pk) OR (#state = :failed AND #attempts < :max)"
+                ),
+                ExpressionAttributeNames={
+                    "#state": "state",
+                    "#op": "op",
+                    "#attempts": "attempts",
+                    "#updated": "updated_at",
+                    "#error": "error",
+                },
+                ExpressionAttributeValues={
+                    ":sending": "sending",
+                    ":failed": "failed",
+                    ":op": op,
+                    ":zero": 0,
+                    ":one": 1,
+                    ":max": max_attempts,
+                    ":now": utc_now(),
+                },
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def settle_issue_op(
+        self,
+        tracking_id: str,
+        key: str,
+        state: str,
+        *,
+        result: dict | None = None,
+        error: str = "",
+    ) -> bool:
+        """Move a `sending` op record to `done`, with the result a replay
+        answers, or to `failed`, with what failed. False when it was not
+        `sending`.
+
+        The result is stored as JSON text rather than a map: DynamoDB hands
+        numbers back as Decimal, which the replayed response could not
+        serialize.
+        """
+        if state not in ("done", "failed"):
+            raise ValueError(f"an op settles to done or failed, not {state!r}")
+        names = {"#state": "state", "#updated": "updated_at"}
+        values = {":sending": "sending", ":state": state, ":now": utc_now()}
+        sets = ["#state = :state", "#updated = :now"]
+        if result is not None:
+            names["#result"] = "result"
+            values[":result"] = json.dumps(result, sort_keys=True)
+            sets.append("#result = :result")
+        if error:
+            names["#error"] = "error"
+            values[":error"] = error
+            sets.append("#error = :error")
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id, f"op:{key}"),
+                UpdateExpression="SET " + ", ".join(sets),
+                ConditionExpression="#state = :sending",
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def claim_tracking_issue(
+        self, tracking_id: str, key: str, *, search_unavailable: bool = False
+    ) -> bool:
+        """Hold an open grant for the one tracking op `key` names, before its
+        GitHub write. False when another op holds it or the grant is no
+        longer open, so two different creates cannot both reach GitHub.
+
+        A create that carried `search_unavailable` marks the grant here, so
+        the backstop still knows the search failed if the create then does.
+        """
+        sets = ["#op = :key"]
+        values: dict = {":key": key, ":open": "open"}
+        if search_unavailable:
+            sets.append("search_unavailable = :true")
+            values[":true"] = True
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id),
+                UpdateExpression="SET " + ", ".join(sets),
+                ConditionExpression="#s = :open AND (attribute_not_exists(#op) OR #op = :key)",
+                ExpressionAttributeNames={"#s": "status", "#op": "tracking_op"},
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def release_tracking_issue(self, tracking_id: str, key: str) -> bool:
+        """Drop the tracking claim `key` holds, after its op failed, so a
+        corrected request can claim it. False when `key` no longer holds it."""
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id),
+                UpdateExpression="REMOVE #op",
+                ConditionExpression="#op = :key",
+                ExpressionAttributeNames={"#op": "tracking_op"},
+                ExpressionAttributeValues={":key": key},
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def settle_tracked(
+        self,
+        tracking_id: str,
+        key: str,
+        *,
+        issue_number: int,
+        url: str,
+        via: str,
+        node_id: str = "",
+    ) -> bool:
+        """Move a grant from `open` to `tracked` in one conditional write,
+        recording the issue that now tracks the alert. A create (`via`
+        `file_issue`) also records the issue as this grant's own, which is
+        what `set_fields` and `add_to_project` are allowed to touch.
+
+        The grant leaves the due index, since the backstop has nothing left
+        to do, and drops its tracking claim. False when the grant is no
+        longer open or `key` does not hold it.
+        """
+        sets = [
+            "#s = :tracked",
+            "tracked_issue = :issue",
+            "tracked_url = :url",
+            "tracked_via = :via",
+            "updated_at = :now",
+        ]
+        values = {
+            ":tracked": "tracked",
+            ":open": "open",
+            ":key": key,
+            ":issue": issue_number,
+            ":url": url,
+            ":via": via,
+            ":now": utc_now(),
+        }
+        if via == "file_issue":
+            sets += ["created_issue = :issue", "created_node_id = :node"]
+            values[":node"] = node_id
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id),
+                UpdateExpression="SET " + ", ".join(sets) + " REMOVE #op, due_pk, due_at",
+                ConditionExpression="#s = :open AND #op = :key",
+                ExpressionAttributeNames={"#s": "status", "#op": "tracking_op"},
+                ExpressionAttributeValues=values,
+            )
+        except ClientError as exc:
+            if not conditional_check_failed(exc):
+                raise
+            return False
+        return True
+
+    def advance_tracking(self, tracking_id: str, expected: str, status: str) -> bool:
+        """Move a grant from `expected` to `status`, out of the due index.
+        The sweep's move at expiry, to `untracked` or `released`; False when
+        a late tracking op settled it first."""
+        try:
+            self.table.update_item(
+                Key=self._tracking_key(tracking_id),
+                UpdateExpression="SET #s = :status, updated_at = :now REMOVE due_pk, due_at",
+                ConditionExpression="#s = :expected",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":expected": expected,
+                    ":status": status,
+                    ":now": utc_now(),
+                },
             )
         except ClientError as exc:
             if not conditional_check_failed(exc):

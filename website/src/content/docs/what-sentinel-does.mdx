@@ -44,9 +44,9 @@ failure handling, or [See it work](/sentinel/evidence/) for the artifacts it pro
 ## What it will not do
 
 Nothing merges automatically. Every pull request waits for a human reviewer. The session
-that writes a fix holds no GitHub credential, and the one the receiver uses to open the
-pull request cannot reach past a single repository, two permissions, and an hour. It
-notably cannot push a workflow file, and the receiver refuses to carry one.
+that writes a fix has no way to write to GitHub, and the credential the receiver uses to
+open the pull request cannot reach past a single repository, two permissions, and an
+hour. It notably cannot push a workflow file, and the receiver refuses to carry one.
 
 Both of the aggressive behaviours ship switched off. A new deployment starts in
 `shadow` mode, which runs the whole gate and records what it would have fired without

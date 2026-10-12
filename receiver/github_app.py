@@ -1,8 +1,10 @@
-"""GitHub App auth and the pull requests the receiver opens for autofix.
+"""GitHub App auth, the pull requests the receiver opens for autofix, and
+the issue writes it makes for the issue proxy.
 
 Modeled on receiver.routines.RoutineClient's posture: public methods never
-raise; a failure returns None and the caller decides. Tokens are minted per
-pull request, spent inside the invocation that minted them, and never
+raise; a failure returns None or a failure object and the caller decides.
+Tokens are minted per pull request or per issue operation, downscoped to
+what that one needs, spent inside the invocation that minted them, and never
 persisted or handed to anything outside this process.
 """
 
@@ -12,7 +14,7 @@ import base64
 import logging
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import jwt
 import requests
@@ -52,6 +54,87 @@ RAW_BLOB = "application/vnd.github.raw+json"
 # push one.
 AUTOFIX_PERMISSIONS = {"contents": "write", "pull_requests": "write"}
 
+# The installation's permission key for the organization's Issue fields,
+# read-only. GitHub's App settings page names the permission but not its
+# key, and the installation-token reference does not list it, so the key was
+# read back from the approved installation (`GET /app/installations/{id}`)
+# and proved by minting a token that carries it. `set_fields` needs it to
+# resolve field and option names; no other mint carries it.
+ISSUE_FIELDS_PERMISSION = "issue_fields"
+
+# Each issue op's mint, downscoped to what that op needs, the way
+# AUTOFIX_PERMISSIONS scopes a fix. No entry carries `contents`,
+# `pull_requests`, `workflows` or any administration permission, so an
+# issue op's token cannot write a file or open a pull request whatever its
+# request said.
+OP_PERMISSIONS = {
+    "file_issue": {"issues": "write"},
+    "comment": {"issues": "write"},
+    "reopen": {"issues": "write"},
+    "set_fields": {"issues": "write", ISSUE_FIELDS_PERMISSION: "read"},
+    "add_to_project": {"issues": "read", "organization_projects": "write"},
+}
+
+# The GitHub part of one issue op, from the mint to its last call. The
+# longest op is six calls (the two-call mint, three label pages, the
+# create), each capped at TIMEOUT_SECONDS; what is left of the Lambda's 60
+# seconds covers the settle writes and the Teams reply.
+ISSUE_SEQUENCE_BUDGET_SECONDS = 35
+
+GRAPHQL_URL = f"{API_BASE}/graphql"
+
+# A repository's labels are listed 100 a page for at most this many pages.
+# A requested label past the last page reads as unknown and is dropped
+# loudly, rather than spending the op's budget on more pages.
+LABEL_PAGES = 3
+
+# The organization's single-select issue fields and their options, the same
+# discovery the target repository's own issue tooling runs. A field of any
+# other type comes back as an empty node.
+ISSUE_FIELDS_QUERY = """
+query($org: String!) {
+  organization(login: $org) {
+    issueFields(first: 50) {
+      nodes { ... on IssueFieldSingleSelect { id name options { id name } } }
+    }
+  }
+}
+"""
+
+# What an issue's single-select fields hold, read back after a write:
+# `setIssueFieldValue` has a known mode that reports success and writes
+# nothing.
+FIELD_VALUES_QUERY = """
+query($id: ID!) {
+  node(id: $id) {
+    ... on Issue {
+      issueFieldValues(first: 20) {
+        nodes {
+          ... on IssueFieldSingleSelectValue {
+            name
+            field { ... on IssueFieldSingleSelect { name } }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+PROJECT_QUERY = """
+query($org: String!, $number: Int!) {
+  organization(login: $org) { projectV2(number: $number) { id } }
+}
+"""
+
+# Adding an issue that is already on the board returns the existing item, so
+# the call is idempotent at GitHub as well as in the receiver.
+ADD_PROJECT_ITEM_MUTATION = """
+mutation($project: ID!, $content: ID!) {
+  addProjectV2ItemById(input: {projectId: $project, contentId: $content}) { item { id } }
+}
+"""
+
 # The mode a whole file gets when the base tree does not already carry the
 # path. A path the base carries as an executable keeps its executable bit;
 # one it carries as anything but a regular file is refused outright.
@@ -78,6 +161,41 @@ class MintedToken:
     expires_at: str  # ISO-8601, straight from the GitHub response
 
 
+@dataclass(frozen=True)
+class IssueCall:
+    """What one issue-proxy call did. On a 2xx, `ok` is True and `body` is
+    GitHub's JSON. Otherwise `status` is GitHub's answer (0 when none came
+    back) and `step` names the call that failed, which the handler returns
+    as the reason for its 502."""
+
+    ok: bool
+    status: int = 0
+    body: dict = field(default_factory=dict)
+    step: str = ""
+
+
+@dataclass(frozen=True)
+class FieldsOutcome:
+    """What `set_fields` did. `fields` is each field name mapped to the
+    option name GitHub holds, on success. `rejected` says why the request
+    itself was wrong (an option no field offers), which the handler answers
+    with a 400; `step` says which call failed, answered with a 502."""
+
+    ok: bool
+    fields: dict = field(default_factory=dict)
+    rejected: str = ""
+    step: str = ""
+
+
+class GitHubCallFailed(RuntimeError):
+    """One issue-proxy call answered outside 200 to 299, or not at all."""
+
+    def __init__(self, step: str, status: int, detail: str = ""):
+        super().__init__(f"{step}: HTTP {status} {detail}".strip())
+        self.step = step
+        self.status = status
+
+
 class GitHubAppClient:
     """Mints installation tokens scoped to one repository and opens the pull
     requests that carry autofix changes."""
@@ -86,6 +204,13 @@ class GitHubAppClient:
         self.app_id = app_id
         self.private_key_pem = private_key_pem
         self.session = requests.Session()
+        # Per container: an organization's issue-field definitions, by field
+        # name, and project node ids by (organization, number). Both change
+        # rarely. A missing name triggers one refetch, and a field write that is
+        # refused or does not persist drops the organization's entry, so a stale
+        # one costs at most one failed call, never a wrong write.
+        self._issue_fields: dict[str, dict[str, dict]] = {}
+        self._project_ids: dict[tuple[str, int], str] = {}
 
     def _app_jwt(self) -> str:
         now = int(time.time())
@@ -120,14 +245,20 @@ class GitHubAppClient:
         self, repo: str, permissions: dict[str, str], *, deadline: float | None = None
     ) -> dict:
         """Mint a token for `repo`'s installation, downscoped to exactly
-        `permissions` and to that one repository. Raises on failure."""
+        `permissions` and to that one repository. Raises on failure.
+
+        Both calls refuse redirects and treat any answer outside 200 to 299
+        as failure, as every issue-proxy call does: `raise_for_status` alone
+        would let a 3xx through."""
         app_jwt = self._app_jwt()
         lookup = self.session.get(
             f"{API_BASE}/repos/{repo}/installation",
             headers=self._headers(app_jwt),
             timeout=self._timeout(deadline),
+            allow_redirects=False,
         )
-        lookup.raise_for_status()
+        if not 200 <= lookup.status_code < 300:
+            raise GitHubCallFailed("look up the installation", lookup.status_code)
         minted = self.session.post(
             f"{API_BASE}/app/installations/{lookup.json()['id']}/access_tokens",
             headers=self._headers(app_jwt),
@@ -136,27 +267,37 @@ class GitHubAppClient:
                 "permissions": permissions,
             },
             timeout=self._timeout(deadline),
+            allow_redirects=False,
         )
-        minted.raise_for_status()
+        if not 200 <= minted.status_code < 300:
+            raise GitHubCallFailed("mint the token", minted.status_code)
         return minted.json()
 
-    def mint_autofix_token(
-        self, repo: str, *, deadline: float | None = None
+    def mint_token(
+        self, repo: str, permissions: dict[str, str], *, deadline: float | None = None
     ) -> MintedToken | None:
-        """A one-hour token scoped to `repo` with AUTOFIX_PERMISSIONS.
+        """A one-hour token scoped to `repo` and downscoped to `permissions`.
 
-        None on any failure. Never raises: the caller sits in the callback
-        request path, where an exception would leave a claimed record
-        unsettled.
+        None on any failure, including a permission the installation does
+        not hold. Never raises: every caller sits in a request path, where an
+        exception would leave a claimed record unsettled.
         """
         try:
-            body = self._installation_token(repo, AUTOFIX_PERMISSIONS, deadline=deadline)
+            body = self._installation_token(repo, permissions, deadline=deadline)
             return MintedToken(
                 token=body["token"], expires_at=str(body.get("expires_at") or "")
             )
         except Exception as exc:  # noqa: BLE001 - auth/transport must classify, not crash
-            LOG.error("autofix token mint failed for %s: %s", repo, exc)
+            LOG.error(
+                "token mint failed for %s (%s): %s", repo, ", ".join(sorted(permissions)), exc
+            )
             return None
+
+    def mint_autofix_token(
+        self, repo: str, *, deadline: float | None = None
+    ) -> MintedToken | None:
+        """A one-hour token scoped to `repo` with AUTOFIX_PERMISSIONS."""
+        return self.mint_token(repo, AUTOFIX_PERMISSIONS, deadline=deadline)
 
     def _call(
         self,
@@ -439,6 +580,317 @@ class GitHubAppClient:
         if blob_sha(content) != sha:
             raise RuntimeError(f"blob {sha} came back as other content")
         return content
+
+    # ---- Issue proxy ----
+    #
+    # The calls behind the five issue ops. Every one takes its repository
+    # from the caller, which passes the configured target repository and
+    # never anything from a request; passes `allow_redirects=False`, because
+    # `requests` follows a GET's redirect by default and a transferred issue
+    # answers with one into another repository; and treats any status
+    # outside 200 to 299 as failure, where `_call`'s `raise_for_status`
+    # would let a 3xx through. Each takes the token its op minted.
+
+    def _strict(
+        self, method: str, url: str, token: str, *, step: str, deadline: float | None, **kwargs
+    ) -> requests.Response:
+        """One issue-proxy call. Raises GitHubCallFailed on any answer outside
+        200 to 299, a transport error, or a spent budget."""
+        try:
+            got = getattr(self.session, method)(
+                url,
+                headers=self._headers(token),
+                timeout=self._timeout(deadline),
+                allow_redirects=False,
+                **kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 - transport and budget failures classify, never crash
+            raise GitHubCallFailed(step, 0, str(exc)) from exc
+        if not 200 <= got.status_code < 300:
+            raise GitHubCallFailed(step, got.status_code)
+        return got
+
+    def _graphql(
+        self, query: str, variables: dict, token: str, *, step: str, deadline: float | None
+    ) -> dict:
+        """One GraphQL call; returns its `data`. GraphQL reports errors
+        inside a 200, so a non-empty `errors` array is a failure too. No
+        `GraphQL-Features` header is sent: the target repository's own
+        tooling runs these queries without one."""
+        got = self._strict(
+            "post", GRAPHQL_URL, token,
+            step=step, deadline=deadline, json={"query": query, "variables": variables},
+        )
+        body = got.json()
+        if body.get("errors"):
+            raise GitHubCallFailed(step, got.status_code, f"GraphQL errors: {str(body['errors'])[:500]}")
+        return body.get("data") or {}
+
+    def _issue_call(
+        self, method: str, url: str, token: str, *, step: str, deadline: float | None, **kwargs
+    ) -> IssueCall:
+        """`_strict` with the never-raise posture: the outcome as an IssueCall."""
+        try:
+            got = self._strict(method, url, token, step=step, deadline=deadline, **kwargs)
+            return IssueCall(ok=True, status=got.status_code, body=got.json())
+        except GitHubCallFailed as exc:
+            LOG.error("issue call failed: %s", exc)
+            return IssueCall(ok=False, status=exc.status, step=exc.step)
+        except Exception as exc:  # noqa: BLE001 - an unreadable body classifies, never crashes
+            LOG.error("issue call %s returned an unreadable body: %s", step, exc)
+            return IssueCall(ok=False, step=step)
+
+    def fetch_issue(
+        self, repo: str, number: int, *, token: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Read issue `number` in `repo`, redirects disabled, so the handler
+        can check it is an issue in that repository before writing to it."""
+        return self._issue_call(
+            "get", f"{API_BASE}/repos/{repo}/issues/{number}", token,
+            step="read the issue", deadline=deadline,
+        )
+
+    def list_label_names(
+        self, repo: str, *, token: str, deadline: float | None = None
+    ) -> list[str] | None:
+        """The repository's label names, following `Link: rel="next"` for
+        at most LABEL_PAGES pages of 100. None on any failure."""
+        url = f"{API_BASE}/repos/{repo}/labels"
+        params: dict | None = {"per_page": 100}
+        names: list[str] = []
+        try:
+            for _ in range(LABEL_PAGES):
+                got = self._strict(
+                    "get", url, token, step="list the labels", deadline=deadline, params=params
+                )
+                names += [str(label.get("name") or "") for label in got.json()]
+                url = str((got.links.get("next") or {}).get("url") or "")
+                params = None  # the next link carries its own query
+                if not url:
+                    break
+                if not url.startswith(f"{API_BASE}/"):
+                    raise GitHubCallFailed("list the labels", got.status_code, "next page off the API host")
+            else:
+                if url:
+                    LOG.warning(
+                        "%s has more than %d pages of labels; later ones read as unknown",
+                        repo, LABEL_PAGES,
+                    )
+        except Exception as exc:  # noqa: BLE001 - the handler answers 502, never a traceback
+            LOG.error("label list failed for %s: %s", repo, exc)
+            return None
+        return [name for name in names if name]
+
+    def file_issue(
+        self,
+        repo: str,
+        *,
+        token: str,
+        title: str,
+        body: str,
+        labels: Sequence[str] = (),
+        issue_type: str = "",
+        deadline: float | None = None,
+    ) -> IssueCall:
+        """Create an issue. `type` is the issue type's name, which the
+        create-issue reference accepts with the Issues permission alone."""
+        payload: dict = {"title": title, "body": body, "labels": list(labels)}
+        if issue_type:
+            payload["type"] = issue_type
+        return self._issue_call(
+            "post", f"{API_BASE}/repos/{repo}/issues", token,
+            step="create the issue", deadline=deadline, json=payload,
+        )
+
+    def comment_on_issue(
+        self, repo: str, number: int, *, token: str, body: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Comment on issue `number`; `body` is GitHub's comment, with its
+        own `html_url`."""
+        return self._issue_call(
+            "post", f"{API_BASE}/repos/{repo}/issues/{number}/comments", token,
+            step="post the comment", deadline=deadline, json={"body": body},
+        )
+
+    def reopen_issue(
+        self, repo: str, number: int, *, token: str, body: str, deadline: float | None = None
+    ) -> IssueCall:
+        """Comment on closed issue `number`, then reopen it. The comment goes
+        first so a reopened issue never lacks its explanation; a failed
+        reopen after it names its own step, and a retry runs both again,
+        since a second comment is a smaller harm than a closed issue."""
+        comment = self.comment_on_issue(repo, number, token=token, body=body, deadline=deadline)
+        if not comment.ok:
+            return comment
+        return self._issue_call(
+            "patch", f"{API_BASE}/repos/{repo}/issues/{number}", token,
+            step="reopen the issue", deadline=deadline,
+            json={"state": "open", "state_reason": "reopened"},
+        )
+
+    def _field_definitions(
+        self, org: str, token: str, *, deadline: float | None, refresh: bool = False
+    ) -> dict[str, dict]:
+        """The organization's single-select issue fields by name, each with
+        its id and its options by lowercased name. Cached per container."""
+        if refresh or org not in self._issue_fields:
+            data = self._graphql(
+                ISSUE_FIELDS_QUERY, {"org": org}, token,
+                step="read the issue fields", deadline=deadline,
+            )
+            nodes = ((data.get("organization") or {}).get("issueFields") or {}).get("nodes") or []
+            self._issue_fields[org] = {
+                node["name"]: {
+                    "id": node["id"],
+                    "options": {
+                        str(option["name"]).lower(): (option["name"], option["id"])
+                        for option in node.get("options") or []
+                    },
+                }
+                for node in nodes
+                if node.get("id") and node.get("name")
+            }
+        return self._issue_fields[org]
+
+    def set_fields(
+        self,
+        repo: str,
+        *,
+        token: str,
+        node_id: str,
+        fields: dict[str, str],
+        deadline: float | None = None,
+    ) -> FieldsOutcome:
+        """Set single-select issue fields on the issue `node_id` names, by
+        field and option name, in one `setIssueFieldValue` call, then read
+        the values back. The organization is `repo`'s owner.
+
+        An option name matches ignoring case and is sent as GitHub's own.
+        A name missing from the cached definitions triggers one refetch;
+        an option still unknown after it is the request's fault (rejected),
+        and a field still unknown is a configured field that is not
+        single-select, which fails the op. `suggest` is never passed: the
+        mutation returns success with it and writes nothing.
+        """
+        org = repo.split("/", 1)[0]
+        try:
+            definitions = self._field_definitions(org, token, deadline=deadline)
+            resolved, unknown_field, unknown_option = _resolve_fields(definitions, fields)
+            if unknown_field or unknown_option:
+                definitions = self._field_definitions(org, token, deadline=deadline, refresh=True)
+                resolved, unknown_field, unknown_option = _resolve_fields(definitions, fields)
+            if unknown_field:
+                LOG.error("issue field %s is not a single-select field in %s", unknown_field, org)
+                return FieldsOutcome(ok=False, step=f"field {unknown_field} is not single-select")
+            if unknown_option:
+                return FieldsOutcome(ok=False, rejected=f"unknown option for field {unknown_option}")
+
+            declared = ["$issue: ID!"]
+            entries = []
+            variables: dict = {"issue": node_id}
+            for index, (_, field_id, _, option_id) in enumerate(resolved):
+                declared += [f"$field{index}: ID!", f"$option{index}: ID!"]
+                entries.append(f"{{fieldId: $field{index}, singleSelectOptionId: $option{index}}}")
+                variables[f"field{index}"] = field_id
+                variables[f"option{index}"] = option_id
+            mutation = (
+                f"mutation({', '.join(declared)}) {{ setIssueFieldValue(input: "
+                f"{{issueId: $issue, issueFields: [{', '.join(entries)}]}}) "
+                "{ clientMutationId } }"
+            )
+            try:
+                self._graphql(
+                    mutation, variables, token, step="set the field values", deadline=deadline
+                )
+            except GitHubCallFailed:
+                # An option deleted and recreated under the same name keeps
+                # the name but not the id, which no name lookup notices. Drop
+                # the cached definitions so the session's retry reads them
+                # again rather than failing until the container recycles.
+                self._issue_fields.pop(org, None)
+                raise
+
+            data = self._graphql(
+                FIELD_VALUES_QUERY, {"id": node_id}, token,
+                step="read the field values back", deadline=deadline,
+            )
+            values = ((data.get("node") or {}).get("issueFieldValues") or {}).get("nodes") or []
+            held = {
+                str((value.get("field") or {}).get("name") or ""): value.get("name")
+                for value in values
+            }
+            expected = {name: option for name, _, option, _ in resolved}
+            missed = sorted(name for name, option in expected.items() if held.get(name) != option)
+            if missed:
+                LOG.error("field values did not persist on %s: %s", node_id, ", ".join(missed))
+                # A stale option id GitHub accepted without an error shows up
+                # only here, so the retry rereads the definitions as well.
+                self._issue_fields.pop(org, None)
+                return FieldsOutcome(ok=False, step="field values did not persist")
+            return FieldsOutcome(ok=True, fields=expected)
+        except GitHubCallFailed as exc:
+            LOG.error("set_fields failed for %s: %s", repo, exc)
+            return FieldsOutcome(ok=False, step=exc.step)
+        except Exception as exc:  # noqa: BLE001 - the handler answers 502, never a traceback
+            LOG.error("set_fields failed for %s: %s", repo, exc)
+            return FieldsOutcome(ok=False, step="set the field values")
+
+    def add_to_project(
+        self,
+        repo: str,
+        project_number: int,
+        *,
+        token: str,
+        node_id: str,
+        deadline: float | None = None,
+    ) -> IssueCall:
+        """Add the issue `node_id` names to organization project
+        `project_number`, the organization being `repo`'s owner."""
+        org = repo.split("/", 1)[0]
+        key = (org, project_number)
+        try:
+            if key not in self._project_ids:
+                data = self._graphql(
+                    PROJECT_QUERY, {"org": org, "number": project_number}, token,
+                    step="read the project", deadline=deadline,
+                )
+                project_id = ((data.get("organization") or {}).get("projectV2") or {}).get("id")
+                if not project_id:
+                    raise GitHubCallFailed("read the project", 200, "no such project")
+                self._project_ids[key] = project_id
+            data = self._graphql(
+                ADD_PROJECT_ITEM_MUTATION,
+                {"project": self._project_ids[key], "content": node_id},
+                token, step="add the issue to the project", deadline=deadline,
+            )
+            item = ((data.get("addProjectV2ItemById") or {}).get("item") or {}).get("id")
+            if not item:
+                raise GitHubCallFailed("add the issue to the project", 200, "no item came back")
+            return IssueCall(ok=True, status=200, body={"item_id": item})
+        except GitHubCallFailed as exc:
+            LOG.error("add_to_project failed for %s: %s", repo, exc)
+            return IssueCall(ok=False, status=exc.status, step=exc.step)
+        except Exception as exc:  # noqa: BLE001 - the handler answers 502, never a traceback
+            LOG.error("add_to_project failed for %s: %s", repo, exc)
+            return IssueCall(ok=False, step="add the issue to the project")
+
+
+def _resolve_fields(
+    definitions: dict[str, dict], fields: dict[str, str]
+) -> tuple[list[tuple[str, str, str, str]], str, str]:
+    """Each requested field and option as (field name, field id, option name
+    as GitHub spells it, option id), plus the first field and the first
+    option that could not be resolved ("" when none)."""
+    resolved = []
+    for name, option in fields.items():
+        definition = definitions.get(name)
+        if definition is None:
+            return [], name, ""
+        match = definition["options"].get(option.lower())
+        if match is None:
+            return [], "", name
+        resolved.append((name, definition["id"], match[0], match[1]))
+    return resolved, "", ""
 
 
 def _deletion(path: str, entry: dict) -> dict:

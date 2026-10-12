@@ -9,11 +9,13 @@ as untrusted, including the Sentry issue text they are asked to investigate.
 :::tip[The short version]
 The operator's controls over whether a fix is allowed live in the receiver, out of the
 session's reach; the session supplies two of the gate's inputs, its own confidence and
-fixability ratings, and those are influenceable. The session holds no GitHub credential
-at all. It sends the finished fix back as files, and the receiver checks every path
-against the same policy the gate uses, mints a token scoped to one repository and two
-permissions, and opens the pull request itself, as the App. Branch protection on the
-base branch is what makes review unavoidable, and every pull request waits for a human.
+fixability ratings, and those are influenceable. The session has no way to write to
+GitHub: it reads issues through the platform's built-in GitHub tools as the operator,
+and the routine's configuration withholds every GitHub tool that writes. It sends the
+finished fix back as files, and the receiver checks every path against the same policy
+the gate uses, mints a token scoped to one repository and two permissions, and opens the
+pull request itself, as the App. Branch protection on the base branch is what makes
+review unavoidable, and every pull request waits for a human.
 :::
 
 ## The fire payload is data, not instructions
@@ -45,6 +47,14 @@ its own configuration back. It is a manual gate, not an automatic one, and it ne
 re-running whenever the routine or the account's connectors change. Naming it here
 rather than hiding it is deliberate, because a compensating control nobody knows to
 re-run is not a control.
+
+The routine's tool settings are in the same position as its connectors. The routine
+withholds every tool of the platform's built-in GitHub server except two issue reads,
+and the receiver cannot read that list. Reading the routine back through routine tooling
+proves the list was saved, not that the session runs under it, so the probe also lists
+the GitHub tools its own session can see and tries one it should not have, on an issue
+number that cannot exist. Re-run it whenever the investigator's or the probe's prompt or
+tool settings change.
 
 ## Findings delivery is verified out-of-band
 
@@ -80,7 +90,17 @@ POST is the request there is. What travels is small on purpose: the repository, 
 base branch, the callback URL, and one grant per approved finding, each carrying a
 dispatch id and a one-time callback token. No credential is among them.
 
-### The session holds no GitHub credential
+### The session reads as the operator and has no write path
+
+The session reaches GitHub two ways, and both are reads: the repository fetch, which the
+fix phase repeats for the base branch, and issue reads through the platform's built-in
+GitHub tools, which authenticate as the operator. It never handles a token, and the
+platform's own permission checks refuse token handling as credential exploration. The
+same built-in server offers tools that write, each of which would act under the
+operator's name. The routine's disallowed-tools list withholds every tool of that server
+except a short list of issue reads, so the session never sees a write tool, and the
+prompt forbids every GitHub write regardless, as the backstop for a tool the platform
+adds before the list catches up.
 
 The session's only GitHub operation in the fix phase is a fetch of the base branch, the
 same read the investigation makes. When the fix is written and its test passes, the
@@ -92,25 +112,47 @@ legitimate write path from the session, so any push it makes is through the wron
 This is a stronger posture than the one it replaced, and it is worth saying why in one
 sentence. A credential live inside an attacker-influenceable session has to be contained
 by scope, lifetime, naming, and prose, and each of those is a mitigation for the
-credential being there at all; a session with no credential needs none of them.
+credential being there at all; a session with no write path needs none of them.
+
+### Reading as the operator
+
+Reads run with the operator's access, which is broader than the session needs, so the
+list of allowed reads is narrow on purpose. The platform limits its GitHub tools to the
+repositories attached to the session, and the routine withholds everything else the
+server offers, reads included, so the operator's notifications, gists, and other
+repositories are out of reach of a session steered toward them. What the reads return is
+attacker-influenceable like a stack trace: anyone who can open or comment on an issue in
+the target repository writes text the session reads. The prompt treats it as data, and
+the most an injected issue can do is steer the session's own draft, which reaches GitHub
+only through the receiver's named operations.
 
 ### The receiver's token
 
 | | |
 |---|---|
 | Scope | one repository, the configured `target_repo` |
-| Permissions | `contents: write` and `pull_requests: write`, nothing else |
+| Permissions | per operation (`OP_PERMISSIONS`): `contents: write` and `pull_requests: write` for a pull request; `issues: write` for `file_issue`, `comment`, and `reopen`; `issues: write` plus the organization Issue fields read permission for `set_fields`; `issues: read` and `organization_projects: write` for `add_to_project`; never `workflows` or any administration permission |
 | Lifetime | one hour, set by GitHub when the token is minted; spent inside the one invocation that minted it |
-| Storage | none: minted per pull request inside the receiver, never returned, never written down |
+| Storage | none: minted per pull request or per issue operation inside the receiver, never returned, never written down |
 
-The receiver mints it only after a `fix_ready` payload has passed validation and the
-dispatch record has been claimed, and spends it on one short sequence under a single
-time budget: a read of the base branch and a comparison that confirms the base commit
-is on it, a read of the base commit and its tree, a read of each base file a patch
-modifies, a blob per new or changed file, a tree that inherits the base commit and
-overrides only those paths, a commit, a branch, and then the pull request itself. The commit's author is whatever GitHub
-records for the App installation, because nothing in the receiver sets one, so the pull
-request is the App's by construction rather than by a check made afterwards.
+For a pull request, the receiver mints it only after a `fix_ready` payload has passed
+validation and the dispatch record has been claimed, and spends it on one short sequence
+under a single time budget: a read of the base branch and a comparison that confirms the
+base commit is on it, a read of the base commit and its tree, a read of each base file a
+patch modifies, a blob per new or changed file, a tree that inherits the base commit and
+overrides only those paths, a commit, a branch, and then the pull request itself. The
+commit's author is whatever GitHub records for the App installation, because nothing in
+the receiver sets one, so the pull request is the App's by construction rather than by a
+check made afterwards.
+
+For an issue operation, the receiver mints a token only after the request has passed
+validation, downscoped to what that one operation needs, and spends it on that
+operation's few calls inside the same invocation. The App's installation holds Issues
+read and write, organization Projects read and write, and organization Issue fields
+read-only for these. The organization permissions reach every project board and every
+issue-field definition `target_repo`'s owner has, not only the ones Sentinel uses. What
+confines the App's board writes to the one configured board is the receiver's named
+operations, which take the board from the operator's config and never from a request.
 
 `workflows` is absent deliberately. A workflow file pushed to a branch runs in CI, with
 access to the repository's secrets, before any human reviews the pull request that
@@ -177,6 +219,12 @@ these into the prompt to make it "smarter" would move it inside the attacker's r
 The same reasoning covers the caps' side effects: the dedupe and cap checks are
 conditional writes, spent as they pass, so a finding cannot be re-evaluated into a second
 attempt.
+
+Urgency, the third rating a findings document carries, is the session's own judgment
+too, formed over text an outsider can shape, exactly like confidence and fixability. It
+decides no receiver control: the gate never reads it, and its only effects are the
+findings reply card's status line, the repeat-alert pointer, and the Priority of a new
+issue that a person triages.
 
 ### What a live reply token is worth
 
@@ -274,6 +322,26 @@ and the timeout sweep cannot both write into a thread, and a replayed callback s
 nothing twice. A grant that never reports is failed into the thread when its hour
 expires, which is the same principle as the investigation deadline: the failure mode
 worth engineering against is the silent one.
+
+### The issue operations are the boundary
+
+A finding that ends without a pull request is filed as a GitHub issue, and the session
+reaches that write only by asking the receiver for one of five named operations:
+`file_issue`, `comment`, `reopen`, `set_fields`, and `add_to_project`. Each request
+carries a tracking token issued in the findings response, one per finding, stored only
+as a hash, scoped to that one alert, and expiring on its own. No operation closes,
+deletes, locks, or transfers an issue, or edits the text of an existing one, and
+`set_fields` and `add_to_project` act only on the issue the same grant created. Every
+call takes its repository from `target_repo`, refuses a redirect, and refuses a pull
+request posing as an issue. Attempts are capped per grant and per day, and every title
+and body is redacted the way the findings reply is and carries a footer naming the
+Sentry issue it came from.
+
+That bounds what attacker-influenceable text can do through this path. The most it can
+steer is what a new issue says, which existing issue a comment lands on, which closed
+issue in `target_repo` is reopened, and which option a new issue gets in each field
+`issues.fields` lists (its Priority, and its Effort where that is configured), and a
+person triages all of it.
 
 ## Secrets
 

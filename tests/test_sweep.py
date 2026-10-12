@@ -1,5 +1,6 @@
 """Grouping, throttling, firing, and deadline enforcement."""
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -537,3 +538,216 @@ def test_the_sweep_summary_counts_autofix_expiries():
                         store=store, routines=None, bot=MagicMock())
 
     assert "autofix_expired" in summary
+
+
+# ---- Issue tracking: the backstop at grant expiry ----
+
+from receiver.observability import ISSUE_TRACKING_FAILED_MARKER  # noqa: E402
+from receiver.sweep import (  # noqa: E402
+    TRACKING_UNFINISHED_NOTICE,
+    TRACKING_UNTRACKED_NOTICE,
+    expire_tracking,
+)
+
+
+def expired_grant(**overrides):
+    grant = {
+        "tracking_id": "t-1",
+        "short_id": "CHECKOUT-4B2",
+        "conversation_id": "conv-1",
+        "message_id": "msg-9",
+        "expect": "always",
+        "status": "open",
+    }
+    grant.update(overrides)
+    return grant
+
+
+def tracking_store(grant, dispatch=None):
+    store = MagicMock()
+    store.query_due.side_effect = lambda state, now, limit=50: [grant] if state == "tracking" else []
+    store.advance_tracking.return_value = True
+    store.get_autofix_dispatch.return_value = dispatch
+    return store
+
+
+def test_the_notices_are_the_documented_text():
+    assert TRACKING_UNTRACKED_NOTICE == (
+        "⚠️ No GitHub issue was filed for this alert, so it is tracked only in this thread."
+    )
+    assert TRACKING_UNFINISHED_NOTICE == (
+        "⚠️ Sentinel may not have finished filing this alert in GitHub; check the "
+        "repository for an issue before filing one."
+    )
+
+
+def test_an_expired_grant_with_no_fix_attempt_is_untracked_and_the_thread_told(caplog):
+    store, bot = tracking_store(expired_grant()), MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 1
+
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "untracked")
+    assert bot.reply_in_thread.call_args.args == ("conv-1", "msg-9", TRACKING_UNTRACKED_NOTICE)
+    assert f"{ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2" in caplog.text
+    store.get_autofix_dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "dispatch",
+    [
+        {"status": "declined_in_session"},
+        {"status": "not_reproducible"},
+        {"status": "aborted_drift"},
+        {"status": "failed", "failure": "session reported"},
+    ],
+)
+def test_a_fix_attempt_the_session_ended_without_a_pr_gets_the_notice(dispatch):
+    store = tracking_store(expired_grant(expect="unless_pr", dispatch_id="d-1"), dispatch)
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 1
+
+    assert store.get_autofix_dispatch.call_args.args == ("d-1",)
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "untracked")
+    bot.reply_in_thread.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "dispatch",
+    [
+        {"status": "pr_opened", "pr_url": "https://x/pull/1"},
+        {"status": "failed", "failure": "callback timeout"},
+        {"status": "failed", "failure": "opening timeout"},
+        {"status": "failed", "failure": "receiver crashed"},
+        {"status": "failed", "failure": "pull request not opened"},
+    ],
+)
+def test_a_pr_or_a_receiver_side_failure_releases_the_grant_silently(dispatch, caplog):
+    """A PR means no issue; a receiver-side failure already has its own
+    AUTOFIX_FAILED line and thread reply, and is never filed."""
+    store = tracking_store(expired_grant(expect="unless_pr", dispatch_id="d-1"), dispatch)
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 0
+
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "released")
+    bot.reply_in_thread.assert_not_called()
+    assert ISSUE_TRACKING_FAILED_MARKER not in caplog.text
+
+
+@pytest.mark.parametrize("status", ["dispatched", "opening"])
+def test_a_grant_whose_fix_is_still_running_waits_for_the_next_tick(status):
+    store = tracking_store(
+        expired_grant(expect="unless_pr", dispatch_id="d-1"), {"status": status}
+    )
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 0
+
+    store.advance_tracking.assert_not_called()
+    bot.reply_in_thread.assert_not_called()
+
+
+def test_a_grant_whose_dispatch_cannot_be_read_gets_the_notice_not_silence():
+    store = tracking_store(expired_grant(expect="unless_pr", dispatch_id="d-1"), None)
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 1
+
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "untracked")
+
+
+def test_an_op_that_died_mid_filing_gets_the_may_not_have_finished_notice():
+    store = tracking_store(expired_grant(tracking_op="abc"))
+    bot = MagicMock()
+
+    expire_tracking(store=store, bot=bot)
+
+    assert bot.reply_in_thread.call_args.args[2] == TRACKING_UNFINISHED_NOTICE
+
+
+def test_a_failed_search_is_named_in_the_notice():
+    """In the thread's own words: the issue-body line says Sentinel filed
+    the issue, which contradicts a notice that nothing was filed."""
+    from receiver.issues import SEARCH_UNAVAILABLE_LINE
+    from receiver.sweep import TRACKING_SEARCH_UNAVAILABLE_NOTICE
+
+    store = tracking_store(expired_grant(search_unavailable=True))
+    bot = MagicMock()
+
+    expire_tracking(store=store, bot=bot)
+
+    text = bot.reply_in_thread.call_args.args[2]
+    assert text == f"{TRACKING_UNTRACKED_NOTICE}\n\n{TRACKING_SEARCH_UNAVAILABLE_NOTICE}"
+    assert TRACKING_SEARCH_UNAVAILABLE_NOTICE == (
+        "The duplicate search was also unavailable for this alert, so an existing "
+        "issue may already describe it."
+    )
+    assert SEARCH_UNAVAILABLE_LINE not in text
+
+
+def test_a_grant_a_late_op_settled_first_gets_no_notice():
+    store = tracking_store(expired_grant())
+    store.advance_tracking.return_value = False
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 0
+    bot.reply_in_thread.assert_not_called()
+
+
+def test_a_grant_no_longer_open_is_left_alone():
+    store = tracking_store(expired_grant(status="tracked"))
+    bot = MagicMock()
+
+    assert expire_tracking(store=store, bot=bot) == 0
+    store.advance_tracking.assert_not_called()
+
+
+def test_a_failed_notice_is_logged_with_the_delivery_marker(caplog):
+    store = tracking_store(expired_grant())
+    bot = MagicMock()
+    bot.reply_in_thread.side_effect = RuntimeError("teams down")
+
+    assert expire_tracking(store=store, bot=bot) == 0
+    assert f"{DELIVERY_FAILURE_MARKER} tracking notice for CHECKOUT-4B2" in caplog.text
+
+
+def test_the_sweep_runs_the_tracking_backstop_every_tick():
+    store = MagicMock()
+    store.query_due.return_value = []
+
+    summary = run_sweep(
+        cfg=MagicMock(trigger_mode="shadow", max_batch_issues=8),
+        store=store, routines=None, bot=MagicMock(),
+    )
+
+    assert summary["tracking_expired"] == 0
+    assert "tracking" in [c.args[0] for c in store.query_due.call_args_list]
+
+
+@pytest.mark.parametrize(
+    "thread",
+    [{"conversation_id": None}, {"message_id": None}, {"conversation_id": ""}],
+    ids=["no-conversation", "no-message", "empty-conversation"],
+)
+def test_a_grant_with_no_thread_is_untracked_without_a_reply(thread, caplog):
+    """A grant whose alert card never posted has no thread. The alert still
+    ends untracked under the marker, but the notice is skipped with a warning,
+    the way the /issues route skips its reply, rather than failing into a
+    delivery-failure line for a thread that never existed."""
+    grant = expired_grant()
+    for key, value in thread.items():
+        if value is None:
+            del grant[key]
+        else:
+            grant[key] = value
+    store, bot = tracking_store(grant), MagicMock()
+
+    with caplog.at_level(logging.WARNING):
+        assert expire_tracking(store=store, bot=bot) == 0
+
+    assert store.advance_tracking.call_args.args == ("t-1", "open", "untracked")
+    bot.reply_in_thread.assert_not_called()
+    assert f"{ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2" in caplog.text
+    assert "no thread to post the tracking notice in for CHECKOUT-4B2" in caplog.text
+    assert DELIVERY_FAILURE_MARKER not in caplog.text

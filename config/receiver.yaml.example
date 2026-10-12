@@ -106,3 +106,32 @@ autofix:
   # fix session runs inside the investigation routine.
   base_branch: REPLACE_WITH_DEFAULT_BRANCH
   callback_url: "REPLACE_WITH_FUNCTION_URL/autofix-result"
+
+# --- issue filing ---
+# enabled false ships the code inert; turning it on is a config deploy.
+# When an investigated finding ends without a pull request, the session files
+# or updates an issue in target_repo through the receiver, which writes as
+# the autofix App (autofix.app_id), so that id is required here too.
+issues:
+  enabled: false
+  # Sentry environments whose outcomes are filed. Empty means every
+  # environment above; name one to stage the rollout.
+  environments: []
+  # The receiver's issue route. Must share findings_url's origin.
+  proxy_url: "REPLACE_WITH_FUNCTION_URL/issues"
+  # Repository-relative files in target_repo that say how an issue is filed
+  # there, including what each priority means. They are written into the
+  # investigator prompt when it is pasted, and the session reads them from
+  # its checkout; nothing here mirrors them. Empty means none.
+  conventions: []
+  # Issue types a new issue may carry, by name. Empty means none.
+  issue_types: []
+  # Organization issue fields the receiver may set, by name. Any other
+  # field is refused.
+  fields: []
+  # The organization project board new issues join, owned by target_repo's
+  # owner. 0 means no board.
+  project_number: 0
+  # Ceilings on the receiver's issue writes per UTC day, across all alerts.
+  daily_create_cap: 25
+  daily_write_cap: 100

@@ -16,7 +16,7 @@ from receiver.autofix import (
     evaluate,
 )
 from receiver.config import load_config
-from receiver.findings import parse_findings
+from receiver.findings import URGENCIES, parse_findings
 from tests.conftest import load_fixture
 from tests.gitrepo import Repo
 from tests.test_config import AUTOFIX, VALID, write
@@ -102,6 +102,40 @@ def test_a_v1_document_is_declined_as_schema_v1(tmp_path):
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
 
     assert decision.reason == "schema_v1"
+
+
+def doc_v3(urgency="high"):
+    """The v2 fixture as schema v3. Built here rather than read from the v3
+    fixture, so the gate's pins do not move when the card sample does."""
+    payload = load_fixture("findings-payload-v2.json")
+    payload["schema_version"] = 3
+    payload["results"][0]["urgency"] = urgency
+    return parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_a_v3_document_is_gated_like_v2_not_declined_as_schema_v1(tmp_path):
+    doc = doc_v3()
+
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
+
+    assert decision.reason != "schema_v1"
+    assert decision == GateDecision(True)
+
+
+def test_urgency_never_changes_the_gate_decision(tmp_path):
+    """Urgency is the session's own rating over text an outsider can shape,
+    so it is never a gate input: every rating on the same otherwise passing
+    finding gets the same decision, from low to urgent."""
+    cfg = cfg_enabled(tmp_path)
+    decisions = {}
+    for urgency in URGENCIES:
+        doc = doc_v3(urgency)
+        decisions[urgency] = evaluate(
+            doc.results[0], doc, ROW, cfg=cfg, store=open_store()
+        )
+
+    assert decisions["low"] == decisions["urgent"] == GateDecision(True)
+    assert set(decisions.values()) == {GateDecision(True)}
 
 
 def test_a_medium_confidence_finding_is_declined(tmp_path):

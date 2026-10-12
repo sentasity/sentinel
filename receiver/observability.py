@@ -30,6 +30,14 @@ WINDOW_EXHAUSTED_MARKER = "SUBSCRIPTION_WINDOW_EXHAUSTED"
 # of the two, not a budget event, and it leaves a thread with no findings.
 FINDINGS_REJECTED_MARKER = "FINDINGS_REJECTED"
 
+# A findings document parsed and was delivered, but in a schema older than the
+# one the shipped prompt emits, so the routine that sent it is still running
+# an older prompt. Counted, never alarmed: nothing was lost, and sessions that
+# were already running when the prompt was swapped send one legitimately, so
+# an alarm would fire on every prompt update. FINDINGS_REJECTED_MARKER's
+# alarm pattern never matches this line, which the infra tests pin.
+FINDINGS_SCHEMA_OUTDATED_MARKER = "FINDINGS_SCHEMA_OUTDATED"
+
 
 # Bounded so a slow or unreachable Sentry cannot eat the invocation. The
 # handler's own timeout is 30s and delivery has already happened by the time
@@ -81,3 +89,12 @@ PROBE_LOG_LIMIT = 4000
 AUTOFIX_DISPATCHED_MARKER = "AUTOFIX_DISPATCHED"
 AUTOFIX_DECLINED_MARKER = "AUTOFIX_DECLINED"
 AUTOFIX_FAILED_MARKER = "AUTOFIX_FAILED"
+
+# Issue tracking. Alarmed: every line under it is an alert that may now be
+# tracked nowhere but its Teams thread (a grant not written, an alert left
+# untracked when its grant expired), a receiver and prompt that disagree (a
+# rejected op), or a GitHub write that failed or did not land as sent.
+# Refusals are deliberately not under it: a cap or a state check said no,
+# and if that leaves an alert untracked the backstop logs this marker once,
+# at the grant's expiry. Imported by the CDK stack rather than repeated.
+ISSUE_TRACKING_FAILED_MARKER = "ISSUE_TRACKING_FAILED"

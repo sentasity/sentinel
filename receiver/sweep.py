@@ -13,10 +13,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from receiver.autofix import SESSION_REPORTED_FAILURE
 from receiver.findings import reply_summary
 from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
+    ISSUE_TRACKING_FAILED_MARKER,
     WINDOW_EXHAUSTED_MARKER,
 )
 from receiver.routines import FireOutcome
@@ -373,11 +375,107 @@ def expire_autofix(*, store, bot) -> int:
     return expired
 
 
+TRACKING_UNTRACKED_NOTICE = (
+    "⚠️ No GitHub issue was filed for this alert, so it is tracked only in this thread."
+)
+TRACKING_UNFINISHED_NOTICE = (
+    "⚠️ Sentinel may not have finished filing this alert in GitHub; check the "
+    "repository for an issue before filing one."
+)
+# Follows either notice when the session's duplicate search had failed. The
+# issue-body line for that case says Sentinel filed the issue, which would
+# contradict a notice that nothing was filed, so the thread gets its own.
+TRACKING_SEARCH_UNAVAILABLE_NOTICE = (
+    "The duplicate search was also unavailable for this alert, so an existing "
+    "issue may already describe it."
+)
+
+# A dispatch still waiting on its callback or mid-sequence: its grant is
+# not decided yet, and the next tick will see it settled.
+UNSETTLED_DISPATCH = ("dispatched", "opening")
+
+
+def _tracking_expiry(grant: dict, store) -> str:
+    """What an expired open grant earns: "notice", "release" or "skip".
+
+    A grant with no autofix grant beside it always expected an issue. One
+    with a grant expected an issue unless a pull request opened: the
+    session files after declining, not reproducing, aborting on drift, or
+    reporting `failed` itself. Every other `failed` is receiver-side (a
+    timeout, a crash, a rejected payload, a GitHub sequence that did not
+    finish), which never becomes an issue and already has its own
+    `AUTOFIX_FAILED` line and thread reply, so the grant is released
+    quietly. A dispatch record that cannot be read at all decides nothing
+    quietly either: the thread gets the notice.
+    """
+    if grant.get("expect") != "unless_pr":
+        return "notice"
+    dispatch = store.get_autofix_dispatch(str(grant.get("dispatch_id") or "")) or {}
+    status = str(dispatch.get("status") or "")
+    if status in UNSETTLED_DISPATCH:
+        return "skip"
+    if status == "pr_opened":
+        return "release"
+    if status == "failed" and dispatch.get("failure") != SESSION_REPORTED_FAILURE:
+        return "release"
+    return "notice"
+
+
+def expire_tracking(*, store, bot) -> int:
+    """Close every tracking grant whose window passed with no tracking
+    outcome. Returns notices posted.
+
+    The backstop for the alert a session never filed: it crashed, ran out
+    of time, hit a cap, or never received its findings response. Each
+    advance is conditional on `open`, the same claim a late tracking op
+    settles from, so the two cannot both win. A grant still holding a
+    `tracking_op` belongs to an op that died between its claim and its
+    settle, so an issue may exist and the notice says to look first.
+    """
+    noticed = 0
+    for g in store.query_due("tracking", utc_now()):
+        if str(g.get("status") or "") != "open":
+            continue
+        action = _tracking_expiry(g, store)
+        if action == "skip":
+            continue
+        short_id = g.get("short_id", g["tracking_id"])
+        if action == "release":
+            store.advance_tracking(g["tracking_id"], "open", "released")
+            continue
+        if not store.advance_tracking(g["tracking_id"], "open", "untracked"):
+            continue
+        unfinished = bool(g.get("tracking_op"))
+        LOG.error(
+            "%s %s %s",
+            ISSUE_TRACKING_FAILED_MARKER, short_id,
+            "may not have finished filing at grant expiry" if unfinished
+            else "left untracked at grant expiry",
+        )
+        text = TRACKING_UNFINISHED_NOTICE if unfinished else TRACKING_UNTRACKED_NOTICE
+        if g.get("search_unavailable"):
+            text = f"{text}\n\n{TRACKING_SEARCH_UNAVAILABLE_NOTICE}"
+        conversation_id = str(g.get("conversation_id") or "")
+        message_id = str(g.get("message_id") or "")
+        if not conversation_id or not message_id:
+            # The alert card never posted, so there is no thread to tell; the
+            # marker above already counts the alert as untracked.
+            LOG.warning("no thread to post the tracking notice in for %s", short_id)
+            continue
+        try:
+            bot.reply_in_thread(conversation_id, message_id, text)
+            noticed += 1
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
+            LOG.error("%s tracking notice for %s: %s", DELIVERY_FAILURE_MARKER, short_id, exc)
+    return noticed
+
+
 def run_sweep(*, cfg, store, routines, bot) -> dict:
     """One scheduled pass. Returns a summary for the invocation log."""
     summary = {
         "expired": expire_overdue(store=store, bot=bot),
         "autofix_expired": expire_autofix(store=store, bot=bot),
+        "tracking_expired": expire_tracking(store=store, bot=bot),
     }
 
     if cfg.trigger_mode not in ("auto",):

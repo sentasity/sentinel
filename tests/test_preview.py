@@ -2,7 +2,13 @@
 
 import json
 
-from scripts.preview_card import SEVERITIES, build_cards, write_cards
+from scripts.preview_card import (
+    FINDINGS,
+    SEVERITIES,
+    build_cards,
+    build_reply_card,
+    write_cards,
+)
 
 
 def test_build_cards_covers_every_reviewable_severity():
@@ -26,4 +32,13 @@ def test_write_cards_emits_the_whole_gallery(tmp_path):
     assert body.endswith("\n")
     assert json.loads(body)["body"][-1]["text"] == (
         "ℹ️ This kind of issue is not auto-investigated."
+    )
+
+
+def test_the_reply_card_preview_renders_the_schema_the_prompt_emits():
+    """`evidence.mdx` shows this card, so it renders the v3 sample: urgency
+    leads its status line the way it does on a live findings reply."""
+    assert FINDINGS.name == "findings-payload-v3.json"
+    assert build_reply_card()["body"][1]["text"] == (
+        "Urgency: high · Confidence: high · Fixability: high · Release: 79bad4b79fb0"
     )

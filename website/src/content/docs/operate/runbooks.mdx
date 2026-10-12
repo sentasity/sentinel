@@ -1,39 +1,79 @@
 ---
 title: Runbooks
-description: Credential inventory, rotation runbooks, what autofix needs to work, and how to read what it reports.
+description: Credential inventory, rotation runbooks, what the Sentinel App needs, switching issue filing on, and how to read what the pipeline reports.
 ---
 
-Runbooks for the credentials the engine holds, what autofix needs on the GitHub side, and how to read what the pipeline reports about itself. Deploying the receiver itself is covered in [infra/README.md](https://github.com/sentasity/sentinel/blob/main/infra/README.md); the one-time Microsoft and Sentry setup lives in [Microsoft setup](/sentinel/deploy/microsoft/) and [Sentry setup](/sentinel/deploy/sentry/).
+Runbooks for the credentials the engine holds, what the Sentinel App needs on the GitHub side, switching issue filing on, and how to read what the pipeline reports about itself. Deploying the receiver itself is covered in [infra/README.md](https://github.com/sentasity/sentinel/blob/main/infra/README.md); the one-time Microsoft and Sentry setup lives in [Microsoft setup](/sentinel/deploy/microsoft/) and [Sentry setup](/sentinel/deploy/sentry/).
 
 ## Credential inventory
 
 | Credential | Where it lives | Purpose |
 |---|---|---|
-| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The autofix App's private key, read by the receiver at cold start; it mints the scoped installation token the receiver uses to open each pull request |
+| `/sentinel/github-app-private-key` | SSM SecureString, receiver | The Sentinel App's private key, read by the receiver at cold start; it mints the scoped installation token the receiver uses to open each pull request and to make each issue write |
 | `SENTRY_WEBHOOK_SECRET`, `SENTRY_API_TOKEN`, `BOT_CLIENT_SECRET`, `ROUTINE_TRIGGER_TOKEN` | SSM SecureStrings, receiver | Webhook verification, Sentry API access, the bot identity, and the routine fire token |
-| Installation tokens | Nowhere: minted per pull request inside the receiver, spent in the same invocation, never returned or stored | Lets the receiver push one branch and open one pull request; scoped to the target repo, `contents: write` and `pull_requests: write`, one hour |
+| Installation tokens | Nowhere: minted per pull request or per issue operation inside the receiver, spent in the same invocation, never returned or stored | Lets the receiver push one branch and open one pull request (`contents: write` and `pull_requests: write`), or make one issue operation's write, downscoped to that operation (`OP_PERMISSIONS`); scoped to the target repo, one hour |
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the fix session presents to `/autofix-result`; scoped to a single dispatch, not reusable |
+| Tracking tokens | DynamoDB, hashed, one per delivered result while issue filing is on for its environment | Bearer credential a session presents to `/issues`; scoped to one alert and its thread, dead at its grant's `expires_at` (30 minutes after findings, or 90 when the result also earned an autofix grant) |
+| The operator's GitHub connection | The cloud platform, outside the session; never in this repository or the parameter store | Authenticates the session's repository fetch and its issue reads through the platform's built-in GitHub tools; the routine's tool policy withholds every write tool, so it is used for reads only |
 | `SENTINEL_BANNED_PATTERNS` | Actions secret, engine repo | The deployment-identifying ban patterns `tests/test_public_tree.py` enforces; not a credential, but held like one because publishing the list would index what it protects |
 
 The routine trigger token is never stored in this repo; keep the only other copy in your password manager.
 
-## What the autofix App needs
+## What the Sentinel App needs
 
-The receiver mints every autofix credential itself, so the App's configuration is the only thing standing between a passing gate and a pull request:
+The receiver mints every GitHub credential itself, for autofix pull requests and for issue writes alike, so the App's configuration is the only thing standing between a passing gate and a pull request, or between a session's issue operation and the repository:
 
 - The App must be **installed on the target repository**, the one named by `target_repo`. Minting looks that installation up by repository, so an App installed on the organization but not on this repository fails at the lookup.
-- The installation must grant **contents: write** and **pull requests: write**. The receiver downscopes each minted token to exactly those two, and a token can never hold a permission the installation lacks, so a missing one produces a token that cannot push or cannot open the pull request.
+- For autofix, the installation must grant **contents: write** and **pull requests: write**. The receiver downscopes each fix's token to exactly those two, and a token can never hold a permission the installation lacks, so a missing one produces a token that cannot push or cannot open the pull request.
+- For issue filing, the installation must also grant **Issues: read and write** (create, comment, reopen, labels, the issue type on create, and issue-field values), organization **Projects: read and write** (adding a new issue to the board `issues.project_number` names), and organization **Issue fields: read-only** (the field and option names `set_fields` resolves). Each issue operation mints its own token, downscoped to what that operation needs (`OP_PERMISSIONS` in `receiver/github_app.py`), and none carries contents, pull requests, workflows or administration. Organization permissions reach every board in the organization; the named operations are what confine the App's board writes to the one configured.
+- GitHub holds a permission change until an **organization owner accepts it** on the installation. Until then the installation keeps its old permissions, autofix is unaffected, and every issue operation fails at the mint with a 502.
 - Do **not** grant `workflows`. It is excluded from every minted token on purpose ([why](/sentinel/security-model/)), and granting it at the installation widens the App's own reach for no benefit here.
-- `autofix.app_id` in the config file must be the App's numeric id, and `/sentinel/github-app-private-key` must be one of that App's active private keys.
+- `autofix.app_id` in the config file must be the App's numeric id, and `/sentinel/github-app-private-key` must be one of that App's active private keys. Issue filing uses the same App and key, even with autofix off.
 
 ## The routine's environment reaches GitHub for reads only
 
-The fix phase fetches the base branch and nothing else from GitHub: the session sends its
-changed files to the receiver, and the receiver opens the pull request. So the routine's
-environment needs the same GitHub reach the investigation already has, the repository
-fetch, and no more. If fixes are failing while findings keep arriving, the pattern points
-at the receiver's side, the App configuration above or the `AUTOFIX_FAILED` lines below,
-before it points at egress.
+The session reaches GitHub three ways, and all three are reads: the investigation's
+repository fetch, the fix phase's fetch of the base branch, and the issue step's reads
+through the platform's built-in GitHub tools. It sends its findings, its fix, and its
+issue operations to the receiver, and the receiver makes every GitHub write. So the
+routine's environment needs the same GitHub reach the investigation already has, the
+repository fetch, and no more: the tool reads need no egress change, because the
+built-in tools reach GitHub through the platform's own GitHub proxy, the path the
+repository fetch already takes. If fixes are failing while findings keep arriving, the
+pattern points at the receiver's side, the App configuration above or the
+`AUTOFIX_FAILED` lines below, before it points at egress.
+
+## The routine's GitHub tool policy
+
+The cloud platform gives every routine session a built-in GitHub server whose tools act as the operator. The investigator uses two of them, `search_issues` and `issue_read`, to read the target repository's issues. Every other tool of that server, every tool that writes among them, is withheld by the routine's own tool settings. `prompts/routine-tools.yaml` is the canonical copy of those settings: `read_allowlist` holds the two reads, and `disallowed_tools` holds every other tool of the server, each with the `mcp__github__` prefix. `tests/test_routine_tools.py` keeps the list sorted, disjoint from the reads, and complete against a floor of write tools, and fails if the investigator prompt names a withheld tool.
+
+Both routines carry the same policy: the investigator, and the probe routine recorded as `trigger.probe_routine_id`. That keeps a probe run a faithful test of the investigator's settings.
+
+**Applying it.** The public routines API cannot read or write a routine's tool settings. Apply them through routine tooling (a Claude Code session's routine `get` and `update`), or on the routine's page at claude.ai when it shows both fields. Either way:
+
+1. Read the routine.
+2. Set `job_config.ccr.session_context.disallowed_tools` to the file's `disallowed_tools`, and append the two reads, prefixed (`mcp__github__search_issues` and `mcp__github__issue_read`), to `job_config.ccr.session_context.allowed_tools`, keeping every entry already there. Allowing the two reads outright keeps them from waiting on the session's permission checker mid-run.
+3. Send the whole `job_config` back. The update treats `job_config` as one field, so a fragment can replace the stored prompt with nothing.
+4. Read the routine again and compare both tool lists and the stored prompt with the files. Any difference is a partial update: apply again.
+
+Then do the same for the probe routine.
+
+**Regenerating the list.** Step 5 of `prompts/probe.md` lists every GitHub tool the probe's session can see. A name beyond the two reads is a tool the list does not know about: add it to `disallowed_tools` in sorted order, fold in any new names from the upstream github-mcp-server tool catalog at the same time, run the tests, apply the file to both routines, and probe again until the probe sees only the two reads. Re-run the probe whenever either routine's prompt or tool settings change.
+
+**Reading the probe.** Read step 5 of the probe's transcript against this table.
+
+| Step 5 shows | Verdict | Next |
+|---|---|---|
+| 5a lists exactly the two reads, and 5c made no call | The list applies | Pass |
+| 5a lists `add_issue_comment`, and the session's permission settings refused 5c | The list applies at call time, not at listing | Pass, and record that it applied at call time |
+| 5a lists names beyond the two reads, but not `add_issue_comment` | The list applies; the extras are tools it lacks | Add them, apply again, probe again |
+| 5c got a response from GitHub (404 or 422) | The list does not apply to the built-in tools | The fallback below |
+| 5c was refused only by another safety check | Unproven: that check is judgment, not configuration | The fallback below |
+| 5b: `search_issues` or `issue_read` failed | The read path is broken | Keep issue filing off: the issue step could only ever take its search-failed path |
+
+**When the list cannot be set or does not apply.** Issue filing still ships, on the prompt's prohibition, which forbids every GitHub write whatever tool would make it. Keep the list configured wherever the routine accepts it, keep it in `prompts/routine-tools.yaml`, and apply it again at every prompt update: it is harmless while inert, takes effect the day the platform applies it, and every probe checks it again. [The security model](/sentinel/security-model/) says so plainly until a probe passes.
+
+A tool the platform adds between probes is not in the list until the next probe finds it. The prompt's prohibition covers that tool meanwhile, which is prose rather than configuration.
 
 ## Runbook: rotating the GitHub App private key
 
@@ -100,7 +140,7 @@ Also unmarked: a callback arriving for a dispatch the sweep already settled logs
 
 The session stopped the grant itself and reported `failed`. That callback carries no reason, so the line ends there, and the reason lives only in the session's transcript: find the routine run that started just before the matching `AUTOFIX_DISPATCHED` line and read how its fix phase ended.
 
-The usual cause is step 7d's test. The session wrote a fix but could not run its test, either because the routine's environment lacks a dependency or because the session never found where the environment installed it. The first needs the environment's setup script fixed. The second is what the prompt's instruction to search for installed dependencies covers, so a transcript showing a session that gave up without searching is a reason to make the environment put its dependencies where a session looks first, such as on `PATH`. Once the cause is fixed, replay the alert with `--reset` (see the replay runbook below) to get the pull request.
+The usual cause is step 8d's test. The session wrote a fix but could not run its test, either because the routine's environment lacks a dependency or because the session never found where the environment installed it. The first needs the environment's setup script fixed. The second is what the prompt's instruction to search for installed dependencies covers, so a transcript showing a session that gave up without searching is a reason to make the environment put its dependencies where a session looks first, such as on `PATH`. Once the cause is fixed, replay the alert with `--reset` (see the replay runbook below) to get the pull request.
 
 ### `AUTOFIX_FAILED ... rejected fix payload`
 
@@ -137,6 +177,29 @@ The receiver claimed a record and never settled it, which means the invocation d
 
 If a batch instead reports a crash before any of this, the cause is usually the App private key parameter being unreadable at cold start rather than GitHub itself.
 
+## Reading issue tracking in the logs
+
+Issue filing logs one marker, `ISSUE_TRACKING_FAILED`, and the `IssueTrackingFailures` alarm fires on a single line of it in five minutes. The rest of the line names the alert and the case:
+
+| Line | Means |
+|---|---|
+| `... <short id> grant not written: <error>` | The receiver could not write a tracking grant while delivering findings. The findings reply still posted, but the session got no grant for that result, so nothing can file it |
+| `... <short id> issue op rejected: <rule>` | A session sent an operation that broke one of the proxy's rules, named on the line. Like `FINDINGS_REJECTED`, it means the prompt and the receiver disagree |
+| `... <short id> <op> failed: <step>` | A GitHub call did not succeed, and the step says which: `token mint failed`, `read the issue`, `list the labels`, `create the issue`, `post the comment`, `reopen the issue`, `read the issue fields`, `field <name> is not single-select` (a configured field of another type), `set the field values`, `read the field values back`, `field values did not persist`, `read the project`, or `add the issue to the project`. The session may retry once |
+| `... <short id> <op> rejected: <reason>` | GitHub refused the request and wrote nothing (`GitHub refused the issue as sent`, usually an issue type it does not recognize), or `set_fields` named an option no field offers |
+| `... <short id> <op> #<n> landed with warnings: <what>` | The write happened, but a label or the type is not on the issue as sent: a label the repository does not define, dropped before sending, or one GitHub dropped on its own |
+| `... <short id> <op> crashed: <error>` | The receiver raised before the operation's GitHub write returned, so nothing was written. The operation's record is failed and the alert's tracking claim released, so a retry can run |
+| `... <short id> <op> crashed after its GitHub write landed: <error>` | The write happened, then the receiver raised while recording it. The record and the claim are left as they are, so the write is never repeated: a retry is answered from a record that settled done, and finishes marking the alert tracked and posting its link if the crash came first; one that did not settle is refused as in progress. If the alert never shows as tracked, the backstop's notice at expiry says filing may not have finished |
+| `... <short id> <op> landed on #<n> after the grant closed` | An operation finished just after the backstop expired its grant. The issue exists, and the thread got its link after the backstop's notice |
+| `... <short id> left untracked at grant expiry` | The backstop: the grant expired with no issue filed, commented on or reopened |
+| `... <short id> may not have finished filing at grant expiry` | The backstop found an operation that claimed the alert and never finished marking it tracked (it died mid-operation, or crashed after its write and was never retried), so an issue may exist |
+
+**Refusals carry no marker.** A well-formed operation that a cap or a state forbids is answered 409 and logged at warning as `issue op for <short id> refused: <reason>`: a per-alert or daily cap reached, the alert already tracked, an issue that is not in the target repository or is a pull request, a reopen of an open issue, an operation still in progress, or an environment no longer in `issues.environments`. If a refusal leaves the alert untracked, the backstop logs the marker once, when the grant expires. Authentication failures at `/issues` are plain `rejected issue op ...` warnings, the same shape as the callback route's.
+
+**The two backstop notices** are what the alert's thread reads when its grant expires with nothing tracked: `No GitHub issue was filed for this alert, so it is tracked only in this thread.`, or, when an operation died mid-filing, `Sentinel may not have finished filing this alert in GitHub; check the repository for an issue before filing one.` Either is followed by `The duplicate search was also unavailable for this alert, so an existing issue may already describe it.` when the session's duplicate search had failed. A grant whose result opened a pull request, or whose fix attempt failed on the receiver's side, is released without a notice: the pull request, or the `AUTOFIX_FAILED` line and its own thread reply, already says what happened.
+
+A thread reply or a notice that cannot be posted carries the receiver's general delivery-failure marker (`issue tracking reply for ...`, `tracking notice for ...`), not this one. A grant with no thread to reply in (its alert card never posted) skips the reply with a plain `no thread to reply in for ...` warning, and the backstop skips its notice the same way (`no thread to post the tracking notice in for ...`), still logging the marker.
+
 ## Runbook: replaying an alert the receiver has already seen
 
 A repeat alert on an unchanged release finds the investigation row and stops before any Sentry call: it posts a pointer to the earlier thread, or retries once if that attempt failed, and never re-runs a delivered investigation. Which repeats arrive at all depends on the alert rules you configured: a new-issue rule fires once per issue per environment, while frequency, regression, and reappearance rules re-fire for a known issue. So when you need the receiver to process a known issue again, after fixing something in the pipeline for example, sign a webhook body and post it yourself:
@@ -158,9 +221,20 @@ Each delete is conditional on the row existing, and the script prints `deleted:`
 
 Without `--reset`, a repeat issue posts a fresh card that points at the earlier thread, or retries a failed investigation if its retry budget is unspent. That is the right mode for a freshly staged error that has no rows yet.
 
-## Runbook: updating the investigator's stored prompt
+## Runbook: updating the investigator routine
 
-A routine holds one prompt, and the receiver's contract with it changes whenever step 7 of `prompts/investigator.md` does. The public routines API cannot read or write a routine's configuration, so the update happens on the routine's own page at claude.ai: substitute the receiver's origin for `REPLACE_WITH_FUNCTION_URL` in the repository file, paste the result into the routine's prompt, save, then reopen the routine and compare its prompt against the substituted file. A Claude Code session with routine tooling can make the same edit and read it back, which is how the comparison is automated when one is at hand. Either way, a prompt that differs from the file is a partial update. The probe routine keeps its own prompt and is not touched by this.
+A routine holds one prompt and its own tool settings, and the receiver's contract with the prompt changes whenever steps 6 to 8 of `prompts/investigator.md` do. The public routines API cannot read or write a routine's configuration, so the update happens through routine tooling (a Claude Code session's routine `get` and `update`) or on the routine's own page at claude.ai:
+
+1. Substitute both placeholders in the repository file: the receiver's origin for `REPLACE_WITH_FUNCTION_URL`, and the paths in `issues.conventions`, separated by a comma and a space, for `REPLACE_WITH_ISSUE_CONVENTIONS` (the word `none` when that list is empty).
+2. Apply the substituted prompt and the tool policy from `prompts/routine-tools.yaml` together, as [the tool policy section](#the-routines-github-tool-policy) describes.
+3. Read the routine back and compare its prompt with the substituted file and both tool lists with `prompts/routine-tools.yaml`. A prompt update sends the whole job config again, so the read-back covers the two tool lists as well as the prompt. Any difference is a partial update: apply again.
+4. Write down the engine commit the prompt came from, the UTC date, and whether the read-back matched. Nothing compares the routine's copy with the repository on a schedule, so that record is how a later reader learns which commit the routine carries. Every later prompt or tool-list change repeats it.
+
+After an update, a `FINDINGS_SCHEMA_OUTDATED schema_version <n>` warning in the receiver's log group means a session posted findings in a schema older than the one `prompts/investigator.md` emits, so it ran an older prompt. The receiver delivers those findings as usual, without an urgency line on the reply card, so nothing is lost, and the marker is counted rather than alarmed. It is expected only for sessions that were already running when the prompt was swapped. Once those have finished, a new one means the routine still holds an older prompt: compare its prompt against the substituted file again.
+
+The conventions paths live in the pasted prompt, not in the receiver. Moving or renaming a conventions file in the target repository therefore takes two steps: change `issues.conventions`, then update the routine again.
+
+The probe routine keeps its own prompt, `prompts/probe.md`, with only `REPLACE_WITH_FUNCTION_URL` to substitute, and it carries the same tool policy as the investigator, so a tool-policy change is applied and read back on both routines.
 
 ## Configuration probe
 
@@ -169,6 +243,13 @@ for the receiver's Function URL and must be substituted with the real origin
 when the prompt is written to the routine. The session cross-checks that
 origin against the `SENTINEL_RECEIVER_URL` environment variable, so a prompt
 written with the placeholder left in place fails the check and posts nothing.
+The investigator prompt also carries `REPLACE_WITH_ISSUE_CONVENTIONS`, which
+stands in for the paths in `issues.conventions`, separated by a comma and a
+space, or the word `none` when that list is empty. The session reads those
+files for its urgency rating and its issue drafts, so a placeholder left in
+place names a file that does not exist: the session falls back to the
+rubric's default priority meanings and files issues with no type, labels,
+fields, or board placement.
 
 The routines API exposes no configuration read, so the routine's repository binding and connector set can only be verified by firing a session that reports on itself (`prompts/probe.md`, reporting to `/findings/probe`; `scripts/probe_routine.py` fires it). Connector drift is not detected automatically: re-run the probe whenever the routine or the account's connectors change.
 
@@ -187,6 +268,29 @@ Read the session transcript alongside the receiver's log group for the `/finding
 Firing the investigator's own routine with this script does *not* run a probe. The script sends `{"probe": true}`, the investigator sees a payload missing all five required fields (`project`, `issue_ids`, `release`, `batch_id`, `reply_token`), and correctly refuses to interpret it, reporting a malformed fire instead. That is the investigator behaving as designed, not a probe result.
 
 A malformed-fire report is still useful even though it is not a probe. It confirms the receiver URL the routine actually holds, that egress reaches that host, and that `/findings` rejects an unauthenticated POST, without touching the prompt at all. When all you need is "does the routine still point at the right receiver", fire the script and read the report rather than doing the swap.
+
+## Runbook: enabling issue filing
+
+Issue filing ships off, and merging the engine change that carries it activates nothing: the receiver runs only what `cdk deploy` ships, the routine runs only the prompt pasted into it, and `issues.enabled: false` keeps the `/issues` route answering 404 and every findings response's `tracking` null. Switching it on is a sequence of operator steps, each checked before the next:
+
+1. **Deploy the receiver with the flag still off.** The receiver must accept findings schema v3 before the routine sends it, or every v3 findings POST is rejected and each thread gets the deadline reply instead of its findings. Check: `/health` answers `ok`, and the next findings delivery posts as before with no `FINDINGS_REJECTED` line.
+2. **Update the App's permissions** as [What the Sentinel App needs](#what-the-sentinel-app-needs) lists, and have an organization owner accept the request. This step is independent of the others and can run any time before step 4. Check: the installation page lists the new permissions with no pending request.
+3. **Update the investigator routine.** Set `issues.conventions` first, because the paste writes those paths into the prompt, and confirm each path exists on every branch your releases are cut from. Then follow updating the investigator routine, and re-run the configuration probe. Check: a replayed alert's findings card shows its urgency, and the receiver's log shows no request to `/issues`, which proves the issue step stays dormant while the flag is off.
+4. **Turn filing on for one environment.** Set `issues.enabled: true`, `issues.environments` to that one environment, `issues.proxy_url`, and `issues.issue_types`, `issues.fields` and `issues.project_number` as the target repository uses them, then deploy with the same `cdk deploy`. `assert_ready` runs at synth, so a missing or placeholder value stops the deploy before anything ships. Check: replay alerts in that environment until each path has happened once (a new issue, a comment on an open duplicate, a reopen of a closed one, a new issue linked to a related one, and a create with the duplicate search unavailable), and read each issue and each thread reply. If any path fails, set the flag back off, fix, and re-run it and every path after it.
+5. **Soak, then widen.** Leave it on for the first environment until several organic outcomes have been read end to end, then add the remaining environments to `issues.environments` and deploy.
+
+Rollback works stage by stage, and the order matters: the routine's prompt goes back before the receiver does.
+
+| Undo | How | Notes |
+|---|---|---|
+| Filing | `issues.enabled: false`, or drop the environment from `issues.environments`, then `cdk deploy` | The durable stop. The route re-checks both on every call, so a session holding a grant is refused at once. Issues already filed stay; close a misfiled one by hand as a duplicate or not planned |
+| Emergency stop | Remove Issues write from the App's permissions | Takes effect at once with no approval and stops every issue write at the token mint, without touching autofix. Restore it once the flag is off |
+| Emergency stop | Revert the routine's prompt | Stops new sessions from running the issue step at all |
+| The routine | Paste the previous engine commit's substituted prompt, read it back, record it | Do this before rolling the receiver back |
+| The receiver | Check out the previous engine commit and `cdk deploy` | Only while the routine runs the previous prompt: a routine still sending schema v3 gets every findings POST rejected |
+| The App's permissions | Remove Issues write, Projects write and Issue fields read | Only after the flag is off, or live operations fail at the mint |
+
+The receiver cannot delete or close anything, so no rollback touches an issue already filed: each one describes a real error.
 
 ## Falling back to stock Sentry alerts
 

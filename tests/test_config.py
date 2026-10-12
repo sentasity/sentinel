@@ -404,3 +404,194 @@ def test_a_refused_token_ref_is_never_echoed(tmp_path):
 
     assert TOKEN_SHAPED not in str(refused.value)
     assert TOKEN_SHAPED[:12] not in str(refused.value)
+
+
+ISSUES = textwrap.dedent(
+    """
+    issues:
+      enabled: true
+      environments: [staging]
+      proxy_url: "https://example.test/issues"
+      conventions: [docs/ISSUES.md]
+      issue_types: [Bug, Task]
+      fields: [Priority, Effort]
+      project_number: 3
+      daily_create_cap: 25
+      daily_write_cap: 100
+    """
+)
+
+# VALID carries no autofix block, and issue filing writes as the autofix
+# App, so a config that files issues needs AUTOFIX for its app_id.
+FILING = VALID + AUTOFIX + ISSUES
+
+
+def test_load_config_reads_the_issues_section(tmp_path):
+    cfg = load_config(write(tmp_path, FILING))
+
+    assert cfg.issues_enabled is True
+    assert cfg.issues_environments == ("staging",)
+    assert cfg.issues_proxy_url == "https://example.test/issues"
+    assert cfg.issues_conventions == ("docs/ISSUES.md",)
+    assert cfg.issues_issue_types == ("Bug", "Task")
+    assert cfg.issues_fields == ("Priority", "Effort")
+    assert cfg.issues_project_number == 3
+    assert cfg.issues_daily_create_cap == 25
+    assert cfg.issues_daily_write_cap == 100
+    assert_ready(cfg)
+
+
+def test_issue_filing_defaults_are_inert(tmp_path):
+    cfg = load_config(write(tmp_path, VALID))
+
+    assert cfg.issues_enabled is False
+    assert cfg.issues_environments == ()
+    assert cfg.issues_proxy_url == ""
+    assert cfg.issues_conventions == ()
+    assert cfg.issues_issue_types == ()
+    assert cfg.issues_fields == ()
+    assert cfg.issues_project_number == 0
+    assert cfg.issues_daily_create_cap == 25
+    assert cfg.issues_daily_write_cap == 100
+    assert not cfg.issues_enabled_for("staging")
+
+
+def test_issue_filing_is_on_only_for_the_listed_environments(tmp_path):
+    cfg = load_config(write(tmp_path, FILING))
+
+    assert cfg.issues_enabled_for("staging")
+    assert not cfg.issues_enabled_for("prod")
+
+
+def test_an_empty_issue_environment_list_means_every_environment(tmp_path):
+    body = FILING.replace("environments: [staging]", "environments: []")
+    assert body != FILING
+
+    cfg = load_config(write(tmp_path, body))
+
+    assert cfg.issues_enabled_for("staging")
+    assert cfg.issues_enabled_for("prod")
+
+
+def test_issue_filing_off_is_off_for_every_environment(tmp_path):
+    body = FILING.replace("  enabled: true\n  environments", "  enabled: false\n  environments")
+    assert body != FILING
+
+    cfg = load_config(write(tmp_path, body))
+
+    assert not cfg.issues_enabled_for("staging")
+    assert not cfg.issues_enabled_for("prod")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "rule"),
+    [
+        ('proxy_url: "https://example.test/issues"', 'proxy_url: ""', "issues.proxy_url is required"),
+        (
+            'proxy_url: "https://example.test/issues"',
+            'proxy_url: "REPLACE_WITH_FUNCTION_URL/issues"',
+            "issues.proxy_url is still a placeholder",
+        ),
+        (
+            'proxy_url: "https://example.test/issues"',
+            'proxy_url: "https://elsewhere.test/issues"',
+            "share investigation.findings_url's origin",
+        ),
+        (
+            'proxy_url: "https://example.test/issues"',
+            'proxy_url: "http://example.test/issues"',
+            "share investigation.findings_url's origin",
+        ),
+        ("conventions: [docs/ISSUES.md]", "conventions: []", "issues.conventions is required"),
+        (
+            "conventions: [docs/ISSUES.md]",
+            "conventions: [REPLACE_WITH_CONVENTIONS_FILE]",
+            "issues.conventions entry",
+        ),
+        ("environments: [staging]", "environments: [dev]", "not in environments"),
+        ("issue_types: [Bug, Task]", 'issue_types: [Bug, ""]', "issues.issue_types"),
+        ("issue_types: [Bug, Task]", "issue_types: [Bug, 7]", "issues.issue_types"),
+        ("fields: [Priority, Effort]", 'fields: [Priority, "  "]', "issues.fields"),
+        ("project_number: 3", "project_number: -1", "issues.project_number"),
+        ("project_number: 3", 'project_number: "3"', "issues.project_number"),
+        ("project_number: 3", "project_number: true", "issues.project_number"),
+        ("daily_create_cap: 25", "daily_create_cap: 0", "issues.daily_create_cap"),
+        ("daily_write_cap: 100", 'daily_write_cap: "100"', "issues.daily_write_cap"),
+    ],
+)
+def test_enabled_issue_filing_refuses_each_unusable_value(tmp_path, old, new, rule):
+    body = FILING.replace(old, new)
+    assert body != FILING, "the substitution never fired"
+
+    with pytest.raises(ConfigError, match=rule):
+        assert_ready(load_config(write(tmp_path, body)))
+
+
+def test_enabled_issue_filing_requires_the_app_id(tmp_path):
+    """Issue writes are made as the autofix App, even with autofix off."""
+    with pytest.raises(ConfigError, match="autofix.app_id is required when issues is enabled"):
+        assert_ready(load_config(write(tmp_path, VALID + ISSUES)))
+
+
+def test_the_proxy_origin_match_ignores_host_case(tmp_path):
+    body = FILING.replace(
+        'proxy_url: "https://example.test/issues"', 'proxy_url: "https://EXAMPLE.test/issues"'
+    )
+    assert body != FILING
+
+    assert_ready(load_config(write(tmp_path, body)))
+
+
+def test_disabled_issue_filing_is_not_checked(tmp_path):
+    """The example ships every issues value empty or a placeholder, and must
+    still come up: nothing is checked until filing is turned on."""
+    body = VALID + textwrap.dedent(
+        """
+        issues:
+          enabled: false
+          proxy_url: "REPLACE_WITH_FUNCTION_URL/issues"
+          project_number: -1
+        """
+    )
+
+    assert_ready(load_config(write(tmp_path, body)))
+
+
+def test_the_example_issues_block_loads_to_the_inert_defaults():
+    """Key for key the ReceiverConfig defaults, so the shipped template
+    files nothing until an operator turns it on."""
+    from receiver.config import EXAMPLE_CONFIG_PATH, ReceiverConfig
+
+    cfg = load_config(EXAMPLE_CONFIG_PATH)
+
+    for name in (
+        "issues_enabled",
+        "issues_environments",
+        "issues_conventions",
+        "issues_issue_types",
+        "issues_fields",
+        "issues_project_number",
+        "issues_daily_create_cap",
+        "issues_daily_write_cap",
+    ):
+        assert getattr(cfg, name) == ReceiverConfig.__dataclass_fields__[name].default, name
+    assert cfg.issues_proxy_url == "REPLACE_WITH_FUNCTION_URL/issues"
+    assert "issues:" in EXAMPLE_CONFIG_PATH.read_text()
+
+
+def test_the_example_issues_block_adds_no_startup_refusal():
+    """The template's other placeholders still need filling, so they are
+    filled here; what is left is exactly what the issues block contributes,
+    and it must pass as shipped."""
+    import dataclasses
+
+    from receiver.config import EXAMPLE_CONFIG_PATH
+
+    cfg = dataclasses.replace(
+        load_config(EXAMPLE_CONFIG_PATH),
+        tenant_id="tenant-123",
+        bot_app_id="app-456",
+        channels={"prod": "19:prod@thread.tacv2", "staging": "19:staging@thread.tacv2"},
+    )
+
+    assert_ready(cfg)
