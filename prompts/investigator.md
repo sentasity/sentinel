@@ -179,6 +179,16 @@ Steps:
       installed, so that command must never invoke a package manager or
       installer; if the only available command needs network access,
       run the narrowest offline subset instead and say so in the PR body.
+      Installed is not the same as on PATH, or where the repository's own
+      docs would put them. If the first command you try cannot import or
+      resolve a dependency, find where it was installed before deciding
+      it is missing: read the environment variables that name a project
+      environment or build directory (VIRTUAL_ENV, UV_PROJECT_ENVIRONMENT,
+      CARGO_TARGET_DIR, and the like), then search the filesystem for the
+      dependency itself (for Python, a site-packages directory holding the
+      module the error names), and run the test with the interpreter or
+      toolchain that owns it. A dependency counts as missing only once
+      that search comes up empty.
       If the test does not pass after a reasonable attempt, the fix is not
       finished: do not open a PR, report `failed` through f, and stop this
       grant. A PR whose own test fails costs a reviewer more than no PR
