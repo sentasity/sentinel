@@ -460,8 +460,15 @@ def expire_tracking(*, store, bot) -> int:
         text = TRACKING_UNFINISHED_NOTICE if unfinished else TRACKING_UNTRACKED_NOTICE
         if g.get("search_unavailable"):
             text = f"{text}\n\n{TRACKING_SEARCH_UNAVAILABLE_NOTICE}"
+        conversation_id = str(g.get("conversation_id") or "")
+        message_id = str(g.get("message_id") or "")
+        if not conversation_id or not message_id:
+            # The alert card never posted, so there is no thread to tell; the
+            # marker above already counts the alert as untracked.
+            LOG.warning("no thread to post the tracking notice in for %s", short_id)
+            continue
         try:
-            bot.reply_in_thread(g["conversation_id"], g["message_id"], text)
+            bot.reply_in_thread(conversation_id, message_id, text)
             noticed += 1
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
             LOG.error("%s tracking notice for %s: %s", DELIVERY_FAILURE_MARKER, short_id, exc)
