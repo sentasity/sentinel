@@ -2811,3 +2811,61 @@ def test_issue_op_crash_after_the_write_landed_keeps_the_tracking_claim(proxy, c
     replay = done_body(retried)
     assert (replay["issue_number"], replay["replayed"]) == (9, True)
     assert proxy.github.file_issue.call_count == 1
+
+
+def test_issue_op_whose_write_landed_is_never_repeated_when_its_record_write_fails(proxy, caplog):
+    """GitHub created the issue, then the `done` settle itself failed. The
+    guard must not settle the still-`sending` record `failed` or release the
+    claim, or the session's documented retry would file a second issue."""
+
+    class DoneSettleFails(FakeTrackingStore):
+        def settle_issue_op(self, tracking_id, key, state, *, result=None, error=""):
+            if state == "done":
+                raise RuntimeError("dynamo throttled")
+            return super().settle_issue_op(tracking_id, key, state, result=result, error=error)
+
+    store = DoneSettleFails(grant_row())
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+
+    with patch.object(handler, "alert_store", return_value=store), caplog.at_level(logging.ERROR):
+        first = route(issues_event(**FILE_ISSUE))
+        retried = route(issues_event(**FILE_ISSUE))
+
+    key = handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert status_of(first) == (502, {"status": "failed", "reason": "receiver crashed"})
+    assert "file_issue crashed after its GitHub write landed" in caplog.text
+    assert store.ops[key]["state"] == "sending"
+    assert store.grant.get("tracking_op") == key
+    assert status_of(retried) == (409, {"status": "refused", "reason": "in progress"})
+    assert proxy.github.file_issue.call_count == 1
+
+
+def test_issue_op_failure_whose_claim_release_blips_still_frees_the_alert(proxy):
+    """GitHub wrote nothing, then releasing the claim failed once. The guard
+    retries the release, so the session's documented retry without `type`
+    and `labels`, a different op, can still claim the alert and file."""
+
+    class ReleaseBlipsOnce(FakeTrackingStore):
+        blipped = False
+
+        def release_tracking_issue(self, tracking_id, key):
+            if not self.blipped:
+                self.blipped = True
+                raise RuntimeError("dynamo throttled")
+            return super().release_tracking_issue(tracking_id, key)
+
+    store = ReleaseBlipsOnce(grant_row())
+    proxy.github.file_issue.side_effect = [
+        IssueCall(ok=False, status=503, step="create the issue"),
+        IssueCall(ok=True, status=201, body={**CREATED, "labels": [], "type": None}),
+    ]
+    retry = {key: value for key, value in FILE_ISSUE.items() if key not in ("type", "labels")}
+
+    with patch.object(handler, "alert_store", return_value=store):
+        first = route(issues_event(**FILE_ISSUE))
+        assert "tracking_op" not in store.grant
+        second = route(issues_event(**retry))
+
+    assert status_of(first) == (502, {"status": "failed", "reason": "receiver crashed"})
+    assert done_body(second)["issue_number"] == 9
+    assert store.grant["status"] == "tracked"

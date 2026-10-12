@@ -1098,29 +1098,37 @@ def run_issue_op(
     repo_labels: list[str] | None = None,
 ) -> dict:
     """Everything after an op's record is claimed, under the guard `fix_ready`
-    uses: whatever raises settles the record `failed`, releases a tracking
-    claim this op held, logs the marker and answers 502, so a crash never
-    strands a record at `sending`. A Lambda timeout is the one exit the
-    guard cannot see: the record stays `sending`, the function's Errors
-    alarm reports it, and the backstop tells the thread.
+    uses: whatever raises before the op's GitHub write returns settles the
+    record `failed`, releases a tracking claim this op held, logs the marker
+    and answers 502, so a crash never strands a record at `sending`. A Lambda
+    timeout is the one exit the guard cannot see: the record stays `sending`,
+    the function's Errors alarm reports it, and the backstop tells the thread.
 
-    A crash after the record settled `done` means the GitHub write landed,
-    so the failed settle finds nothing to change and the claim is kept: a
-    retry is answered from the `done` record, and the backstop's notice at
-    expiry says filing may not have finished rather than that nothing was
-    filed."""
+    Once the write has returned, the op happened at GitHub, so a crash after
+    it leaves the record and the claim as they are: a record still `sending`
+    cannot be reclaimed, so no retry repeats the write, and one that settled
+    `done` is answered from its record."""
+    progress = {"landed": False}
     try:
         return perform_issue_op(
-            cfg, grant, op, key, token, deadline, issue=issue, repo_labels=repo_labels or []
+            cfg, grant, op, key, token, deadline,
+            issue=issue, repo_labels=repo_labels or [], progress=progress,
         )
     except Exception as exc:  # noqa: BLE001 - a claimed op must settle, never strand at sending
         short_id = grant.get("short_id", "")
+        if progress["landed"]:
+            LOG.error(
+                "%s %s %s crashed after its GitHub write landed: %s",
+                ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc,
+            )
+            return respond_json(502, {"status": "failed", "reason": "receiver crashed"})
         LOG.error("%s %s %s crashed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, op["op"], exc)
         try:
-            failed = alert_store().settle_issue_op(
-                grant["tracking_id"], key, "failed", error="receiver crashed"
-            )
-            if failed and issues.is_tracking_op(op):
+            # The record may already be `failed`, when the crash came while a
+            # failure was being settled; the release still runs, so a claim
+            # that failure left behind is freed.
+            alert_store().settle_issue_op(grant["tracking_id"], key, "failed", error="receiver crashed")
+            if issues.is_tracking_op(op):
                 alert_store().release_tracking_issue(grant["tracking_id"], key)
         except Exception as settle_exc:  # noqa: BLE001 - logged; the backstop covers the thread
             LOG.error(
@@ -1140,9 +1148,11 @@ def perform_issue_op(
     *,
     issue: dict | None,
     repo_labels: list[str],
+    progress: dict,
 ) -> dict:
     """Make one claimed op's GitHub write as the App, settle it, and tell the
-    thread when it is the alert's tracking outcome.
+    thread when it is the alert's tracking outcome. `progress["landed"]` is
+    set the moment the write returns, which is what the guard decides by.
 
     A tracking op first claims the grant, so two different creates cannot
     both reach GitHub. Every title and body is shaped before it is sent:
@@ -1226,6 +1236,7 @@ def perform_issue_op(
         if not call.ok:
             return settle_issue_failure(grant, op, key, call.step)
 
+    progress["landed"] = True
     result = {"op": name, "issue_number": number, "url": url, "warnings": warnings, **extra}
     store.settle_issue_op(tracking_id, key, "done", result=result)
     if warnings:
