@@ -972,16 +972,37 @@ def handle_issue_op(event: dict) -> dict:
     state = str(record.get("state") or "")
     if state == "done":
         # A lost response or a retry: answer what the first attempt did,
-        # with no read, no claim and no thread reply.
-        LOG.info("issue op %s for %s replayed", name, short_id)
+        # with no read, no claim and no write to GitHub.
+        result = json.loads(record.get("result") or "{}")
+        resume = result.pop("resume", None) or {}
+        thread_notified = False
+        if (
+            issues.is_tracking_op(op)
+            and grant.get("status") == "open"
+            and grant.get("tracking_op") == key
+        ):
+            # The write landed and settled, then the receiver crashed before
+            # marking the alert tracked. This retry finishes that, once:
+            # afterwards the grant is no longer open.
+            LOG.info("issue op %s for %s replayed; finishing its tracking", name, short_id)
+            try:
+                thread_notified = finish_tracking(
+                    grant, op, key,
+                    number=int(result.get("issue_number") or 0),
+                    url=str(result.get("url") or ""),
+                    node_id=str(resume.get("node_id") or ""),
+                    issue_state=str(resume.get("issue_state") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001 - the write stands; the backstop covers the thread
+                LOG.error(
+                    "%s %s %s replay could not finish tracking: %s",
+                    ISSUE_TRACKING_FAILED_MARKER, short_id, name, exc,
+                )
+        else:
+            LOG.info("issue op %s for %s replayed", name, short_id)
         return respond_json(
             200,
-            {
-                **json.loads(record.get("result") or "{}"),
-                "status": "done",
-                "replayed": True,
-                "thread_notified": False,
-            },
+            {**result, "status": "done", "replayed": True, "thread_notified": thread_notified},
         )
     if state == "sending":
         # An invocation died mid-op, or is still running. Its outcome at
@@ -1237,8 +1258,14 @@ def perform_issue_op(
             return settle_issue_failure(grant, op, key, call.step)
 
     progress["landed"] = True
+    issue_state = str((issue or {}).get("state") or "")
     result = {"op": name, "issue_number": number, "url": url, "warnings": warnings, **extra}
-    store.settle_issue_op(tracking_id, key, "done", result=result)
+    stored = dict(result)
+    if tracking:
+        # What a replay needs to finish marking the alert tracked if the
+        # receiver crashes after this settle. Never sent to the session.
+        stored["resume"] = {"node_id": node_id, "issue_state": issue_state}
+    store.settle_issue_op(tracking_id, key, "done", result=stored)
     if warnings:
         LOG.error(
             "%s %s %s #%d landed with warnings: %s",
@@ -1247,30 +1274,47 @@ def perform_issue_op(
 
     thread_notified = False
     if tracking:
-        via = "duplicate" if name == "comment" else name
-        if not store.settle_tracked(
-            tracking_id, key, issue_number=number, url=url, via=via, node_id=node_id
-        ):
-            # The backstop expired the grant while this op was in flight,
-            # and has told the thread filing may not have finished. The
-            # reply below says what actually happened.
-            LOG.error(
-                "%s %s %s landed on #%d after the grant closed",
-                ISSUE_TRACKING_FAILED_MARKER, short_id, name, number,
-            )
-        text = issues.tracking_reply(
-            op,
-            url=safe_callback_url(url, field="issue_url"),
-            issue_state=str((issue or {}).get("state") or ""),
-            search_unavailable=search_unavailable,
+        thread_notified = finish_tracking(
+            grant, op, key, number=number, url=url, node_id=node_id, issue_state=issue_state
         )
-        thread_notified = post_tracking_reply(grant, text)
 
     LOG.info("issue op %s for %s done on #%d", name, short_id, number)
     return respond_json(
         200,
         {"status": "done", **result, "replayed": False, "thread_notified": thread_notified},
     )
+
+
+def finish_tracking(
+    grant: dict, op: dict, key: str, *, number: int, url: str, node_id: str, issue_state: str
+) -> bool:
+    """Mark the alert tracked by the issue a settled tracking op wrote, and
+    post its link in the thread; True when the reply posted. Run by the op
+    itself, and by a replay when the op crashed before getting this far.
+
+    `issue_state` is the state the duplicate was read in, which decides
+    whether the reply says the tracking issue is closed.
+    """
+    short_id = str(grant.get("short_id") or "")
+    name = op["op"]
+    via = "duplicate" if name == "comment" else name
+    if not alert_store().settle_tracked(
+        grant["tracking_id"], key, issue_number=number, url=url, via=via, node_id=node_id
+    ):
+        # The backstop expired the grant while this op was in flight, and
+        # has told the thread filing may not have finished. The reply below
+        # says what actually happened.
+        LOG.error(
+            "%s %s %s landed on #%d after the grant closed",
+            ISSUE_TRACKING_FAILED_MARKER, short_id, name, number,
+        )
+    text = issues.tracking_reply(
+        op,
+        url=safe_callback_url(url, field="issue_url"),
+        issue_state=issue_state,
+        search_unavailable=bool(op.get("search_unavailable")),
+    )
+    return post_tracking_reply(grant, text)
 
 
 def route(event: dict) -> dict:

@@ -2813,6 +2813,50 @@ def test_issue_op_crash_after_the_write_landed_keeps_the_tracking_claim(proxy, c
     assert proxy.github.file_issue.call_count == 1
 
 
+def test_a_replayed_tracking_op_finishes_what_its_crash_left_undone(proxy):
+    """The write landed and settled `done`, then marking the alert tracked
+    failed once. The session's retry is answered from the record and also
+    finishes the job, once: the alert is tracked with the created issue, so
+    set_fields and add_to_project can follow, and the thread gets its link.
+    The replay never shows the receiver's own resume data."""
+
+    class SettleTrackedBlipsOnce(FakeTrackingStore):
+        blipped = False
+
+        def settle_tracked(self, *args, **kwargs):
+            if not self.blipped:
+                self.blipped = True
+                raise RuntimeError("dynamo throttled")
+            return super().settle_tracked(*args, **kwargs)
+
+    store = SettleTrackedBlipsOnce(grant_row())
+    proxy.github.file_issue.return_value = IssueCall(ok=True, status=201, body=CREATED)
+    proxy.github.set_fields.return_value = FieldsOutcome(ok=True, fields={"Priority": "High"})
+
+    with patch.object(handler, "alert_store", return_value=store):
+        first = route(issues_event(**FILE_ISSUE))
+        retried = route(issues_event(**FILE_ISSUE))
+        resent = route(issues_event(**FILE_ISSUE))
+        fields = route(issues_event(op="set_fields", issue_number=9, fields={"Priority": "High"}))
+
+    assert first["statusCode"] == 502
+    replay = done_body(retried)
+    assert replay == {
+        "status": "done", "op": "file_issue", "issue_number": 9,
+        "url": CREATED["html_url"], "warnings": [], "replayed": True, "thread_notified": True,
+    }
+    assert store.grant["status"] == "tracked"
+    assert (store.grant["created_issue"], store.grant["created_node_id"]) == (9, "I_9")
+    assert proxy.bot.reply_in_thread.call_count == 1
+    assert proxy.bot.reply_in_thread.call_args.args[2] == (
+        "📌 Tracked in GitHub: https://github.com/acme-tools/checkout/issues/9"
+    )
+    assert done_body(resent)["thread_notified"] is False
+    assert proxy.bot.reply_in_thread.call_count == 1
+    assert done_body(fields)["fields"] == {"Priority": "High"}
+    assert proxy.github.set_fields.call_args.kwargs["node_id"] == "I_9"
+
+
 def test_issue_op_whose_write_landed_is_never_repeated_when_its_record_write_fails(proxy, caplog):
     """GitHub created the issue, then the `done` settle itself failed. The
     guard must not settle the still-`sending` record `failed` or release the
