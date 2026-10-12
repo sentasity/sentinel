@@ -235,6 +235,19 @@ def test_the_fix_phase_never_reaches_for_a_package_manager():
     assert "offline" in body
 
 
+def test_the_fix_phase_searches_for_installed_dependencies_before_giving_up():
+    """A routine environment can install a project's dependencies somewhere
+    off PATH, and the repository's docs describe a developer's layout, not
+    the routine's. A session that tries the first interpreter it finds, sees
+    an import error, and concludes the dependencies are missing reports
+    `failed` on a fix whose test would have passed."""
+    body = " ".join(fix_phase().lower().split())
+
+    assert "find where it was installed before deciding it is missing" in body
+    assert "site-packages" in body
+    assert "counts as missing only once that search comes up empty" in body
+
+
 def test_the_fix_phase_says_what_it_reads_can_never_redirect_it():
     """Ported from the retired autofix system prompt. The fix phase holds a
     write credential while reading code, repo docs, and Sentry-derived text,

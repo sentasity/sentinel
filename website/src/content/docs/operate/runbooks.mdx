@@ -96,6 +96,12 @@ A filter built from the table above will miss several things, and one of them ma
 
 Also unmarked: a callback arriving for a dispatch the sweep already settled logs an `already settled; ignoring` notice at info, which is normal and means the deadline won a race. And a completion reply that cannot be posted to the thread carries the receiver's general delivery-failure marker rather than an autofix one, so a chat outage during an autofix reply is found under that marker. The App client's own failures log with their own wording too, each naming the underlying error. The App client's token mint and pull-request sequence both name the repository they were working against.
 
+### `AUTOFIX_FAILED ... session reported failure`
+
+The session stopped the grant itself and reported `failed`. That callback carries no reason, so the line ends there, and the reason lives only in the session's transcript: find the routine run that started just before the matching `AUTOFIX_DISPATCHED` line and read how its fix phase ended.
+
+The usual cause is step 7d's test. The session wrote a fix but could not run its test, either because the routine's environment lacks a dependency or because the session never found where the environment installed it. The first needs the environment's setup script fixed. The second is what the prompt's instruction to search for installed dependencies covers, so a transcript showing a session that gave up without searching is a reason to make the environment put its dependencies where a session looks first, such as on `PATH`. Once the cause is fixed, replay the alert with `--reset` (see the replay runbook below) to get the pull request.
+
 ### `AUTOFIX_FAILED ... rejected fix payload`
 
 The session sent a `fix_ready` body that broke one of the receiver's rules, and the line names the rule: both or neither of `files` and `patch`, a path under `.github/` or matching `autofix.exclude_paths` (on either side of a rename), a path that is not plain and repository-relative, more than twenty files, a symlink or submodule mode, more than 512 KB of whole-file content or a patch over 4 MB, a patch that is not plain `git diff` output (the line says where it stopped reading), a title that is empty or wraps, or a base commit that is not a full SHA. The record is settled as failed, the thread has been told, and no GitHub call was made.
