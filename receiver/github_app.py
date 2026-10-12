@@ -206,9 +206,9 @@ class GitHubAppClient:
         self.session = requests.Session()
         # Per container: an organization's issue-field definitions, by field
         # name, and project node ids by (organization, number). Both change
-        # rarely. A missing name triggers one refetch and a refused field write
-        # drops the organization's entry, so a stale one costs at most one failed
-        # call, never a wrong write.
+        # rarely. A missing name triggers one refetch, and a field write that is
+        # refused or does not persist drops the organization's entry, so a stale
+        # one costs at most one failed call, never a wrong write.
         self._issue_fields: dict[str, dict[str, dict]] = {}
         self._project_ids: dict[tuple[str, int], str] = {}
 
@@ -823,6 +823,9 @@ class GitHubAppClient:
             missed = sorted(name for name, option in expected.items() if held.get(name) != option)
             if missed:
                 LOG.error("field values did not persist on %s: %s", node_id, ", ".join(missed))
+                # A stale option id GitHub accepted without an error shows up
+                # only here, so the retry rereads the definitions as well.
+                self._issue_fields.pop(org, None)
                 return FieldsOutcome(ok=False, step="field values did not persist")
             return FieldsOutcome(ok=True, fields=expected)
         except GitHubCallFailed as exc:

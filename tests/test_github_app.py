@@ -1082,3 +1082,34 @@ def test_a_refused_field_write_drops_the_cached_definitions():
     assert first == FieldsOutcome(ok=False, step="set the field values")
     assert second.ok
     assert session.post.call_args_list[3].kwargs["json"]["variables"]["option0"] == "O_high_2"
+
+
+def test_a_field_value_that_did_not_persist_drops_the_cached_definitions():
+    """A stale option id GitHub accepts without an error shows up only in the
+    read-back, so that mismatch drops the cache too and the retry rereads."""
+    recreated = {
+        "data": {
+            "organization": {
+                "issueFields": {
+                    "nodes": [{"id": "F_pri", "name": "Priority", "options": [{"id": "O_high_2", "name": "High"}]}]
+                }
+            }
+        }
+    }
+    client, session = issue_client(
+        posts=[
+            reply(200, FIELDS_DATA),
+            reply(200, {"data": {}}),
+            reply(200, held()),
+            reply(200, recreated),
+            reply(200, {"data": {}}),
+            reply(200, held(("Priority", "High"))),
+        ]
+    )
+
+    first = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+    second = client.set_fields(REPO, token="t", node_id="I_9", fields={"Priority": "High"})
+
+    assert first == FieldsOutcome(ok=False, step="field values did not persist")
+    assert second.ok
+    assert session.post.call_args_list[4].kwargs["json"]["variables"]["option0"] == "O_high_2"
