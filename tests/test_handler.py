@@ -1681,6 +1681,49 @@ def test_a_terminal_status_advances_from_dispatched_and_replies(alert_store, bot
     assert reply.startswith("Autofix skipped: the base branch has moved")
 
 
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+def test_a_session_reported_failure_is_recorded_as_one(alert_store, bot_client):
+    """Every receiver-side failure writes its own reason, so the tracking
+    backstop needs a positive value to tell the session's own `failed`
+    apart from them, not an absent attribute."""
+    from receiver.autofix import SESSION_REPORTED_FAILURE
+
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+
+    response = route(callback_event(status="failed"))
+
+    assert response["statusCode"] == 200
+    assert SESSION_REPORTED_FAILURE == "session reported"
+    assert store.advance_autofix.call_args == call(
+        "d-1", "dispatched", "failed", extra={"failure": "session reported"}
+    )
+
+
+@pytest.mark.parametrize("status", ["aborted_drift", "not_reproducible", "declined_in_session"])
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+def test_a_session_reported_stop_short_of_failure_records_no_failure(alert_store, bot_client, status):
+    store = alert_store.return_value
+    store.get_autofix_dispatch.return_value = dispatch_record()
+    store.advance_autofix.return_value = True
+
+    route(callback_event(status=status))
+
+    assert store.advance_autofix.call_args == call("d-1", "dispatched", status)
+
+
+def test_a_replayed_session_reported_failure_still_reads_its_reason():
+    """`settled_outcome` is the one existing reader of `failure`."""
+    with patch.object(handler, "alert_store") as alert_store:
+        alert_store.return_value.get_autofix_dispatch.return_value = {
+            "status": "failed", "failure": "session reported",
+        }
+        assert handler.settled_outcome("d-1") == {"status": "failed", "reason": "session reported"}
+
+
 @patch("receiver.handler.github_client")
 @patch("receiver.handler.bot_client")
 @patch("receiver.handler.alert_store")

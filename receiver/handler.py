@@ -841,7 +841,14 @@ def handle_autofix_result(event: dict) -> dict:
             return respond_json(200, {"status": "failed", "reason": "receiver crashed"})
 
     run_url = safe_callback_url(str(body.get("run_url") or ""), field="run_url")
-    if not alert_store().advance_autofix(record["dispatch_id"], "dispatched", status):
+    if status == "failed":
+        advanced = alert_store().advance_autofix(
+            record["dispatch_id"], "dispatched", status,
+            extra={"failure": autofix.SESSION_REPORTED_FAILURE},
+        )
+    else:
+        advanced = alert_store().advance_autofix(record["dispatch_id"], "dispatched", status)
+    if not advanced:
         LOG.info("autofix callback for %s already settled; ignoring", record["dispatch_id"])
         return respond(200, "ok")
 

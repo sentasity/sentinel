@@ -47,6 +47,15 @@ CALLBACK_STATUSES = (
     "failed",
 )
 
+# The `failure` a dispatch records when the session itself reported
+# `failed`: its test never passed, or a step broke. Every receiver-side
+# failure records its own reason instead (a callback or opening timeout, a
+# crash, a rejected payload, a GitHub sequence that did not finish), so the
+# tracking backstop reads this positive value, not an absent attribute, to
+# tell the session's own failure (which the session files as an issue)
+# from the receiver's (which never becomes one).
+SESSION_REPORTED_FAILURE = "session reported"
+
 # Terminal states a dispatch record settles into, each with a completion
 # reply. `opening` is not among them: it is the receiver's claim while it
 # builds the pull request, and the sweep fails an `opening` row that
