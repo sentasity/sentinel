@@ -34,8 +34,8 @@ FINDINGS_REJECTED_MARKER = "FINDINGS_REJECTED"
 # one the shipped prompt emits, so the routine that sent it is still running
 # an older prompt. Counted, never alarmed: nothing was lost, and sessions that
 # were already running when the prompt was swapped send one legitimately, so
-# an alarm would fire on every prompt update. Shares no prefix with
-# FINDINGS_REJECTED_MARKER, whose alarm must never match this line.
+# an alarm would fire on every prompt update. FINDINGS_REJECTED_MARKER's
+# alarm pattern never matches this line, which the infra tests pin.
 FINDINGS_SCHEMA_OUTDATED_MARKER = "FINDINGS_SCHEMA_OUTDATED"
 
 
