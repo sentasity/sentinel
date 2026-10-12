@@ -1770,3 +1770,479 @@ def test_a_chat_transport_failure_after_the_pull_request_exists_never_records_fa
     assert json.loads(response["body"]) == {"status": "pr_opened", "pr_url": url}
     assert not any(c.args[2] == "failed" for c in store.advance_autofix.call_args_list)
     assert observability.DELIVERY_FAILURE_MARKER in caplog.text
+
+
+# ---- Issue tracking: the /issues route, up to the claims ----
+
+from types import SimpleNamespace
+
+from receiver.github_app import FieldsOutcome, IssueCall, MintedToken
+
+TRACKING_TOKEN = "trk-token"
+TARGET_API = "https://api.github.com/repos/acme-tools/checkout"
+FILE_ISSUE = {
+    "op": "file_issue",
+    "title": "Fix: empty cart total is None",
+    "body": "Problem.",
+    "type": "Bug",
+    "labels": ["backend"],
+    "search_unavailable": False,
+}
+DUPLICATE = {"op": "comment", "issue_number": 42, "relation": "duplicate", "body": "Seen again."}
+REOPEN = {"op": "reopen", "issue_number": 42, "body": "It came back."}
+
+
+def issues_event(token=TRACKING_TOKEN, tracking_id="t-1", **body):
+    payload = {"tracking_id": tracking_id, **body}
+    headers = {"authorization": f"Bearer {token}"} if token is not None else {}
+    return {
+        "rawPath": "/issues",
+        "requestContext": {"http": {"method": "POST", "path": "/issues"}},
+        "headers": headers,
+        "body": json.dumps(payload),
+    }
+
+
+def grant_row(**overrides):
+    from receiver.store import AlertStore
+
+    row = {
+        "tracking_id": "t-1",
+        "issue_id": "1000000007",
+        "short_id": "CHECKOUT-4B2",
+        "environment": "staging",
+        "release": "79bad4b79fb044dc6386fa690aae2bc3a6ebcc29",
+        "conversation_id": "conv-1",
+        "message_id": "msg-9",
+        "token_hash": AlertStore.hash_token(TRACKING_TOKEN),
+        "expect": "always",
+        "expires_at": "2999-01-01T00:00:00Z",
+        "status": "open",
+    }
+    row.update(overrides)
+    return row
+
+
+def an_issue(state="open", **overrides):
+    issue = {
+        "number": 42,
+        "state": state,
+        "repository_url": TARGET_API,
+        "html_url": "https://github.com/acme-tools/checkout/issues/42",
+        "node_id": "I_42",
+    }
+    issue.update(overrides)
+    return issue
+
+
+@pytest.fixture
+def proxy(tmp_path):
+    """Every collaborator `/issues` reaches, patched, with issue filing on
+    for staging and every claim succeeding."""
+    cfg = tracking_cfg(tmp_path, autofix=True)
+    store, github, bot = MagicMock(), MagicMock(), MagicMock()
+    store.get_tracking_grant.return_value = grant_row()
+    store.get_issue_op.return_value = None
+    for claim in (
+        store.claim_grant_cap, store.claim_daily_issue_cap, store.claim_issue_op,
+        store.claim_tracking_issue, store.settle_issue_op, store.settle_tracked,
+        store.release_tracking_issue,
+    ):
+        claim.return_value = True
+    github.mint_token.return_value = MintedToken(token="ghs_issue", expires_at="2999-01-01T01:00:00Z")
+    github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue())
+    github.list_label_names.return_value = ["Backend", "frontend"]
+    with patch.object(handler, "config", return_value=cfg), \
+         patch.object(handler, "alert_store", return_value=store), \
+         patch.object(handler, "github_client", return_value=github), \
+         patch.object(handler, "bot_client", return_value=bot):
+        yield SimpleNamespace(cfg=cfg, store=store, github=github, bot=bot)
+
+
+@pytest.fixture
+def handed_off():
+    """Stands in for the back half, so these tests stop at the hand-off."""
+    with patch.object(
+        handler, "run_issue_op", create=True,
+        return_value=handler.respond_json(200, {"status": "done"}),
+    ) as run:
+        yield run
+
+
+def status_of(response) -> tuple[int, dict | str]:
+    body = response["body"]
+    if response["headers"]["content-type"] == "application/json":
+        body = json.loads(body)
+    return response["statusCode"], body
+
+
+def test_issue_route_is_not_served_while_issue_filing_is_off(proxy, handed_off, tmp_path):
+    from receiver.config import load_config
+    from tests.test_config import VALID, write
+
+    with patch.object(handler, "config", return_value=load_config(write(tmp_path, VALID))):
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (404, "not found")
+    proxy.store.get_tracking_grant.assert_not_called()
+
+
+def test_issue_route_answers_only_post():
+    assert route({**issues_event(**FILE_ISSUE), "requestContext": {"http": {"method": "GET"}}})[
+        "statusCode"
+    ] == 404
+
+
+@pytest.mark.parametrize("token", [None, "", "tökén"])
+def test_issue_route_without_a_usable_token_is_401(proxy, handed_off, token):
+    assert status_of(route(issues_event(token=token, **FILE_ISSUE))) == (401, "unauthorized")
+
+
+def test_issue_route_with_an_unknown_grant_is_401_after_the_same_hash(proxy, handed_off):
+    from receiver.store import AlertStore
+
+    proxy.store.get_tracking_grant.return_value = None
+    with patch.object(handler.AlertStore, "hash_token", wraps=AlertStore.hash_token) as hashed:
+        response = route(issues_event(**FILE_ISSUE))
+
+    assert status_of(response) == (401, "unauthorized")
+    hashed.assert_called_once_with(TRACKING_TOKEN)
+
+
+def test_issue_route_with_a_wrong_token_is_401_by_constant_time_compare(proxy, handed_off):
+    with patch("receiver.handler.hmac.compare_digest", wraps=hmac.compare_digest) as compare:
+        response = route(issues_event(token="other-token", **FILE_ISSUE))
+
+    assert status_of(response) == (401, "unauthorized")
+    compare.assert_called_once()
+    handed_off.assert_not_called()
+
+
+def test_issue_route_never_looks_up_an_oversized_tracking_id(proxy, handed_off):
+    response = route(issues_event(tracking_id="t" * 65, **FILE_ISSUE))
+
+    assert status_of(response) == (401, "unauthorized")
+    proxy.store.get_tracking_grant.assert_not_called()
+
+
+def test_issue_route_with_an_expired_grant_is_401_expired(proxy, handed_off):
+    proxy.store.get_tracking_grant.return_value = grant_row(expires_at="2020-01-01T00:00:00Z")
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (401, "expired")
+    proxy.github.mint_token.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", ["not json", "[1, 2]"])
+def test_issue_route_with_an_unusable_body_is_400(proxy, handed_off, raw):
+    event = {**issues_event(**FILE_ISSUE), "body": raw}
+
+    assert status_of(route(event)) == (400, "unusable body")
+
+
+def test_issue_route_refuses_a_grant_whose_environment_was_delisted(proxy, handed_off):
+    proxy.store.get_tracking_grant.return_value = grant_row(environment="prod")
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        409, {"status": "refused", "reason": "environment not enabled"},
+    )
+    proxy.github.mint_token.assert_not_called()
+
+
+def test_issue_route_rejects_an_invalid_op_before_any_read_or_claim(proxy, handed_off, caplog):
+    with caplog.at_level(logging.ERROR):
+        response = route(issues_event(op="close_issue", issue_number=42))
+
+    code, body = status_of(response)
+    assert code == 400
+    assert body["status"] == "rejected"
+    assert body["reason"].startswith("op must be one of")
+    assert f"{observability.ISSUE_TRACKING_FAILED_MARKER} CHECKOUT-4B2 issue op rejected" in caplog.text
+    proxy.store.get_issue_op.assert_not_called()
+    proxy.github.mint_token.assert_not_called()
+
+
+def test_issue_route_replays_a_done_op_with_no_github_call_or_reply(proxy, handed_off):
+    proxy.store.get_issue_op.return_value = {
+        "state": "done",
+        "result": json.dumps(
+            {"op": "file_issue", "issue_number": 9, "url": "https://x/9", "warnings": []}
+        ),
+    }
+
+    code, body = status_of(route(issues_event(**FILE_ISSUE)))
+
+    assert code == 200
+    assert body == {
+        "op": "file_issue", "issue_number": 9, "url": "https://x/9", "warnings": [],
+        "status": "done", "replayed": True, "thread_notified": False,
+    }
+    proxy.github.mint_token.assert_not_called()
+    proxy.store.claim_grant_cap.assert_not_called()
+    proxy.bot.reply_in_thread.assert_not_called()
+    handed_off.assert_not_called()
+
+
+def test_issue_route_finds_the_replay_record_by_the_ops_canonical_key(proxy, handed_off):
+    from receiver import issues
+
+    route(issues_event(**FILE_ISSUE))
+
+    expected = issues.op_key({"tracking_id": "t-1", **FILE_ISSUE})
+    assert proxy.store.get_issue_op.call_args.args == ("t-1", expected)
+
+
+def test_issue_route_refuses_an_op_still_sending(proxy, handed_off):
+    proxy.store.get_issue_op.return_value = {"state": "sending", "attempts": 1}
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        409, {"status": "refused", "reason": "in progress"},
+    )
+    proxy.github.mint_token.assert_not_called()
+
+
+def test_issue_route_retries_a_failed_op_once(proxy, handed_off):
+    proxy.store.get_issue_op.return_value = {"state": "failed", "attempts": 1}
+
+    assert route(issues_event(**FILE_ISSUE))["statusCode"] == 200
+    handed_off.assert_called_once()
+    assert proxy.store.claim_issue_op.call_args.kwargs == {"op": "file_issue", "max_attempts": 2}
+
+
+def test_issue_route_refuses_a_failed_op_past_its_retry(proxy, handed_off):
+    proxy.store.get_issue_op.return_value = {"state": "failed", "attempts": 2}
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        409, {"status": "refused", "reason": "retry limit reached"},
+    )
+    handed_off.assert_not_called()
+
+
+@pytest.mark.parametrize("body", [FILE_ISSUE, DUPLICATE, REOPEN])
+def test_issue_route_allows_one_tracking_outcome_per_alert(proxy, handed_off, body):
+    proxy.store.get_tracking_grant.return_value = grant_row(status="tracked", tracked_issue=7)
+
+    assert status_of(route(issues_event(**body))) == (
+        409, {"status": "refused", "reason": "already tracked in #7"},
+    )
+    proxy.github.mint_token.assert_not_called()
+
+
+def test_issue_route_takes_a_related_comment_after_the_alert_is_tracked(proxy, handed_off):
+    proxy.store.get_tracking_grant.return_value = grant_row(status="tracked", tracked_issue=7)
+
+    assert route(issues_event(**{**DUPLICATE, "relation": "related"}))["statusCode"] == 200
+    handed_off.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"op": "set_fields", "issue_number": 42, "fields": {"Priority": "High"}},
+        {"op": "add_to_project", "issue_number": 42},
+    ],
+)
+def test_issue_route_touches_fields_and_board_only_on_the_alerts_own_issue(proxy, handed_off, body):
+    proxy.store.get_tracking_grant.return_value = grant_row(
+        status="tracked", tracked_issue=9, created_issue=9
+    )
+
+    assert status_of(route(issues_event(**body))) == (
+        409, {"status": "refused", "reason": "only the issue this alert filed"},
+    )
+    proxy.github.mint_token.assert_not_called()
+
+    proxy.store.get_tracking_grant.return_value = grant_row(
+        status="tracked", tracked_issue=42, created_issue=42
+    )
+    assert route(issues_event(**body))["statusCode"] == 200
+
+
+@pytest.mark.parametrize(
+    ("op", "permissions"),
+    [
+        (FILE_ISSUE, {"issues": "write"}),
+        (REOPEN, {"issues": "write"}),
+        ({"op": "add_to_project", "issue_number": 42}, {"issues": "read", "organization_projects": "write"}),
+    ],
+)
+def test_issue_route_mints_the_ops_own_permissions_for_the_target_repo(
+    proxy, handed_off, op, permissions
+):
+    proxy.store.get_tracking_grant.return_value = grant_row(created_issue=42)
+    proxy.github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue("closed"))
+
+    route(issues_event(**op))
+
+    call = proxy.github.mint_token.call_args
+    assert call.args == ("acme-tools/checkout", permissions)
+    assert call.kwargs["deadline"] > 0
+
+
+def test_issue_route_answers_502_when_the_mint_fails_and_claims_nothing(proxy, handed_off, caplog):
+    proxy.github.mint_token.return_value = None
+
+    with caplog.at_level(logging.ERROR):
+        assert status_of(route(issues_event(**FILE_ISSUE))) == (
+            502, {"status": "failed", "reason": "token mint failed"},
+        )
+    assert observability.ISSUE_TRACKING_FAILED_MARKER in caplog.text
+    proxy.store.claim_grant_cap.assert_not_called()
+
+
+def test_issue_route_reads_the_issue_in_the_target_repo_before_a_comment(proxy, handed_off):
+    route(issues_event(**DUPLICATE))
+
+    call = proxy.github.fetch_issue.call_args
+    assert call.args == ("acme-tools/checkout", 42)
+    assert call.kwargs["token"] == "ghs_issue"
+    assert handed_off.call_args.kwargs["issue"] == an_issue()
+
+
+@pytest.mark.parametrize(
+    ("read", "reason"),
+    [
+        (IssueCall(ok=False, status=301, step="read the issue"), "the issue is not in the target repository"),
+        (IssueCall(ok=False, status=404, step="read the issue"), "the issue is not in the target repository"),
+        (
+            IssueCall(ok=True, status=200, body=an_issue(repository_url="https://api.github.com/repos/acme-tools/other")),
+            "the issue is not in the target repository",
+        ),
+        (
+            IssueCall(ok=True, status=200, body=an_issue(pull_request={"url": "x"})),
+            "the number names a pull request",
+        ),
+    ],
+)
+def test_issue_route_refuses_a_number_outside_the_target_repo_with_no_write(
+    proxy, handed_off, read, reason
+):
+    proxy.github.fetch_issue.return_value = read
+
+    assert status_of(route(issues_event(**DUPLICATE))) == (409, {"status": "refused", "reason": reason})
+    proxy.store.claim_grant_cap.assert_not_called()
+    handed_off.assert_not_called()
+
+
+def test_issue_route_matches_the_target_repo_ignoring_case(proxy, handed_off):
+    proxy.github.fetch_issue.return_value = IssueCall(
+        ok=True, status=200, body=an_issue(repository_url=TARGET_API.upper().replace("HTTPS", "https"))
+    )
+
+    assert route(issues_event(**DUPLICATE))["statusCode"] == 200
+
+
+def test_issue_route_answers_502_when_github_fails_the_read(proxy, handed_off):
+    proxy.github.fetch_issue.return_value = IssueCall(ok=False, status=500, step="read the issue")
+
+    assert status_of(route(issues_event(**DUPLICATE))) == (
+        502, {"status": "failed", "reason": "read the issue"},
+    )
+    proxy.store.claim_grant_cap.assert_not_called()
+
+
+def test_issue_route_refuses_to_reopen_an_open_issue(proxy, handed_off):
+    assert status_of(route(issues_event(**REOPEN))) == (
+        409, {"status": "refused", "reason": "the issue is not closed"},
+    )
+
+
+def test_issue_route_takes_a_duplicate_comment_on_a_closed_issue(proxy, handed_off):
+    proxy.github.fetch_issue.return_value = IssueCall(ok=True, status=200, body=an_issue("closed"))
+
+    assert route(issues_event(**DUPLICATE))["statusCode"] == 200
+    assert handed_off.call_args.kwargs["issue"]["state"] == "closed"
+
+
+def test_issue_route_lists_labels_before_a_create_and_hands_them_on(proxy, handed_off):
+    route(issues_event(**FILE_ISSUE))
+
+    assert proxy.github.list_label_names.call_args.args == ("acme-tools/checkout",)
+    assert handed_off.call_args.kwargs["repo_labels"] == ["Backend", "frontend"]
+    proxy.github.fetch_issue.assert_not_called()
+
+
+def test_issue_route_skips_the_label_list_for_a_create_with_no_labels(proxy, handed_off):
+    route(issues_event(**{k: v for k, v in FILE_ISSUE.items() if k != "labels"}))
+
+    proxy.github.list_label_names.assert_not_called()
+    assert handed_off.call_args.kwargs["repo_labels"] == []
+
+
+def test_issue_route_answers_502_when_the_label_list_fails(proxy, handed_off):
+    proxy.github.list_label_names.return_value = None
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (
+        502, {"status": "failed", "reason": "list the labels"},
+    )
+    proxy.store.claim_grant_cap.assert_not_called()
+
+
+def test_issue_route_claims_cheapest_first_and_the_days_budget_last(proxy, handed_off):
+    route(issues_event(**FILE_ISSUE))
+
+    claims = [
+        c for c in proxy.store.mock_calls
+        if c[0] in ("claim_grant_cap", "claim_daily_issue_cap", "claim_issue_op")
+    ]
+    assert [(c[0], c.args[:2] if c[0] != "claim_daily_issue_cap" else c.args[0]) for c in claims] == [
+        ("claim_grant_cap", ("t-1", "file_issue")),
+        ("claim_daily_issue_cap", "issue-creates"),
+        ("claim_daily_issue_cap", "issue-writes"),
+        ("claim_issue_op", ("t-1", handler.issues.op_key({"tracking_id": "t-1", **FILE_ISSUE}))),
+    ]
+    assert claims[0].args[2] == 2
+    assert claims[1].args[2] == 25
+    assert claims[2].args[2] == 100
+
+
+def test_issue_route_spends_no_create_budget_on_a_comment(proxy, handed_off):
+    route(issues_event(**DUPLICATE))
+
+    counters = [c.args[0] for c in proxy.store.claim_daily_issue_cap.call_args_list]
+    assert counters == ["issue-writes"]
+
+
+@pytest.mark.parametrize(
+    ("refused_claim", "reason", "later"),
+    [
+        ("claim_grant_cap", "file_issue cap reached for this alert", "claim_daily_issue_cap"),
+        ("claim_issue_op", "in progress", None),
+    ],
+)
+def test_issue_route_refuses_at_a_spent_claim_and_spends_nothing_after_it(
+    proxy, handed_off, refused_claim, reason, later
+):
+    getattr(proxy.store, refused_claim).return_value = False
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (409, {"status": "refused", "reason": reason})
+    if later:
+        getattr(proxy.store, later).assert_not_called()
+    handed_off.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("spent", "reason", "writes_claimed"),
+    [
+        ("issue-creates", "daily issue create cap reached", False),
+        ("issue-writes", "daily issue write cap reached", True),
+    ],
+)
+def test_issue_route_refuses_past_a_daily_cap(proxy, handed_off, spent, reason, writes_claimed):
+    proxy.store.claim_daily_issue_cap.side_effect = lambda counter, day, cap: counter != spent
+
+    assert status_of(route(issues_event(**FILE_ISSUE))) == (409, {"status": "refused", "reason": reason})
+    counters = [c.args[0] for c in proxy.store.claim_daily_issue_cap.call_args_list]
+    assert ("issue-writes" in counters) is writes_claimed
+    proxy.store.claim_issue_op.assert_not_called()
+
+
+def test_issue_route_hands_the_claimed_op_to_the_back_half(proxy, handed_off):
+    response = route(issues_event(**DUPLICATE))
+
+    assert response["statusCode"] == 200
+    args = handed_off.call_args.args
+    assert args[0] is proxy.cfg
+    assert args[1] == grant_row()
+    assert args[2] == {"tracking_id": "t-1", **DUPLICATE}
+    assert args[3] == handler.issues.op_key({"tracking_id": "t-1", **DUPLICATE})
+    assert args[4] == "ghs_issue"

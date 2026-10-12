@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -32,7 +33,12 @@ from receiver.findings import (
     render_reply_card,
     reply_summary,
 )
-from receiver.github_app import GitHubAppClient
+from receiver.github_app import (
+    API_BASE,
+    ISSUE_SEQUENCE_BUDGET_SECONDS,
+    OP_PERMISSIONS,
+    GitHubAppClient,
+)
 from receiver.investigation import enqueue_investigation
 from receiver.models import InvalidAlertPayload, parse_alert
 from receiver.observability import (
@@ -50,7 +56,7 @@ from receiver.observability import (
 )
 from receiver.routines import RoutineClient
 from receiver.sentry_api import resolve_issue_ref
-from receiver.store import AlertStore, BatchState
+from receiver.store import AlertStore, BatchState, utc_now
 from receiver.sweep import run_sweep, schedule_reply_retry
 
 LOG = logging.getLogger()
@@ -848,6 +854,187 @@ def handle_autofix_result(event: dict) -> dict:
     return respond(200, "ok")
 
 
+# ---- Issue tracking: the /issues route ----
+
+# A tracking id is a uuid4. A longer value is refused before it reaches
+# DynamoDB, whose key-size limit would otherwise turn an oversized id from
+# an unauthenticated caller into an exception and an error alarm.
+TRACKING_ID_MAX_LENGTH = 64
+
+# GitHub's answers to an issue read that mean the number names nothing the
+# receiver may write to in the target repository: a redirect, which is what
+# a transferred issue answers, or gone. Any other failed read is GitHub's
+# own failure and answers 502.
+NOT_IN_REPO_STATUSES = frozenset({301, 302, 307, 308, 404, 410})
+
+
+def refuse_issue_op(short_id: str, reason: str) -> dict:
+    """A 409: well formed, but a cap or a state forbids it now. Logged at
+    warning without the marker: if a refusal leaves an alert untracked, the
+    backstop logs the marker once, at the grant's expiry."""
+    LOG.warning("issue op for %s refused: %s", short_id, reason)
+    return respond_json(409, {"status": "refused", "reason": reason})
+
+
+def fail_issue_op(short_id: str, name: str, reason: str) -> dict:
+    """A 502 before any claim: the mint or a read failed at GitHub, nothing
+    was written and nothing was spent, so a retry is free."""
+    LOG.error("%s %s %s failed: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, name, reason)
+    return respond_json(502, {"status": "failed", "reason": reason})
+
+
+def issue_target_problem(repo: str, issue: dict, op: dict) -> str:
+    """Why an existing issue cannot take `op`, or "". The repository is
+    compared by its API URL, ignoring case; a pull request carries a
+    `pull_request` key; a reopen needs a closed issue. A comment takes
+    either state, because a comment on a closed duplicate is a tracking
+    outcome too."""
+    if str(issue.get("repository_url") or "").lower() != f"{API_BASE}/repos/{repo}".lower():
+        return "the issue is not in the target repository"
+    if "pull_request" in issue:
+        return "the number names a pull request"
+    if op["op"] == "reopen" and issue.get("state") != "closed":
+        return "the issue is not closed"
+    return ""
+
+
+def handle_issue_op(event: dict) -> dict:
+    """Perform one named issue operation as the App, or say why not.
+
+    Authenticated by the per-result tracking token issued with the findings,
+    whose hash is the grant's only credential store. Everything before the
+    claims writes nothing: the flag, authentication, the grant's
+    environment, the op's own validation, the replay record, the grant's
+    fit, the mint and the reads with their target checks. The claims then
+    run cheapest first and the day's budget last, so an op refused or
+    rejected before them never spends budget. The repository is always
+    `cfg.target_repo`, never anything the request names.
+    """
+    cfg = config()
+    if not cfg.issues_enabled:
+        return respond(404, "not found")
+
+    token = bearer_token(event)
+    if not token or not token.isascii():
+        LOG.warning("rejected issue op with no usable bearer token")
+        return respond(401, "unauthorized")
+
+    try:
+        body = json.loads(raw_body(event) or "{}")
+    except (MalformedBody, ValueError):
+        LOG.warning("rejected issue op with an unusable body")
+        return respond(400, "unusable body")
+    if not isinstance(body, dict):
+        return respond(400, "unusable body")
+
+    store = alert_store()
+    tracking_id = body.get("tracking_id")
+    grant = None
+    if isinstance(tracking_id, str) and 0 < len(tracking_id) <= TRACKING_ID_MAX_LENGTH:
+        grant = store.get_tracking_grant(tracking_id)
+    # Hashed unconditionally, as the autofix callback does, so an unknown
+    # grant and a wrong token both pay for it.
+    token_hash = AlertStore.hash_token(token)
+    stored_hash = (grant or {}).get("token_hash") or ""
+    if not grant or not hmac.compare_digest(stored_hash, token_hash):
+        LOG.warning("rejected issue op: unknown grant or bad token")
+        return respond(401, "unauthorized")
+    short_id = str(grant.get("short_id") or "")
+    # Checked on read, as `claim_batch` checks its deadline, rather than left
+    # to the sweep, which runs once a minute.
+    if str(grant.get("expires_at") or "") <= utc_now():
+        LOG.warning("rejected issue op for %s: grant expired", short_id)
+        return respond(401, "expired")
+
+    # Asked again on every call: the operator may have narrowed
+    # `issues.environments` since this grant was issued.
+    if not cfg.issues_enabled_for(str(grant.get("environment") or "")):
+        return refuse_issue_op(short_id, "environment not enabled")
+
+    try:
+        op = issues.parse_issue_op(body, cfg)
+    except issues.InvalidIssueOp as exc:
+        # The prompt and the receiver disagree, as with a rejected findings
+        # document, so this one carries the marker.
+        LOG.error("%s %s issue op rejected: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, exc)
+        return respond_json(400, {"status": "rejected", "reason": str(exc)})
+    name = op["op"]
+
+    key = issues.op_key(op)
+    record = store.get_issue_op(grant["tracking_id"], key) or {}
+    state = str(record.get("state") or "")
+    if state == "done":
+        # A lost response or a retry: answer what the first attempt did,
+        # with no read, no claim and no thread reply.
+        LOG.info("issue op %s for %s replayed", name, short_id)
+        return respond_json(
+            200,
+            {
+                **json.loads(record.get("result") or "{}"),
+                "status": "done",
+                "replayed": True,
+                "thread_notified": False,
+            },
+        )
+    if state == "sending":
+        # An invocation died mid-op, or is still running. Its outcome at
+        # GitHub is unknown, so it is never retried automatically; the
+        # backstop tells the thread if the alert ends untracked.
+        return refuse_issue_op(short_id, "in progress")
+    if state == "failed" and int(record.get("attempts") or 0) >= issues.OP_ATTEMPT_LIMIT:
+        return refuse_issue_op(short_id, "retry limit reached")
+
+    if issues.is_tracking_op(op) and grant.get("tracked_issue") is not None:
+        return refuse_issue_op(short_id, f"already tracked in #{int(grant['tracked_issue'])}")
+    if name in ("set_fields", "add_to_project") and op["issue_number"] != grant.get("created_issue"):
+        return refuse_issue_op(short_id, "only the issue this alert filed")
+
+    deadline = time.monotonic() + ISSUE_SEQUENCE_BUDGET_SECONDS
+    client = github_client()
+    minted = client.mint_token(cfg.target_repo, OP_PERMISSIONS[name], deadline=deadline)
+    if minted is None:
+        return fail_issue_op(short_id, name, "token mint failed")
+
+    issue = None
+    if name in ("comment", "reopen"):
+        read = client.fetch_issue(
+            cfg.target_repo, op["issue_number"], token=minted.token, deadline=deadline
+        )
+        if not read.ok:
+            if read.status in NOT_IN_REPO_STATUSES:
+                return refuse_issue_op(short_id, "the issue is not in the target repository")
+            return fail_issue_op(short_id, name, read.step)
+        problem = issue_target_problem(cfg.target_repo, read.body, op)
+        if problem:
+            return refuse_issue_op(short_id, problem)
+        issue = read.body
+
+    repo_labels: list[str] = []
+    if name == "file_issue" and op.get("labels"):
+        listed = client.list_label_names(cfg.target_repo, token=minted.token, deadline=deadline)
+        if listed is None:
+            return fail_issue_op(short_id, name, "list the labels")
+        repo_labels = listed
+
+    day = datetime.now(timezone.utc).date().isoformat()
+    if not store.claim_grant_cap(grant["tracking_id"], name, issues.GRANT_CAPS[name]):
+        return refuse_issue_op(short_id, f"{name} cap reached for this alert")
+    if name == "file_issue" and not store.claim_daily_issue_cap(
+        "issue-creates", day, cfg.issues_daily_create_cap
+    ):
+        return refuse_issue_op(short_id, "daily issue create cap reached")
+    if not store.claim_daily_issue_cap("issue-writes", day, cfg.issues_daily_write_cap):
+        return refuse_issue_op(short_id, "daily issue write cap reached")
+    if not store.claim_issue_op(
+        grant["tracking_id"], key, op=name, max_attempts=issues.OP_ATTEMPT_LIMIT
+    ):
+        return refuse_issue_op(short_id, "in progress")
+
+    return run_issue_op(
+        cfg, grant, op, key, minted.token, deadline, issue=issue, repo_labels=repo_labels
+    )
+
+
 def route(event: dict) -> dict:
     """Map a Function URL request, or a scheduled invocation, to a response."""
     # EventBridge invokes the function directly, so a scheduled event carries
@@ -867,6 +1054,8 @@ def route(event: dict) -> dict:
         return handle_sentry(event)
     if path == "/autofix-result" and method == "POST":
         return handle_autofix_result(event)
+    if path == "/issues" and method == "POST":
+        return handle_issue_op(event)
     # Checked before "/findings": exact-equality routing means the more
     # specific path must come first or it can never be reached.
     if path == "/findings/probe" and method == "POST":
