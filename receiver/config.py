@@ -7,6 +7,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import boto3
 import yaml
@@ -128,6 +129,24 @@ class ReceiverConfig:
     autofix_base_branch: str = ""
     autofix_callback_url: str = ""
 
+    # Issue filing. The enabled False default ships the proxy inert: the
+    # `/issues` route answers 404 and every findings response carries a null
+    # `tracking`. An empty environment list opts in every environment, the
+    # same convention as `autofix_projects`. The writes are made as the
+    # autofix App, so `autofix_app_id` is required here too.
+    issues_enabled: bool = False
+    issues_environments: tuple[str, ...] = ()
+    issues_proxy_url: str = ""
+    # Repository-relative files in `target_repo` that say how an issue is
+    # filed there. The receiver only checks them; the operator's prompt
+    # paste writes them into the investigator prompt.
+    issues_conventions: tuple[str, ...] = ()
+    issues_issue_types: tuple[str, ...] = ()
+    issues_fields: tuple[str, ...] = ()
+    issues_project_number: int = 0
+    issues_daily_create_cap: int = 25
+    issues_daily_write_cap: int = 100
+
     def secret_name(self, key: str) -> str:
         """Return the full SSM parameter name for a secret key."""
         return f"{self.ssm_prefix}/{key}"
@@ -136,6 +155,16 @@ class ReceiverConfig:
     def release_to_sha_is_identity(self) -> bool:
         """True when a Sentry release value IS the git commit SHA."""
         return self.release_to_sha == "identity"
+
+    def issues_enabled_for(self, environment: str) -> bool:
+        """Whether issue filing is on for one Sentry environment: the flag is
+        on, and `issues_environments` is empty or names it. A batch is always
+        one environment, so the receiver decides per batch, and the `/issues`
+        route asks again on every call rather than trusting a grant issued
+        before the operator narrowed the list."""
+        if not self.issues_enabled:
+            return False
+        return not self.issues_environments or environment in self.issues_environments
 
 
 def load_config(path: str | Path | None = None) -> ReceiverConfig:
@@ -152,6 +181,7 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
     trigger = raw.get("trigger") or {}
     investigation = raw.get("investigation") or {}
     autofix = raw.get("autofix") or {}
+    issues = raw.get("issues") or {}
 
     return ReceiverConfig(
         environments=tuple(raw.get("environments") or ()),
@@ -189,7 +219,26 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         autofix_app_id=str(autofix.get("app_id") or ""),
         autofix_base_branch=autofix.get("base_branch") or "",
         autofix_callback_url=autofix.get("callback_url") or "",
+        issues_enabled=bool(issues.get("enabled") or False),
+        issues_environments=tuple(issues.get("environments") or ()),
+        issues_proxy_url=str(issues.get("proxy_url") or ""),
+        issues_conventions=tuple(issues.get("conventions") or ()),
+        issues_issue_types=tuple(issues.get("issue_types") or ()),
+        issues_fields=tuple(issues.get("fields") or ()),
+        # Read as written, not coerced: `assert_ready` refuses anything but
+        # an integer, and an `int()` here would turn "3" into 3 first.
+        issues_project_number=_present(issues, "project_number", 0),
+        issues_daily_create_cap=_present(issues, "daily_create_cap", 25),
+        issues_daily_write_cap=_present(issues, "daily_write_cap", 100),
     )
+
+
+def _present(section: dict, key: str, default):
+    """`section[key]` as written, or `default` when the key is absent or
+    empty. Unlike the `or` reads above, a 0 or a negative survives to be
+    refused rather than silently becoming the default."""
+    value = section.get(key)
+    return default if value is None else value
 
 
 def _token_ref(trigger: dict, key: str, default: str) -> str:
@@ -291,6 +340,78 @@ def assert_ready(cfg: ReceiverConfig) -> None:
             raise ConfigError(f"environment {environment!r} has no Teams channel mapping")
         if channel.startswith(PLACEHOLDER_PREFIX):
             raise ConfigError(f"environment {environment!r} channel is still a placeholder")
+
+    if cfg.issues_enabled:
+        _assert_issues_ready(cfg)
+
+
+def _origin(url: str) -> tuple[str, str]:
+    """A URL's scheme and host, lowercased, for an origin comparison."""
+    parts = urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+def _is_count(value, *, minimum: int) -> bool:
+    """An integer of at least `minimum`. A YAML `true` loads as a bool,
+    which Python counts as an int, so it is excluded by name."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+
+def _assert_issues_ready(cfg: ReceiverConfig) -> None:
+    """The refusals that apply once issue filing is on. Checked only then,
+    so the shipped example, with filing off, needs none of these values."""
+    proxy = cfg.issues_proxy_url
+    if not proxy:
+        raise ConfigError("issues.proxy_url is required when issues is enabled")
+    if proxy.startswith(PLACEHOLDER_PREFIX):
+        raise ConfigError(f"issues.proxy_url is still a placeholder: {proxy}")
+    # The session verifies the receiver's origin and refuses an issue URL on
+    # any other, so a mismatch here would fail every alert quietly at run
+    # time; it is a startup error instead.
+    if _origin(proxy) != _origin(cfg.findings_url):
+        raise ConfigError(
+            f"issues.proxy_url {proxy!r} must share investigation.findings_url's origin"
+        )
+
+    if not cfg.autofix_app_id:
+        raise ConfigError(
+            "autofix.app_id is required when issues is enabled: the autofix App "
+            "makes every issue write"
+        )
+    if cfg.autofix_app_id.startswith(PLACEHOLDER_PREFIX):
+        raise ConfigError(f"autofix.app_id is still a placeholder: {cfg.autofix_app_id}")
+
+    if not cfg.issues_conventions:
+        raise ConfigError("issues.conventions is required when issues is enabled")
+    for entry in cfg.issues_conventions:
+        if not isinstance(entry, str) or not entry.strip() or entry.startswith(PLACEHOLDER_PREFIX):
+            raise ConfigError(f"issues.conventions entry {entry!r} is not a repository path")
+
+    outside = [e for e in cfg.issues_environments if e not in cfg.environments]
+    if outside:
+        raise ConfigError(
+            f"issues.environments {', '.join(map(str, outside))} not in environments"
+        )
+
+    for name, values in (
+        ("issues.issue_types", cfg.issues_issue_types),
+        ("issues.fields", cfg.issues_fields),
+    ):
+        for value in values:
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"{name} entry {value!r} is not a non-empty name")
+
+    if not _is_count(cfg.issues_project_number, minimum=0):
+        raise ConfigError(
+            f"issues.project_number {cfg.issues_project_number!r} is not a "
+            "non-negative integer"
+        )
+    for name, value in (
+        ("issues.daily_create_cap", cfg.issues_daily_create_cap),
+        ("issues.daily_write_cap", cfg.issues_daily_write_cap),
+    ):
+        if not _is_count(value, minimum=1):
+            raise ConfigError(f"{name} {value!r} is not a positive integer")
 
 
 @functools.lru_cache(maxsize=8)
