@@ -665,6 +665,26 @@ def test_the_probe_does_not_argue_for_its_own_trustworthiness():
         assert overclaim not in body, f"the probe still overclaims: {overclaim}"
 
 
+def test_the_probe_reports_the_routine_github_tools_before_the_token_checks():
+    """A read-back of the routine proves its tool settings were saved, not
+    that the session runs under them. A session reporting its own GitHub
+    tool list, and trying one tool it should not have on an issue that
+    cannot exist, is the only way to see that. It runs ahead of the token
+    checks because a check the permission layer blocks can leave a session
+    unwilling to touch GitHub at all."""
+    body = " ".join(probe().split())
+
+    for name in ("mcp__github__", "`search_issues`", "`issue_read`", "`add_issue_comment`", "999999999"):
+        assert name in body, f"the probe's GitHub-tools step never names {name}"
+    assert "This is the one step that calls a tool from your list in step 2" in body
+    assert body.index("mcp__github__") < body.index("GH_TOKEN")
+    assert body.index("5. GitHub tools, transcript only.") < body.index("6. GitHub, transcript only.")
+    # The renumbering reached every cross-reference, and the POST kept its body.
+    assert "of the URLs in steps 4 and 8" in body
+    assert "8. POST this liveness document" in body
+    assert "9. End the session." in body
+
+
 def test_the_probe_never_reads_the_repository():
     assert "do not read repository files" in probe().lower()
 
