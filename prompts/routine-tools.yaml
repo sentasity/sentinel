@@ -37,11 +37,13 @@ disallowed_tools:
   - mcp__github__delete_file
   - mcp__github__delete_pending_pull_request_review
   - mcp__github__delete_repository
+  - mcp__github__disable_pr_auto_merge
   - mcp__github__discussion_comment_write
   - mcp__github__dismiss_notification
   - mcp__github__enable_pr_auto_merge
   - mcp__github__find_duplicate
   - mcp__github__fork_repository
+  - mcp__github__get_check_run
   - mcp__github__get_code_quality_finding
   - mcp__github__get_code_scanning_alert
   - mcp__github__get_commit

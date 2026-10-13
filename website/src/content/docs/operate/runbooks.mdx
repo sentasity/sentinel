@@ -261,6 +261,8 @@ scripts/probe_routine.py
 
 Read the session transcript alongside the receiver's log group for the `/findings/probe` POST. The probe's pass condition is agreement between the two: a POST with no matching transcript proves nothing, which is why `handle_probe` can be unauthenticated.
 
+The probe calls the receiver, the health check and then the POST, before it reads anything from GitHub. A session that read an issue first had its health check blocked by its own safety checks as exfiltration, and then declined the POST as well, so keep those two requests ahead of the GitHub-tools step whenever the prompt changes.
+
 **A trigger token authorises exactly one routine.** The investigator's token cannot fire the probe, and the API answers with `401 Token is not authorized for this routine`, which names the routine and so reads like a wrong id when the id is fine. Each routine needs its own token recorded separately.
 
 **Running one routine instead of two costs you a swap, and the restore is the part that bites.** If you have not created a probe routine, probing means replacing the investigator's prompt with `prompts/probe.md`, firing `ROUTINE_ID=... ROUTINE_TRIGGER_TOKEN=... scripts/probe_routine.py`, reading the result, and then putting `prompts/investigator.md` back. Until you restore it, every live alert fires a probe session instead of an investigation, and those alerts get the deadline sweep's "did not report back" reply rather than findings. A second routine removes that window entirely, which is why it is the recommended shape.

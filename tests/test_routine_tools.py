@@ -39,6 +39,10 @@ WRITE_FLOOR = (
 # and two of them reach GitHub only through GraphQL besides.
 NAME_CHECKING_READS = ("get_label", "list_issue_fields", "list_issue_types")
 
+# Tools a probe of the real routine listed beyond the two reads, after the list
+# was applied. Each one stays withheld, so a regenerated list cannot drop it.
+SEEN_BY_PROBE = ("disable_pr_auto_merge", "get_check_run")
+
 
 def policy() -> dict:
     return yaml.safe_load((PROMPTS / "routine-tools.yaml").read_text())
@@ -82,7 +86,7 @@ def test_the_deny_list_never_withholds_an_allowed_read():
 
 
 def test_the_deny_list_keeps_the_write_floor_and_the_name_checking_reads():
-    missing = (set(WRITE_FLOOR) | set(NAME_CHECKING_READS)) - denied_unprefixed()
+    missing = (set(WRITE_FLOOR) | set(NAME_CHECKING_READS) | set(SEEN_BY_PROBE)) - denied_unprefixed()
 
     assert not missing, f"disallowed_tools dropped: {sorted(missing)}"
 

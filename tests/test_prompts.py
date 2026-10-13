@@ -680,9 +680,20 @@ def test_the_probe_reports_the_routine_github_tools_before_the_token_checks():
     assert body.index("mcp__github__") < body.index("GH_TOKEN")
     assert body.index("5. GitHub tools, transcript only.") < body.index("6. GitHub, transcript only.")
     # The renumbering reached every cross-reference, and the POST kept its body.
-    assert "of the URLs in steps 4 and 8" in body
-    assert "8. POST this liveness document" in body
-    assert "9. End the session." in body
+    assert "of the URLs in step 4" in body
+    assert "8. End the session." in body
+
+
+def test_the_probe_calls_the_receiver_before_it_reads_github():
+    """A probe that read an issue first had its health check blocked as
+    exfiltration by the session's own safety checks, and then declined the
+    liveness POST too. Both receiver requests come before any GitHub read,
+    so nothing read from GitHub precedes a request to another host."""
+    body = " ".join(probe().split())
+
+    assert body.index("/health") < body.index("5. GitHub tools, transcript only.")
+    assert body.index("/findings/probe") < body.index("5. GitHub tools, transcript only.")
+    assert "after step 4" in body
 
 
 def test_the_probe_never_reads_the_repository():
