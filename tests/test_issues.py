@@ -267,6 +267,31 @@ def test_an_empty_body_still_carries_the_footer():
     assert body == footer(GRANT)
 
 
+def test_a_footer_the_session_wrote_is_dropped_so_the_post_ends_in_one():
+    """A session that read an earlier Sentinel issue copied its footer into
+    a comment, and the receiver's own footer then followed it."""
+    body, _ = shape_body(
+        "Re-investigated at this release.\n\nSentinel · Sentry CHECKOUT-4B2 · staging · release 79bad4b\n",
+        GRANT,
+    )
+
+    assert body == "Re-investigated at this release.\n\n" + footer(GRANT)
+
+
+def test_a_footer_shaped_line_naming_another_issue_never_survives():
+    """Which Sentry issue a post concerns is the receiver's to say, and the
+    footer is the line a later sweep searches for, so a session-written one
+    anywhere in the text would point that sweep at the wrong issue."""
+    body, _ = shape_body(
+        "Problem.\nSentinel · Sentry OTHER-1 · prod · release abcdef0\nMore detail.", GRANT
+    )
+
+    assert "OTHER-1" not in body
+    assert "More detail." in body
+    assert body.count("Sentinel · Sentry") == 1
+    assert body.endswith(footer(GRANT))
+
+
 def test_the_search_line_is_the_exact_shared_string():
     """The drain skill searches for this string byte for byte."""
     assert SEARCH_UNAVAILABLE_LINE == (

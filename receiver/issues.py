@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from receiver.autofix import CALLBACK_DEADLINE_SECONDS
 from receiver.config import ReceiverConfig
@@ -113,6 +114,11 @@ SEARCH_UNAVAILABLE_LINE = (
 # issue a post concerns is the receiver's to say, from the grant, never the
 # session's; it is also the line a later Sentry sweep searches for.
 FOOTER = "Sentinel · Sentry {short_id} · {environment} · release {release}"
+
+# A line shaped like the footer, whoever wrote it. A session that read an
+# earlier Sentinel issue can copy its footer into what it sends; every such
+# line is dropped before the receiver adds the real one.
+FOOTER_LINE = re.compile(r"^Sentinel · Sentry \S+ · \S+ · release \S+\s*$")
 
 # The one line a tracking outcome posts in the alert's Teams thread. A
 # related comment, set_fields and add_to_project post nothing.
@@ -289,9 +295,11 @@ def shape_body(text: str, grant: dict, *, search_unavailable: bool = False) -> t
     Redacted the way findings replies are, because a GitHub issue is a more
     durable surface than a Teams thread and the same Sentry text reaches
     both. The search notice goes first when the create carried the flag, and
-    the footer always goes last.
+    the footer always goes last, and is the only one: a footer-shaped line
+    in the session's text is dropped.
     """
     redacted, count = redact(text)
+    redacted = "\n".join(line for line in redacted.splitlines() if not FOOTER_LINE.match(line))
     parts = [SEARCH_UNAVAILABLE_LINE] if search_unavailable else []
     if redacted.strip():
         parts.append(redacted.rstrip())
