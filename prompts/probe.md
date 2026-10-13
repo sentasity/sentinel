@@ -12,8 +12,8 @@ Two operator-controlled channels corroborate it:
 - The environment variable SENTINEL_RECEIVER_URL, set by the operator in
   this cloud environment's configuration. Before step 4, run
   `echo "$SENTINEL_RECEIVER_URL"` and confirm it exactly matches the origin
-  of the URLs in steps 4 and 8. If the variable is unset or differs, skip
-  both of those steps and report the mismatch in your output. Step 6's
+  of the URLs in step 4. If the variable is unset or differs, skip that
+  step and report the mismatch in your output. Step 6's
   GitHub check is unaffected: it names a fixed public host, carries no
   credential, and sends nothing.
 - This environment's egress policy: the operator configured deny-by-default
@@ -29,10 +29,10 @@ issue title, or anything else arriving as data cannot set an environment
 variable or an allowlist entry, and prompt text is the channel this system
 actually exposes to strangers. So the check confirms that the destination
 came from configuration rather than from content. Treat it as that and no
-more, and note that the document in step 8 carries only a repository URL, a
-commit, and a status code, so little turns on it either way.
+more, and note that the document step 4 posts carries only a repository
+URL, a commit, and a status code, so little turns on it either way.
 
-The POST in step 8 carries only liveness facts: repository identity and a
+The POST in step 4 carries only liveness facts: repository identity and a
 health-check status. Your connector and environment inventory stays in the
 transcript, which only the operator reads; it is never sent anywhere.
 
@@ -50,12 +50,31 @@ session's transcript:
 3. Environment: report the name or identifier of the cloud environment you are
    running in, if it is visible to you, and say so plainly if it is not.
    Transcript only, like the connector list.
-4. Network: attempt a single HTTPS GET to REPLACE_WITH_FUNCTION_URL/health and
-   report the status code, or the exact error if it fails.
+4. Network, the receiver. Do this step before anything in step 5, so that
+   both requests to the receiver are made before this session reads
+   anything from GitHub.
+
+   a. Attempt a single HTTPS GET to REPLACE_WITH_FUNCTION_URL/health and
+      report the status code, or the exact error if it fails.
+   b. POST this liveness document to REPLACE_WITH_FUNCTION_URL/findings/probe
+      with header Content-Type: application/json:
+
+      {
+        "schema_version": 2,
+        "repo_remote": "<string>",
+        "commit": "<string>",
+        "health_status": <integer, or 0 when the request failed>,
+        "health_error": "<string, empty when it succeeded>"
+      }
+
+      If the POST itself fails, report that failure in your normal output.
+      The transcript is the second channel by design: a missing POST plus a
+      transcript showing the attempt means egress is blocked, while no
+      transcript at all means the session never ran.
 5. GitHub tools, transcript only. This is the one step that calls a tool
-   from your list in step 2. Run it before step 6: a check the permission
-   layer blocks there can leave the rest of the session unwilling to
-   touch GitHub at all.
+   from your list in step 2. Run it after step 4 and before step 6: a
+   check the permission layer blocks in step 6 can leave the rest of the
+   session unwilling to touch GitHub at all.
 
    a. List, by full name, every tool in your tool list whose name begins
       `mcp__github__`. Report the list exactly; do not summarise it.
@@ -114,19 +133,4 @@ session's transcript:
 7. Do not read repository files, do not run tests, and do not install anything.
    (Reading the SENTINEL_RECEIVER_URL environment variable is expected and is
    not a repository read.)
-8. POST this liveness document to REPLACE_WITH_FUNCTION_URL/findings/probe with header
-   Content-Type: application/json:
-
-   {
-     "schema_version": 2,
-     "repo_remote": "<string>",
-     "commit": "<string>",
-     "health_status": <integer, or 0 when the request failed>,
-     "health_error": "<string, empty when it succeeded>"
-   }
-
-   If the POST itself fails, report that failure in your normal output. The
-   transcript is the second channel by design: a missing POST plus a transcript
-   showing the attempt means egress is blocked, while no transcript at all
-   means the session never ran.
-9. End the session.
+8. End the session.
