@@ -139,6 +139,45 @@ def test_reply_card_in_thread_attaches_the_card_to_the_parent_message():
     assert activity_id == "act-2"
 
 
+def test_post_card_strips_terminal_escapes_and_xml_invalid_characters():
+    """Teams renders a card through XML and answers 400 for a character XML
+    forbids. Sentry text carried terminal colour codes on 2026-10-16, and three
+    prod alert cards never posted."""
+    client = make_client()
+    client._token = "tok"
+    created = response(201, {"id": "conv-1", "activityId": "msg-9"})
+    card = {
+        "type": "AdaptiveCard",
+        "body": [{"type": "TextBlock", "text": "\x1b[31mERROR\x1b[0m failed\x07 at\x00 step\nnext\tcol￾"}],
+    }
+
+    with patch.object(client.session, "post", return_value=created) as post:
+        client.post_card("19:chan@thread.tacv2", card, "\x1b[1mBold\x1b[0m summary\x1b")
+
+    payload = post.call_args.kwargs["json"]
+    text = payload["activity"]["attachments"][0]["content"]["body"][0]["text"]
+    assert text == "ERROR failed at step\nnext\tcol"
+    assert payload["activity"]["summary"] == "Bold summary"
+    # The caller's card is left as it was.
+    assert card["body"][0]["text"].startswith("\x1b[31m")
+
+
+def test_thread_replies_are_cleaned_the_same_way():
+    client = make_client()
+    client._token = "tok"
+
+    with patch.object(client.session, "post", return_value=response(201, {"id": "act-2"})) as post:
+        client.reply_in_thread("conv-1", "msg-9", "\x1b[33mwarn\x1b[0m\x1f done")
+        assert post.call_args.kwargs["json"]["text"] == "warn done"
+
+        client.reply_card_in_thread(
+            "conv-1", "msg-9", {"type": "AdaptiveCard", "body": [{"text": "a\x0bb\x0cc"}]}, "s\x1b[2Kum"
+        )
+        payload = post.call_args.kwargs["json"]
+        assert payload["attachments"][0]["content"]["body"][0]["text"] == "abc"
+        assert payload["summary"] == "sum"
+
+
 def test_reply_card_in_thread_raises_on_http_error():
     client = make_client()
     client._token = "tok"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from urllib.parse import quote
 
@@ -20,6 +21,26 @@ DEFAULT_TOKEN_LIFETIME_SECONDS = 3600
 
 class BotError(RuntimeError):
     """A Bot Framework call failed. Never swallowed: the caller returns 500."""
+
+
+# Teams renders every activity through XML and answers 400 for a character
+# XML 1.0 forbids, so one stray control character in Sentry text loses the
+# whole post. A terminal colour code goes as a unit, so `\x1b[31m` leaves no
+# `[31m` behind; then any other forbidden character goes. Tab, newline and
+# carriage return are legal XML and stay.
+TERMINAL_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+XML_FORBIDDEN = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+
+
+def xml_safe(value):
+    """`value` with every string in it cleaned for Teams; the input is left as is."""
+    if isinstance(value, str):
+        return XML_FORBIDDEN.sub("", TERMINAL_ESCAPE.sub("", value))
+    if isinstance(value, dict):
+        return {key: xml_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [xml_safe(item) for item in value]
+    return value
 
 
 def thread_link(conversation_id: str, message_id: str, tenant_id: str) -> str:
@@ -99,8 +120,11 @@ class TeamsBotClient:
         """POST with a bearer token, refreshing it once if the call comes back 401.
 
         A rejected token is the one failure worth retrying: the alternative is a
-        warm container that 500s every alert until Lambda recycles it.
+        warm container that 500s every alert until Lambda recycles it. Every
+        post goes through here, so this is where its text is made safe for
+        Teams (`xml_safe`).
         """
+        payload = xml_safe(payload)
         response = self.session.post(
             url, headers=self._headers(), json=payload, timeout=TIMEOUT_SECONDS
         )
