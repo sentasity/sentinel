@@ -173,6 +173,29 @@ def test_a_pointer_for_a_row_without_urgency_reads_as_before():
     text = bot.reply_in_thread.call_args.args[2]
     assert f"Findings (confidence high, fixability medium): {EARLIER_LINK}" in text
     assert "urgency" not in text
+    assert "intent" not in text
+
+
+def test_a_pointer_quotes_the_intent_last_when_the_row_recorded_one():
+    """Same order as the findings card's status line: intent follows
+    fixability, the signal it qualifies."""
+    store, bot = MagicMock(), MagicMock()
+    store.put_investigation.return_value = False
+    store.get_investigation.return_value = existing(
+        "delivered",
+        urgency="high",
+        confidence="high",
+        fixability="high",
+        intent="unsettled",
+    )
+
+    enqueue(store, bot)
+
+    text = bot.reply_in_thread.call_args.args[2]
+    assert (
+        "Findings (urgency high, confidence high, fixability high, intent unsettled): "
+        f"{EARLIER_LINK}"
+    ) in text
 
 
 def test_a_pointer_omits_a_confidence_the_row_never_recorded():

@@ -34,9 +34,35 @@ ROW = {
 }
 
 
+SOURCE = (
+    "refund_intent in src/checkout/services/payments.py raises PaymentIntentTimeout "
+    "when the gateway times out"
+)
+
+
 def doc_v2():
     return parse_findings(
         load_fixture("findings-payload-v2.json"), batch_id=BATCH, known_issue_ids=KNOWN
+    )
+
+
+def payload_v4(urgency="high", intent=None):
+    """The v2 fixture as schema v4, what the shipped prompt sends: rated for
+    urgency, with its intent settled by a named source. Built here rather
+    than read from the v4 fixture, so the gate's pins do not move when the
+    card sample does."""
+    payload = load_fixture("findings-payload-v2.json")
+    payload["schema_version"] = 4
+    payload["results"][0]["urgency"] = urgency
+    payload["results"][0]["intent"] = (
+        {"settled": True, "source": SOURCE} if intent is None else intent
+    )
+    return payload
+
+
+def doc_v4(urgency="high", intent=None):
+    return parse_findings(
+        payload_v4(urgency, intent), batch_id=BATCH, known_issue_ids=KNOWN
     )
 
 
@@ -52,7 +78,7 @@ def cfg_enabled(tmp_path, body=None):
 
 
 def test_a_confident_contained_finding_passes(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
 
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
 
@@ -61,7 +87,7 @@ def test_a_confident_contained_finding_passes(tmp_path):
 
 
 def test_disabled_gate_declines_with_no_disposition_line(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
     cfg = cfg_enabled(tmp_path, VALID + AUTOFIX.replace("enabled: true", "enabled: false"))
 
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg, store=open_store())
@@ -72,7 +98,7 @@ def test_disabled_gate_declines_with_no_disposition_line(tmp_path):
 
 
 def test_an_unlisted_project_is_declined(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
 
     decision = evaluate(
         doc.results[0], doc, {**ROW, "project": "frontend"},
@@ -84,7 +110,7 @@ def test_an_unlisted_project_is_declined(tmp_path):
 
 def test_an_empty_allowlist_opts_in_every_project(tmp_path):
     body = (VALID + AUTOFIX).replace("projects:\n    - checkout", "projects: []")
-    doc = doc_v2()
+    doc = doc_v4()
 
     decision = evaluate(
         doc.results[0], doc, {**ROW, "project": "frontend"},
@@ -104,22 +130,70 @@ def test_a_v1_document_is_declined_as_schema_v1(tmp_path):
     assert decision.reason == "schema_v1"
 
 
-def doc_v3(urgency="high"):
-    """The v2 fixture as schema v3. Built here rather than read from the v3
-    fixture, so the gate's pins do not move when the card sample does."""
+def doc_v3():
+    """The v2 fixture as schema v3: rated for urgency, intent never rated."""
     payload = load_fixture("findings-payload-v2.json")
     payload["schema_version"] = 3
-    payload["results"][0]["urgency"] = urgency
+    payload["results"][0]["urgency"] = "high"
     return parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
 
 
-def test_a_v3_document_is_gated_like_v2_not_declined_as_schema_v1(tmp_path):
-    doc = doc_v3()
+@pytest.mark.parametrize("build", [doc_v2, doc_v3], ids=["v2", "v3"])
+def test_a_document_from_before_intent_fails_closed_with_its_own_reason(tmp_path, build):
+    """A confident, contained v2 or v3 finding passed this gate before intent
+    existed. It now declines, and says why in words a thread reader can act
+    on, rather than as a schema version, and without spending the dedupe or
+    the day's cap."""
+    doc = build()
+    store = open_store()
+
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=store)
+
+    assert decision == GateDecision(False, "intent not rated")
+    assert decision.disposition == "Autofix declined: intent not rated."
+    store.claim_autofix_dedupe.assert_not_called()
+    store.claim_autofix_pr.assert_not_called()
+
+
+def test_an_unsettled_intent_is_declined_however_contained_the_fix(tmp_path):
+    """The case intent exists for: high confidence and high fixability, and
+    a person still has to choose the behavior."""
+    doc = doc_v4(intent={"settled": False, "source": None})
+    store = open_store()
+
+    decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=store)
+
+    assert doc.results[0].confidence == doc.results[0].fixability == "high"
+    assert decision == GateDecision(False, "intent unsettled")
+    assert decision.disposition == "Autofix declined: intent unsettled."
+    store.claim_autofix_dedupe.assert_not_called()
+    store.claim_autofix_pr.assert_not_called()
+
+
+@pytest.mark.parametrize("source", [None, "", "   \n"])
+def test_a_settled_intent_that_names_no_source_is_declined(tmp_path, source):
+    doc = doc_v4(intent={"settled": True, "source": source})
 
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
 
-    assert decision.reason != "schema_v1"
-    assert decision == GateDecision(True)
+    assert decision == GateDecision(False, "intent source not named")
+
+
+def test_confidence_and_fixability_declines_still_win_over_intent(tmp_path):
+    """The graded signals come first, so an old document that would have
+    failed them before intent existed still says so."""
+    doc = doc_v3()
+    cfg = cfg_enabled(tmp_path)
+
+    low_confidence = replace(doc.results[0], confidence="low")
+    low_fixability = replace(doc.results[0], fixability="low")
+
+    assert evaluate(low_confidence, doc, ROW, cfg=cfg, store=open_store()).reason == (
+        "confidence low"
+    )
+    assert evaluate(low_fixability, doc, ROW, cfg=cfg, store=open_store()).reason == (
+        "fixability low"
+    )
 
 
 def test_urgency_never_changes_the_gate_decision(tmp_path):
@@ -129,7 +203,7 @@ def test_urgency_never_changes_the_gate_decision(tmp_path):
     cfg = cfg_enabled(tmp_path)
     decisions = {}
     for urgency in URGENCIES:
-        doc = doc_v3(urgency)
+        doc = doc_v4(urgency)
         decisions[urgency] = evaluate(
             doc.results[0], doc, ROW, cfg=cfg, store=open_store()
         )
@@ -139,7 +213,7 @@ def test_urgency_never_changes_the_gate_decision(tmp_path):
 
 
 def test_a_medium_confidence_finding_is_declined(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
     result = replace(doc.results[0], confidence="medium")
 
     decision = evaluate(result, doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
@@ -148,7 +222,7 @@ def test_a_medium_confidence_finding_is_declined(tmp_path):
 
 
 def test_fixability_below_the_threshold_is_declined(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
     result = replace(doc.results[0], fixability="low")
 
     decision = evaluate(result, doc, ROW, cfg=cfg_enabled(tmp_path), store=open_store())
@@ -158,7 +232,7 @@ def test_fixability_below_the_threshold_is_declined(tmp_path):
 
 def test_an_excluded_path_declines(tmp_path):
     body = (VALID + AUTOFIX).replace('- "infra/**"', '- "src/**"')
-    doc = doc_v2()
+    doc = doc_v4()
 
     decision = evaluate(doc.results[0], doc, ROW, cfg=cfg_enabled(tmp_path, body), store=open_store())
 
@@ -166,7 +240,7 @@ def test_an_excluded_path_declines(tmp_path):
 
 
 def test_a_repeat_release_is_declined_by_dedupe(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
     store = open_store()
     store.claim_autofix_dedupe.return_value = False
 
@@ -176,7 +250,7 @@ def test_a_repeat_release_is_declined_by_dedupe(tmp_path):
 
 
 def test_a_spent_daily_cap_declines_last(tmp_path):
-    doc = doc_v2()
+    doc = doc_v4()
     store = open_store()
     store.claim_autofix_pr.return_value = False
 
@@ -207,7 +281,7 @@ def test_no_completion_reply_names_a_branch():
 def test_a_github_directory_citation_is_declined_regardless_of_config(tmp_path):
     # exclude_paths is emptied here on purpose: the decline must come from
     # the hard-coded FORBIDDEN_PATHS, not from operator config.
-    payload = load_fixture("findings-payload-v2.json")
+    payload = payload_v4()
     payload["results"][0]["evidence"][0]["file"] = ".github/workflows/deploy.yml"
     doc = parse_findings(payload, batch_id=BATCH, known_issue_ids=KNOWN)
     body = (VALID + AUTOFIX).replace('- "infra/**"', "")

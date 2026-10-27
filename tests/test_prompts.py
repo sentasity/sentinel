@@ -5,7 +5,12 @@ from pathlib import Path
 
 from receiver import autofix, issues
 from receiver.config import EXAMPLE_CONFIG_PATH, PLACEHOLDER_PREFIX, load_config
-from receiver.findings import CURRENT_SCHEMA_VERSION, RESULT_FIELDS, URGENCIES
+from receiver.findings import (
+    CURRENT_SCHEMA_VERSION,
+    INTENT_FIELDS,
+    RESULT_FIELDS,
+    URGENCIES,
+)
 from receiver.models import INVESTIGATED_INFO_TITLES
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
@@ -420,15 +425,15 @@ def test_the_prompt_sends_the_investigator_through_the_repo_docs():
     assert "at most 50 files" in body
 
 
-def test_the_prompt_emits_schema_version_3_with_both_rubrics():
+def test_the_prompt_emits_schema_version_4_with_every_rubric():
     """The prompt emits the version the receiver calls current, offers
-    exactly the urgency values the receiver accepts, and carries both
-    rubrics. Phrases are matched whitespace-normalised, because the file is
+    exactly the urgency values the receiver accepts, and carries every
+    rubric. Phrases are matched whitespace-normalised, because the file is
     hard-wrapped and a phrase can straddle a line break."""
     body = investigator()
     flat = " ".join(body.split())
 
-    assert CURRENT_SCHEMA_VERSION == 3
+    assert CURRENT_SCHEMA_VERSION == 4
     assert f'"schema_version": {CURRENT_SCHEMA_VERSION}' in body
     assert '"fixability"' in body
     assert '"urgency": ' + " | ".join(f'"{u}"' for u in URGENCIES) in body
@@ -444,6 +449,38 @@ def test_the_prompt_emits_schema_version_3_with_both_rubrics():
     # The evidence the rubric weighs has to be gathered in step 2.
     for phrase in ("affected-user count", "every environment the issue has events in"):
         assert phrase in flat, f"step 2 no longer gathers: {phrase}"
+
+
+def test_the_intent_rubric_names_its_source_and_never_guesses():
+    """Intent is the gate signal fixability cannot stand in for: a deliberate
+    failure can be worked around by a change smaller than the one that meets
+    it. The prompt has to emit the exact keys the receiver validates, make
+    the source mandatory and authoritative, and keep the outsider-shaped
+    text out of it."""
+    body = investigator()
+    flat = " ".join(body.split())
+
+    for key in INTENT_FIELDS:
+        assert f'"{key}"' in body, f"the intent object never names {key}"
+    for phrase in (
+        "already decided somewhere authoritative",
+        "a merged pull request, a design doc, or a repository rule",
+        "settled intent with no source earns no fix",
+        "anything Sentry reports",
+        "needs a person, settled is false however small the fix",
+        "Code that fails on purpose",
+        "however much smaller it is",
+        "report settled false when you could not establish it, and whenever unsure",
+    ):
+        assert phrase in flat, f"the intent rubric dropped: {phrase}"
+
+
+def test_a_fix_pull_request_names_the_source_its_intent_rests_on():
+    """The reviewer checks the fix against the decision it claims to restore,
+    so the body has to say where that decision lives."""
+    flat = " ".join(investigator().split())
+
+    assert "the source your finding's intent named and what it decides" in flat
 
 
 def test_step_3_names_the_conventions_files_only_through_their_placeholder():

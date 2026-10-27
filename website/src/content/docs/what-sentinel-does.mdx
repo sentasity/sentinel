@@ -34,7 +34,8 @@ today.
    out the target repository at the release SHA, investigates each issue, and posts a
    findings document back, which the receiver renders as a threaded reply.
 4. **Autofix.** A finding whose confidence and fixability both clear their configured
-   minimums earns a grant, returned in the reply to that findings document. The same
+   minimums, and whose intended behavior is already decided somewhere it names, earns a
+   grant, returned in the reply to that findings document. The same
    session writes the fix and its test and sends the change back as a patch; the
    receiver opens the pull request as the GitHub App.
 

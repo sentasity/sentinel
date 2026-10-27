@@ -462,6 +462,8 @@ def deliver_findings(body, rows: list[dict]) -> dict:
             outcome["fixability"] = result.fixability
         if result.urgency:
             outcome["urgency"] = result.urgency
+        if result.intent:
+            outcome["intent"] = result.intent
         if not alert_store().advance(
             row["issue_id"], row["environment"], row["release"], "fired", "delivered",
             extra=outcome,

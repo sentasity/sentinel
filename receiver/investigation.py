@@ -81,7 +81,7 @@ def pointer_text(existing: dict, alert: SentryAlert, cfg: ReceiverConfig) -> str
     # existed, simply lack it.
     outcome = ", ".join(
         f"{name} {existing[name]}"
-        for name in ("urgency", "confidence", "fixability")
+        for name in ("urgency", "confidence", "fixability", "intent")
         if existing.get(name)
     )
     if outcome:
