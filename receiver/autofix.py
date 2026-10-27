@@ -14,7 +14,8 @@ from receiver.config import ReceiverConfig
 from receiver.findings import Findings, Result
 from receiver.patch import FileChange, PatchError, parse_patch
 
-# Ranks for the two gate signals; shared shape with findings.CONFIDENCES.
+# Ranks for the two graded gate signals; shared shape with
+# findings.CONFIDENCES. The third, intent, is settled or not.
 LEVELS = {"low": 0, "medium": 1, "high": 2}
 
 # Paths no finding may cite and no fix may touch, regardless of operator
@@ -343,6 +344,22 @@ def evaluate(
 
     if LEVELS[result.fixability] < LEVELS[cfg.autofix_min_fixability]:
         return GateDecision(False, f"fixability {result.fixability}")
+
+    # Fixability says how contained a change is, not whether the current
+    # behavior is a mistake: a deliberate failure can be worked around by a
+    # change smaller than the one that meets it. A fix only restores
+    # behavior already decided somewhere the finding names; choosing one is
+    # a person's call, however small the change. No threshold, and no
+    # operator knob: an unsettled or unsourced intent always declines, and
+    # a document from before intent was rated fails closed.
+    if not result.intent:
+        return GateDecision(False, "intent not rated")
+
+    if result.intent != "settled":
+        return GateDecision(False, f"intent {result.intent}")
+
+    if not result.intent_source.strip():
+        return GateDecision(False, "intent source not named")
 
     excluded = FORBIDDEN_PATHS + tuple(cfg.autofix_exclude_paths)
     for item in result.evidence:

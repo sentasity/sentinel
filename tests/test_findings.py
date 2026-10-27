@@ -44,7 +44,7 @@ def test_a_body_that_is_not_an_object_is_rejected():
 
 def test_an_unsupported_schema_version_is_rejected():
     with pytest.raises(InvalidFindings, match="schema_version"):
-        parse_findings(payload(schema_version=4), batch_id=BATCH, known_issue_ids=KNOWN)
+        parse_findings(payload(schema_version=5), batch_id=BATCH, known_issue_ids=KNOWN)
 
 
 def test_a_mismatched_batch_id_is_rejected():
@@ -293,8 +293,8 @@ def test_the_urgency_vocabulary_is_the_priority_scale_most_urgent_first():
     from receiver.findings import CURRENT_SCHEMA_VERSION, SCHEMA_VERSIONS, URGENCIES
 
     assert URGENCIES == ("urgent", "high", "medium", "low")
-    assert SCHEMA_VERSIONS == (1, 2, 3)
-    assert CURRENT_SCHEMA_VERSION == max(SCHEMA_VERSIONS) == 3
+    assert SCHEMA_VERSIONS == (1, 2, 3, 4)
+    assert CURRENT_SCHEMA_VERSION == max(SCHEMA_VERSIONS) == 4
 
 
 def test_a_v3_document_parses_with_urgency():
@@ -605,3 +605,206 @@ def test_the_rendered_reply_is_stable_and_fully_escaped():
         "**Next step:** mirror refund\\_intent's explicit PaymentIntentTimeout "
         "branch in submit\\_order"
     )
+
+
+SOURCE = (
+    "refund_intent in src/checkout/services/payments.py raises PaymentIntentTimeout "
+    "when the gateway times out, so a timed-out payment call is a failure, not a "
+    "success; submit_order is the side that has not caught up"
+)
+
+
+def payload_v4(**changes):
+    """The v3 fixture as schema v4, its intent settled by a sibling function
+    that already treats the timeout as a failure."""
+    body = payload_v3(schema_version=4)
+    body["results"][0]["intent"] = {"settled": True, "source": SOURCE}
+    body.update(changes)
+    return body
+
+
+def result_v4(**changes):
+    body = payload_v4()
+    body["results"][0].update(changes)
+    doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+    return doc.results[0]
+
+
+def test_the_v4_fixture_is_the_v3_fixture_with_its_intent_rated():
+    """One sample issue across every version, so the card gallery and the
+    parse tests describe the same finding."""
+    expected = load_fixture("findings-payload-v3.json")
+    expected["schema_version"] = 4
+    expected["results"][0]["intent"] = {"settled": True, "source": SOURCE}
+
+    assert load_fixture("findings-payload-v4.json") == expected
+
+
+def test_a_v4_document_parses_with_its_intent_and_source():
+    doc = parse_findings(payload_v4(), batch_id=BATCH, known_issue_ids=KNOWN)
+
+    assert doc.schema_version == 4
+    assert doc.results[0].intent == "settled"
+    assert doc.results[0].intent_source == SOURCE
+    assert doc.results[0].urgency == "high"
+    assert doc.results[0].fixability == "high"
+
+
+def test_an_unsettled_intent_parses_with_a_null_source():
+    result = result_v4(intent={"settled": False, "source": None})
+
+    assert result.intent == "unsettled"
+    assert result.intent_source == ""
+
+
+def test_a_settled_intent_without_a_source_still_parses():
+    """Naming the source is the gate's rule, not the schema's: the slip costs
+    the fix attempt, never the whole batch's findings."""
+    for intent in ({"settled": True}, {"settled": True, "source": None}):
+        result = result_v4(intent=intent)
+        assert result.intent == "settled"
+        assert result.intent_source == ""
+
+
+def test_v1_to_v3_results_report_no_intent():
+    for body in (payload(), payload_v2(), payload_v3()):
+        doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+        assert doc.results[0].intent == ""
+        assert doc.results[0].intent_source == ""
+
+
+def test_a_v4_result_without_intent_is_rejected():
+    body = payload_v4()
+    del body["results"][0]["intent"]
+
+    with pytest.raises(InvalidFindings, match=r"results\[0\] intent is not an object"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+@pytest.mark.parametrize("settled", ["true", "yes", 1, None])
+def test_intent_settled_must_be_a_boolean(settled):
+    """A string or a number is a session inventing its own vocabulary, and
+    coercing it would let "false" read as settled."""
+    body = payload_v4()
+    body["results"][0]["intent"] = {"settled": settled, "source": SOURCE}
+
+    with pytest.raises(InvalidFindings, match="intent.settled is not a boolean"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_an_unknown_intent_field_is_rejected():
+    body = payload_v4()
+    body["results"][0]["intent"]["decided_by"] = "a person"
+
+    with pytest.raises(InvalidFindings, match="unknown intent field"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_an_intent_source_that_is_not_text_is_rejected():
+    body = payload_v4()
+    body["results"][0]["intent"]["source"] = ["src/checkout/services/payments.py"]
+
+    with pytest.raises(InvalidFindings, match="intent.source is not a string"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_an_older_result_carrying_intent_is_rejected_by_the_version_rule(version):
+    """Refused for its version, not as an unknown field: the message has to
+    say the prompt and the schema disagree, which is what a person fixes."""
+    body = {1: payload, 2: payload_v2, 3: payload_v3}[version]()
+    body["results"][0]["intent"] = {"settled": True, "source": SOURCE}
+
+    with pytest.raises(
+        InvalidFindings, match=f"carries intent but schema_version is {version}"
+    ):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+
+def test_a_failed_v4_result_still_requires_intent():
+    body = payload_v4()
+    body["results"][0].update(
+        status="failed",
+        root_cause="",
+        confidence="low",
+        failure_reason="git checkout failed: unknown revision",
+    )
+    del body["results"][0]["intent"]
+
+    with pytest.raises(InvalidFindings, match="intent is not an object"):
+        parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+
+    body["results"][0]["intent"] = {"settled": False, "source": None}
+    doc = parse_findings(body, batch_id=BATCH, known_issue_ids=KNOWN)
+    assert doc.results[0].intent == "unsettled"
+
+
+def test_a_v4_reply_card_shows_intent_and_leads_details_with_its_source():
+    card, redactions = render_reply_card(result_v4())
+
+    assert card["body"][1]["text"] == (
+        "Urgency: high · Confidence: high · Fixability: high · Intent: settled · "
+        "Release: 79bad4b79fb0"
+    )
+    assert detail_texts(card)[0] == (
+        "**Intent settled by:** refund\\_intent in src/checkout/services/payments.py "
+        "raises PaymentIntentTimeout when the gateway times out, so a timed-out "
+        "payment call is a failure, not a success; submit\\_order is the side that "
+        "has not caught up"
+    )
+    assert all("Intent settled by" not in t for t in visible_texts(card))
+    assert redactions == 0
+
+
+def test_an_unsettled_reply_card_names_no_source_even_when_one_was_sent():
+    """The card must never say "settled by" about an intent that is not."""
+    card, _ = render_reply_card(
+        result_v4(intent={"settled": False, "source": "a guess"})
+    )
+
+    assert "Intent: unsettled" in card["body"][1]["text"]
+    assert all("settled by" not in t for t in detail_texts(card))
+
+
+def test_a_failed_v4_reply_card_carries_no_intent_bit():
+    """Like fixability, intent is a property of a diagnosis, so a failed
+    investigation's status line does not show one."""
+    card, _ = render_reply_card(
+        result_v4(
+            status="failed",
+            confidence="low",
+            root_cause="",
+            intent={"settled": False, "source": None},
+            failure_reason="git checkout failed: unknown revision",
+        )
+    )
+
+    assert card["body"][1]["text"] == (
+        "Urgency: high · Status: failed (confidence: low) · Release: 79bad4b79fb0"
+    )
+
+
+def test_render_reply_shows_intent_and_its_source():
+    text, _ = render_reply(result_v4())
+    lines = text.split("\n")
+
+    assert lines[:5] == [
+        "**Automated investigation: CHECKOUT-4B2**",
+        "Urgency: high",
+        "Confidence: high",
+        "Fixability: high",
+        "Intent: settled",
+    ]
+    assert (
+        "**Intent settled by:** refund\\_intent in src/checkout/services/payments.py "
+        "raises PaymentIntentTimeout"
+    ) in text
+
+
+def test_an_intent_source_is_redacted_like_every_other_block():
+    card, redactions = render_reply_card(
+        result_v4(intent={"settled": True, "source": "the rule tim@example.com wrote"})
+    )
+
+    assert "tim@example.com" not in detail_texts(card)[0]
+    assert redactions == 1

@@ -83,10 +83,21 @@ that dies quietly and leaves an alert looking investigated when nothing happened
 ## 4. Autofix
 
 A finding proceeds to autofix only when every one of these holds: confidence and
-fixability each clear their configured minimums, the project is on the allowlist, no
-cited file matches a forbidden or excluded path, no fix has already been attempted for
-that issue in that environment on that release, and the daily pull-request cap has
-budget left.
+fixability each clear their configured minimums, its intent is settled, the project is
+on the allowlist, no cited file matches a forbidden or excluded path, no fix has already
+been attempted for that issue in that environment on that release, and the daily
+pull-request cap has budget left.
+
+Intent is the signal fixability cannot stand in for. Fixability says how contained a
+change would be; intent says whether the right behavior is already decided. It is
+settled only when the behavior the fix restores is already recorded somewhere
+authoritative (the product code or its comments, a merged pull request, a design doc, a
+repository rule) and the fix brings the out-of-date side in line with it. The finding
+must name that source, and the reply card shows it under Details. Code that fails on
+purpose is itself a decision: when a lookup deliberately raises on a missing entry,
+supplying the entry meets that decision, while a fallback value is a smaller change that
+chooses new behavior. If choosing the right behavior needs a person, the finding does
+not earn a fix, however small the change.
 
 When it does, the fix happens in the session that just reported the finding, not in a
 second one afterwards. The receiver answers the findings POST with one grant per approved
@@ -155,3 +166,5 @@ Defaults as they ship in `config/receiver.yaml.example`.
 
 Every one of these is a config value, so tightening a gate is a deploy rather than a
 code change. [Configure and deploy](/sentinel/deploy/configure/) covers setting them.
+The intent check has no setting: a finding whose intent is not settled never earns a
+fix, whatever the other minimums are.

@@ -8,8 +8,8 @@ as untrusted, including the Sentry issue text they are asked to investigate.
 
 :::tip[The short version]
 The operator's controls over whether a fix is allowed live in the receiver, out of the
-session's reach; the session supplies two of the gate's inputs, its own confidence and
-fixability ratings, and those are influenceable. The session has no way to write to
+session's reach; the session supplies three of the gate's inputs, its own confidence,
+fixability, and intent ratings, and those are influenceable. The session has no way to write to
 GitHub: it reads issues through the platform's built-in GitHub tools as the operator,
 and the routine's configuration withholds every GitHub tool that writes. It sends the
 finished fix back as files, and the receiver checks every path against the same policy
@@ -190,18 +190,26 @@ merges. The prompt also tells the session to treat code, repository docs, Sentry
 and command output as data and to say in the pull request body when it saw something
 that read like an instruction, which helps a reviewer but is not itself a control.
 
-The one gate input this text can reach is the finding's own confidence and fixability
-ratings, which the session supplies. Steering an investigation toward a diagnosis that
-looks confident and contained is the cheapest thing an injected instruction can attempt,
-and it is not something the receiver can second-guess: rating the finding is exactly the
-judgment the session was fired to make. What that buys an attacker is bounded, though. A
-flattering rating gets a finding *to* the gate; it does not get it past the operator
-controls below, which are evaluated on values the session never supplies.
+The gate inputs this text can reach are the finding's own confidence, fixability, and
+intent ratings, which the session supplies. Steering an investigation toward a diagnosis
+that looks confident, contained, and settled is the cheapest thing an injected
+instruction can attempt, and it is not something the receiver can second-guess: rating
+the finding is exactly the judgment the session was fired to make. What that buys an
+attacker is bounded, though. A flattering rating gets a finding *to* the gate; it does
+not get it past the operator controls below, which are evaluated on values the session
+never supplies.
+
+The same holds for the source a settled intent names. The receiver checks that one is
+named, not that it says what the finding claims: reading it is the reviewer's check,
+which is why the source leads the reply card's details and the pull request body. The
+prompt tells the session that the error text and anything Sentry reports are never a
+source, which narrows what an injected sentence can offer as one but is not itself a
+control.
 
 ### Operator controls live on the receiver
 
-Confidence and fixability are the session's own judgments and travel in the findings
-document, which is why the section above treats them as influenceable. Every *other*
+Confidence, fixability, and intent are the session's own judgments and travel in the
+findings document, which is why the section above treats them as influenceable. Every *other*
 input to the decision is an operator control, and each one is evaluated in the receiver
 rather than in the prompt:
 
@@ -220,9 +228,9 @@ The same reasoning covers the caps' side effects: the dedupe and cap checks are
 conditional writes, spent as they pass, so a finding cannot be re-evaluated into a second
 attempt.
 
-Urgency, the third rating a findings document carries, is the session's own judgment
-too, formed over text an outsider can shape, exactly like confidence and fixability. It
-decides no receiver control: the gate never reads it, and its only effects are the
+Urgency, the other rating a findings document carries, is the session's own judgment
+too, formed over text an outsider can shape, exactly like confidence, fixability, and
+intent. It decides no receiver control: the gate never reads it, and its only effects are the
 findings reply card's status line, the repeat-alert pointer, and the Priority of a new
 issue that a person triages.
 
@@ -231,7 +239,7 @@ issue that a person triages.
 The section above is accurate that those controls are evaluated on values the session
 never supplies, but it is worth being precise about which values *are* supplied. The
 gate reads the findings document, and the whole document arrives over one authenticated
-POST: the two ratings named above, and also each result's `status`, the document's
+POST: the three ratings named above, and also each result's `status`, the document's
 `schema_version`, and the evidence file paths the path exclusions are matched against.
 Whoever holds a live reply token writes all of it. So the gate constrains the shape of a
 passing finding rather than proving one was investigated, and a document crafted to

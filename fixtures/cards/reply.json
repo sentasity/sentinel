@@ -11,7 +11,7 @@
     },
     {
       "type": "TextBlock",
-      "text": "Urgency: high · Confidence: high · Fixability: high · Release: 79bad4b79fb0",
+      "text": "Urgency: high · Confidence: high · Fixability: high · Intent: settled · Release: 79bad4b79fb0",
       "isSubtle": true,
       "wrap": true,
       "spacing": "Small"
@@ -33,6 +33,11 @@
       "isVisible": false,
       "spacing": "Medium",
       "items": [
+        {
+          "type": "TextBlock",
+          "text": "**Intent settled by:** refund\\_intent in src/checkout/services/payments.py raises PaymentIntentTimeout when the gateway times out, so a timed-out payment call is a failure, not a success; submit\\_order is the side that has not caught up",
+          "wrap": true
+        },
         {
           "type": "TextBlock",
           "text": "Evidence",

@@ -524,12 +524,33 @@ def test_a_delivered_v3_finding_records_its_urgency_for_repeat_alerts():
     }
 
 
+def test_a_delivered_v4_finding_records_its_intent_for_repeat_alerts():
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store):
+        handler.deliver_findings(load_fixture("findings-payload-v4.json"), [awaiting_row()])
+
+    assert store.advance.call_args.kwargs["extra"] == {
+        "confidence": "high",
+        "fixability": "high",
+        "urgency": "high",
+        "intent": "settled",
+    }
+
+
 @pytest.mark.parametrize(
     "fixture, version",
-    [("findings-payload.json", 1), ("findings-payload-v2.json", 2)],
+    [
+        ("findings-payload.json", 1),
+        ("findings-payload-v2.json", 2),
+        ("findings-payload-v3.json", 3),
+    ],
 )
 def test_an_outdated_schema_is_still_delivered_and_logs_its_marker(caplog, fixture, version):
-    """After the prompt moves to v3, an older document can only come from a
+    """After the prompt moves to v4, an older document can only come from a
     routine still running an older prompt. It keeps its findings: the card
     posts as usual, and the marker makes the stale prompt findable."""
     bot, store = MagicMock(), MagicMock()
@@ -558,7 +579,9 @@ def test_a_current_schema_logs_no_outdated_marker(caplog):
          patch.object(handler, "bot_client", return_value=bot), \
          patch.object(handler, "alert_store", return_value=store):
         with caplog.at_level(logging.WARNING):
-            handler.deliver_findings(findings_v3(), [awaiting_row()])
+            handler.deliver_findings(
+                load_fixture("findings-payload-v4.json"), [awaiting_row()]
+            )
 
     assert observability.FINDINGS_SCHEMA_OUTDATED_MARKER not in caplog.text
 
@@ -726,12 +749,12 @@ SECOND_SHORT_ID = "CHECKOUT-9C1"
 
 
 def two_passing_results():
-    """The v2 fixture with a second passing result in the same project.
+    """The v4 fixture with a second passing result in the same project.
 
     Every other autofix test runs a one-result batch, which cannot tell a
     reply loop that keeps going after one row fails from one that stops.
     """
-    payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
+    payload = copy.deepcopy(load_fixture("findings-payload-v4.json"))
     second = copy.deepcopy(payload["results"][0])
     second["issue_id"] = SECOND_ISSUE_ID
     second["short_id"] = SECOND_SHORT_ID
@@ -779,7 +802,7 @@ def test_a_passing_finding_returns_a_grant_and_says_so_in_the_thread(
     store.claim_autofix_dedupe.return_value = True
     store.claim_autofix_pr.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert response["statusCode"] == 200
     assert response["headers"]["content-type"] == "application/json"
@@ -838,12 +861,48 @@ def test_a_declined_finding_returns_a_null_autofix_block(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix declined: project not opted in." in json.dumps(card)
     github_client.return_value.mint_autofix_token.assert_not_called()
+    store.put_autofix_dispatch.assert_not_called()
+
+
+@patch("receiver.handler.github_client")
+@patch("receiver.handler.bot_client")
+@patch("receiver.handler.alert_store")
+@patch("receiver.handler.config")
+def test_a_finding_from_before_intent_is_delivered_but_earns_no_grant(
+    config, alert_store, bot_client, github_client, caplog, tmp_path
+):
+    """Between the receiver deploy and the prompt update, a routine still
+    sends v3. Its findings post as usual; the gate fails closed and the
+    thread and the log both say why."""
+    from tests.test_config import AUTOFIX, VALID, write
+    from receiver.config import load_config
+
+    config.return_value = load_config(write(tmp_path, VALID + AUTOFIX))
+    store = alert_store.return_value
+    store.advance.return_value = True
+    store.claim_autofix_dedupe.return_value = True
+    store.claim_autofix_pr.return_value = True
+
+    with caplog.at_level(logging.INFO):
+        response = deliver_findings(
+            load_fixture("findings-payload-v3.json"), [autofix_row()]
+        )
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"])["autofix"] is None
+    card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
+    assert "Autofix declined: intent not rated." in json.dumps(card)
+    assert (
+        f"{observability.AUTOFIX_DECLINED_MARKER} CHECKOUT-4B2 reason=intent not rated"
+        in caplog.text
+    )
+    store.claim_autofix_dedupe.assert_not_called()
     store.put_autofix_dispatch.assert_not_called()
 
 
@@ -866,7 +925,7 @@ def test_a_failed_thread_post_still_returns_the_grant(
     store.claim_autofix_pr.return_value = True
     bot_client.return_value.reply_card_in_thread.side_effect = BotError("teams down")
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     block = json.loads(response["body"])["autofix"]
     assert len(block["grants"]) == 1
@@ -965,7 +1024,7 @@ def test_a_disabled_gate_leaves_the_reply_untouched(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     card = bot_client.return_value.reply_card_in_thread.call_args.args[2]
     assert "Autofix" not in json.dumps(card)
@@ -994,7 +1053,7 @@ def test_a_gate_crash_never_costs_the_findings_reply(
     store.put_autofix_dispatch.side_effect = RuntimeError("dynamo down")
 
     with caplog.at_level(logging.ERROR):
-        response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+        response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert response["statusCode"] == 200
     bot_client.return_value.reply_card_in_thread.assert_called_once()
@@ -1083,7 +1142,7 @@ def test_tracking_gives_a_granted_result_the_fix_phase_and_then_its_window(
     store.claim_autofix_pr.return_value = True
 
     before = handler._deadline(3600 + 1800)
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
     after = handler._deadline(3600 + 1800)
 
     body = json.loads(response["body"])
@@ -1106,7 +1165,7 @@ def test_tracking_grants_a_failed_investigation_too(
     config.return_value = tracking_cfg(tmp_path)
     store = alert_store.return_value
     store.advance.return_value = True
-    payload = copy.deepcopy(load_fixture("findings-payload-v2.json"))
+    payload = copy.deepcopy(load_fixture("findings-payload-v4.json"))
     payload["results"][0]["status"] = "failed"
     payload["results"][0]["failure_reason"] = "the session ran out of turns"
 
@@ -1129,7 +1188,7 @@ def test_tracking_is_null_when_issue_filing_is_off(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert json.loads(response["body"]) == {"autofix": None, "tracking": None}
     store.put_tracking_grant.assert_not_called()
@@ -1146,7 +1205,7 @@ def test_tracking_is_null_for_an_environment_not_listed(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert json.loads(response["body"])["tracking"] is None
     store.put_tracking_grant.assert_not_called()
@@ -1163,7 +1222,7 @@ def test_tracking_covers_every_environment_when_none_is_listed(
     store = alert_store.return_value
     store.advance.return_value = True
 
-    response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+    response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert len(json.loads(response["body"])["tracking"]["grants"]) == 1
 
@@ -1181,7 +1240,7 @@ def test_tracking_grant_crash_never_costs_the_findings_reply(
     store.put_tracking_grant.side_effect = RuntimeError("dynamo down")
 
     with caplog.at_level(logging.ERROR):
-        response = deliver_findings(load_fixture("findings-payload-v2.json"), [autofix_row()])
+        response = deliver_findings(load_fixture("findings-payload-v4.json"), [autofix_row()])
 
     assert response["statusCode"] == 200
     bot_client.return_value.reply_card_in_thread.assert_called_once()

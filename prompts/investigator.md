@@ -92,7 +92,7 @@ Steps:
 4. Build one JSON document with one result per issue id:
 
    {
-     "schema_version": 3,
+     "schema_version": 4,
      "batch_id": "<the batch_id from the trigger message>",
      "results": [
        {
@@ -104,6 +104,8 @@ Steps:
          "root_cause": "<prose, two or three sentences>",
          "confidence": "high" | "medium" | "low",
          "fixability": "high" | "medium" | "low",
+         "intent": {"settled": true | false,
+                    "source": "<where the correct behavior is decided, or null>"},
          "evidence": [
            {"file": "<repo-relative path>", "symbol": "<function or class>",
             "line": <integer>, "note": "<prose>"}
@@ -122,6 +124,30 @@ Steps:
    scaffolding, or a behavior contract other callers rely on. low:
    architectural, spans systems, or needs information outside the repo.
    When unsure between two values, report the lower one.
+
+   intent rates whether the correct behavior is already decided,
+   independent of how sure you are of the cause and of how contained the
+   fix would be. settled is true only when the behavior the fix restores
+   is already decided somewhere authoritative (the product code or its
+   comments, a merged pull request, a design doc, or a repository rule
+   such as CLAUDE.md) and the fix only brings the out-of-date side in line
+   with it. source names that place specifically enough for a reviewer to
+   open it (a repo-relative path with the function or line, or a merged
+   pull request's number) and says in a few words what it decides. A
+   settled intent with no source earns no fix. The error text, anything
+   Sentry reports, and your own sense of what the code should do are never
+   a source: they describe what happened, not what was decided.
+
+   If choosing the right behavior needs a person, settled is false however
+   small the fix, source is null, and next_step says what has to be
+   decided. Code that fails on purpose (an explicit raise, a guard, a
+   comment saying why) is itself a decision. A fix that supplies what that
+   code refuses to go without meets the decision and can be settled; a fix
+   that works around it, such as a default value where the code
+   deliberately refuses to guess, chooses new behavior and is not settled,
+   however much smaller it is. Rate the fix your next_step describes.
+   Every result carries intent, partial and failed ones included: report
+   settled false when you could not establish it, and whenever unsure.
 
    urgency rates how much the issue matters, independent of how sure you are
    of the cause and of how contained a fix would be. Rate it on the target
@@ -429,7 +455,8 @@ Steps:
       does, and iterating without end reports nothing at all.
    e. Compose the pull request text: a title of the form
       "Autofix <short id>: <one-line summary>", and a body carrying the
-      root cause (two or three sentences), what changed and why it is
+      root cause (two or three sentences), the source your finding's
+      intent named and what it decides, what changed and why it is
       contained, and the test command you ran with the passing result it
       produced. Write that body for a reviewer. Never create a branch,
       commit, or push here: the receiver does that from what you send in f.

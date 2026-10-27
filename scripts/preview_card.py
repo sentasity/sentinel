@@ -23,7 +23,7 @@ from receiver.sentry_api import IssueRef
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = REPO_ROOT / "fixtures" / "sentry-webhook-alert.json"
-FINDINGS = REPO_ROOT / "fixtures" / "findings-payload-v3.json"
+FINDINGS = REPO_ROOT / "fixtures" / "findings-payload-v4.json"
 DEFAULT_OUT = REPO_ROOT / "fixtures" / "cards"
 
 SEVERITIES = ("fatal", "error", "warning", "info")
@@ -47,7 +47,7 @@ def build_cards() -> dict[str, dict]:
 
 
 def build_reply_card() -> dict:
-    """Render the findings reply card from the committed v3 payload.
+    """Render the findings reply card from the committed v4 payload.
 
     batch_id and the known issue ids are read from the payload itself, so the
     preview stays valid whenever the fixture is re-authored.

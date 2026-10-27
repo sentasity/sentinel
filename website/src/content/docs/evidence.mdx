@@ -32,7 +32,7 @@ the alert's own thread.
 
 <AdaptiveCard
   card={replyCard}
-  caption="Open **Details** for the evidence and assumptions, which Teams collapses the same way."
+  caption="Open **Details** for the intent's source, the evidence, and the assumptions, which Teams collapses the same way."
 />
 
 The finding is that `capture_intent` raises on its polling deadline, but the caller
@@ -45,13 +45,17 @@ risk, which would make this urgent in production, but the issue has only been se
 `staging`, so it is rated one level lower. Urgency says how much the issue matters and
 leads the status line so it is the first thing a reader scans.
 
-Confidence is **high** and fixability is **high**. Those two values decide whether the
-session goes on to attempt a fix; urgency plays no part in that decision.
+Confidence is **high**, fixability is **high**, and intent is **settled**: the right
+behavior for a timed-out capture is not in question, because `refund_intent` in the same
+module already treats the timeout as a failure, and the fix only brings `submit_order`
+in line with it. The finding names that source, and the card shows it under Details.
+Those three values decide whether the session goes on to attempt a fix; urgency plays
+no part in that decision.
 
 ## 3. The fix
 
-With `autofix.enabled` on, a finding at high confidence and high fixability clears the
-gate, so the receiver answers the findings POST with a grant. The same session then
+With `autofix.enabled` on, a finding at high confidence and high fixability, with its
+intent settled, clears the gate, so the receiver answers the findings POST with a grant. The same session then
 judges drift against the base branch, re-verifies the root cause, writes the change and
 a test for it, and sends the changed files back to the receiver with the base commit and
 the pull request text. The receiver opens the pull request as the App and reports the

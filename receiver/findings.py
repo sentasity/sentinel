@@ -39,14 +39,20 @@ def redact(text: str) -> tuple[str, int]:
     return text, count
 
 # v1 is the shipped investigation-only shape; v2 adds per-result fixability;
-# v3 adds per-result urgency. All three stay valid: a v1 document delivers
-# findings and simply never passes the autofix gate (reason schema_v1), and
-# a v1 or v2 document delivers with no urgency line. CURRENT_SCHEMA_VERSION
-# is the version the shipped prompt emits; anything below it means a routine
-# is still running an older prompt.
-SCHEMA_VERSIONS = (1, 2, 3)
-CURRENT_SCHEMA_VERSION = 3
+# v3 adds per-result urgency; v4 adds per-result intent. All four stay valid:
+# a v1 document delivers findings and simply never passes the autofix gate
+# (reason schema_v1), a v2 or v3 document never passes it either (reason
+# intent not rated), and a v1 or v2 document delivers with no urgency line.
+# CURRENT_SCHEMA_VERSION is the version the shipped prompt emits; anything
+# below it means a routine is still running an older prompt.
+SCHEMA_VERSIONS = (1, 2, 3, 4)
+CURRENT_SCHEMA_VERSION = 4
 FIXABILITIES = ("high", "medium", "low")
+# Whether the correct behavior is already decided somewhere authoritative,
+# so a fix only brings the out-of-date side in line with it. The document
+# carries a boolean; a Result carries one of these words, or "" for a
+# document from before intent was rated, so a renderer can tell the two apart.
+INTENTS = ("settled", "unsettled")
 STATUSES = ("investigated", "partial", "failed")
 CONFIDENCES = ("high", "medium", "low")
 # The target repository's Priority vocabulary, most urgent first. Rated by
@@ -62,12 +68,14 @@ RESULT_FIELDS = {
     "confidence",
     "fixability",
     "urgency",
+    "intent",
     "evidence",
     "assumptions",
     "next_step",
     "failure_reason",
 }
 EVIDENCE_FIELDS = {"file", "symbol", "line", "note"}
+INTENT_FIELDS = {"settled", "source"}
 
 
 class InvalidFindings(ValueError):
@@ -94,6 +102,8 @@ class Result:
     failure_reason: str
     fixability: str = ""
     urgency: str = ""
+    intent: str = ""
+    intent_source: str = ""
     evidence: tuple[Evidence, ...] = ()
     assumptions: tuple[str, ...] = ()
 
@@ -143,6 +153,8 @@ def render_reply(result: "Result") -> tuple[str, int]:
         lines.append(f"Confidence: {result.confidence}")
         if result.fixability:
             lines.append(f"Fixability: {result.fixability}")
+        if result.intent:
+            lines.append(f"Intent: {result.intent}")
     else:
         lines.append(f"Status: {result.status} (confidence: {result.confidence})")
 
@@ -151,6 +163,9 @@ def render_reply(result: "Result") -> tuple[str, int]:
 
     if result.root_cause:
         lines += ["", escape_prose(result.root_cause)]
+
+    if result.intent == "settled" and result.intent_source:
+        lines += ["", f"**Intent settled by:** {escape_prose(result.intent_source)}"]
 
     if result.failure_reason:
         lines += ["", f"**What failed:** {escape_prose(result.failure_reason)}"]
@@ -257,8 +272,8 @@ def render_reply_card(result: "Result", disposition: str = "") -> tuple[dict, in
     """Compose one thread reply card. Returns the card and the redaction count.
 
     The visible portion is the TL;DR: what broke, how sure we are, and what to
-    do next, plus the autofix disposition. Evidence and assumptions start
-    hidden behind the Details toggle, so a thread scan reads in two paragraphs
+    do next, plus the autofix disposition. The intent source, evidence, and
+    assumptions start hidden behind the Details toggle, so a thread scan reads in two paragraphs
     instead of eight. Cards render no code spans, so identifiers get the same
     markdown escaping as prose instead of `code()`.
     """
@@ -271,6 +286,8 @@ def render_reply_card(result: "Result", disposition: str = "") -> tuple[dict, in
         status_bits.append(f"Confidence: {result.confidence}")
         if result.fixability:
             status_bits.append(f"Fixability: {result.fixability}")
+        if result.intent:
+            status_bits.append(f"Intent: {result.intent}")
     else:
         status_bits.append(f"Status: {result.status} (confidence: {result.confidence})")
     if result.release_investigated:
@@ -331,7 +348,19 @@ def render_reply_card(result: "Result", disposition: str = "") -> tuple[dict, in
             }
         )
 
+    # The source a settled intent names leads the details: it is what a
+    # reviewer checks the fix against, and it is prose, so it is escaped.
     details: list[dict] = []
+    if result.intent == "settled" and result.intent_source:
+        details.append(
+            {
+                "type": "TextBlock",
+                "text": clip(
+                    f"**Intent settled by:** {escape_markdown(result.intent_source)}"
+                ),
+                "wrap": True,
+            }
+        )
     if result.evidence:
         details += _bulleted("Evidence", [_evidence_line(e) for e in result.evidence])
     if result.assumptions:
@@ -386,6 +415,28 @@ def _evidence(raw, index: int) -> Evidence:
         line=line,
         note=_text(raw.get("note"), "evidence.note"),
     )
+
+
+def _intent(raw, index: int) -> tuple[str, str]:
+    """A v4 result's intent as (word from INTENTS, source).
+
+    A settled intent with no source still parses: naming the source is a
+    gate rule, not a shape rule, so the slip costs the fix attempt and not
+    the whole batch's findings.
+    """
+    if not isinstance(raw, dict):
+        raise InvalidFindings(f"results[{index}] intent is not an object")
+
+    unknown = set(raw) - INTENT_FIELDS
+    if unknown:
+        raise InvalidFindings(f"unknown intent field(s): {', '.join(sorted(unknown))}")
+
+    settled = raw.get("settled")
+    if not isinstance(settled, bool):
+        raise InvalidFindings(f"results[{index}] intent.settled is not a boolean")
+
+    word = INTENTS[0] if settled else INTENTS[1]
+    return word, _text(raw.get("source"), "intent.source")
 
 
 def parse_findings(body, *, batch_id: str, known_issue_ids: set[str]) -> Findings:
@@ -458,6 +509,14 @@ def parse_findings(body, *, batch_id: str, known_issue_ids: set[str]) -> Finding
                 f"results[{index}] carries urgency but schema_version is {version}"
             )
 
+        intent, intent_source = "", ""
+        if version >= 4:
+            intent, intent_source = _intent(raw.get("intent"), index)
+        elif raw.get("intent") is not None:
+            raise InvalidFindings(
+                f"results[{index}] carries intent but schema_version is {version}"
+            )
+
         assumptions = raw.get("assumptions") or []
         if not isinstance(assumptions, list):
             raise InvalidFindings(f"results[{index}] assumptions is not a list")
@@ -476,6 +535,8 @@ def parse_findings(body, *, batch_id: str, known_issue_ids: set[str]) -> Finding
                 failure_reason=_text(raw.get("failure_reason"), "failure_reason"),
                 fixability=fixability or "",
                 urgency=urgency or "",
+                intent=intent,
+                intent_source=intent_source,
                 evidence=tuple(_evidence(e, index) for e in (raw.get("evidence") or [])),
                 assumptions=tuple(_text(a, "assumption") for a in assumptions),
             )
