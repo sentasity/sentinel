@@ -356,31 +356,19 @@ enforces splits its generic patterns, which are tracked, from the literals that 
 identify a real deployment, which live in an untracked local file mirrored by an
 Actions secret. A tracked ban list would be an index of everything it protects.
 
-## A reader guards what a list cannot
+## What a list cannot catch
 
-Two of this repository's disclosure gates are deterministic: a test bans specific strings
-and a scanner matches credential shapes. Both catch only what somebody already thought to
+This repository's disclosure gates are deterministic: a test bans specific strings and a
+scanner matches credential shapes. Both catch only what somebody already thought to
 describe, which is the wrong shape of defence against a prose page that quietly becomes a
 map of a deployment.
 
-The third gate reads. Every pull request is reviewed against the disclosure rules, which
-ask for anything naming another repository's internals, a real organization or account
-identifier, a live endpoint, or a measurement taken against a live system, and which
-require a finding to cite a file and line without ever quoting the value it flags. A
-review comment on a public repository is itself public, so quoting would republish the
-thing being reported.
-
-That gate blocks the merge until its comments are resolved rather than annotating and
-passing. The distinction is the whole point. The arrangement it replaced reported a
-passing check while leaving major findings underneath, and they went unread, which is a
-worse failure than a false positive: resolving one of those costs a moment, and an unread
-finding costs whatever it was warning about.
-
-What the reader cannot do is re-read files nothing touched. It reviews changes, so the
-guarantee is about what enters the tree rather than a periodic sweep of all of it. That is
-an accepted narrowing, taken in exchange for retiring a scanning workflow that had to hold
-a long-lived subscription credential as a repository secret to do its reading, where every
-repository administrator could reach it.
+Nothing automated reads a change for that. Catching it is the author's job, done by
+reading the diff before pushing, because on a public repository a pushed branch is
+already published. What to read for is the same list the string ban was written from:
+anything naming another repository's internals, a real organization or account
+identifier, a live endpoint, or a measurement taken against a live system. Fixtures
+describe a fictional deployment for the same reason.
 
 ## Reporting a vulnerability
 

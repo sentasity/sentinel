@@ -67,18 +67,16 @@ and the renderer disagree, which is the backstop.
 
 ## What CI runs on a documentation change
 
-Five things, and only the first is documentation-specific:
+Four things, and only the first is documentation-specific:
 
 - `docs-ci.yml` builds the site and runs both checkers plus their own unit tests
 - `tests.yml` runs the Python suite on 3.12 and 3.13
 - `secret-scan.yml` runs gitleaks
-- CodeRabbit reviews the change against the repository's disclosure rules and reports
-  anything a public repository should not be handing a stranger, blocking the merge until
-  its comments are resolved
 - inside the Python suite, `tests/test_public_tree.py` reads every tracked file looking
   for strings that must never be published, which now includes every page of this site
 
-The last two are worth knowing about before you paste a real endpoint or channel id
-into a page. The string ban fails the build outright; the reviewer catches the same class
-of thing without needing someone to have described it first. Both outcomes are
-intended. [Runbooks](/sentinel/operate/runbooks/) covers the scan in full.
+The last one is worth knowing about before you paste a real endpoint or channel id
+into a page: the string ban fails the build outright. It only knows the strings it
+lists, though, so a page that describes a deployment in other words passes it. Read
+your diff for that before pushing. [Runbooks](/sentinel/operate/runbooks/) covers the
+scan in full.
