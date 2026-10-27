@@ -98,17 +98,11 @@ A tool the platform adds between probes is not in the list until the next probe 
 
 ## The disclosure gates
 
-Three gates decide what this repository is willing to hand a stranger, and they cover different things.
+Two gates decide what this repository is willing to hand a stranger, and they cover different things.
 
 `tests/test_public_tree.py` bans specific strings, and gitleaks (`secret-scan.yml`) matches credential shapes. Both catch what someone already thought to describe, both are deterministic, and both run locally before anything is pushed for any clone that ran `pre-commit install` (see [CONTRIBUTING.md](https://github.com/sentasity/sentinel/blob/main/CONTRIBUTING.md)). On a public repository every pushed branch is published, so that local hook is the only gate that fires before content becomes public; CI is the backstop for clones without it.
 
-The third gate reads. CodeRabbit reviews every pull request against the disclosure rules in [`.coderabbit.yaml`](https://github.com/sentasity/sentinel/blob/main/.coderabbit.yaml), which tell it to flag anything naming another repository's internals, a real organization or account identifier, a live endpoint, or a measurement taken against a live system, and to cite a file and line without ever quoting the value it is flagging. It also reports ordinary security weaknesses in the change, such as a credential reaching a step that does not need it.
-
-It blocks the merge until its comments are resolved. That is deliberate, and it is the lesson of what it replaced: a dedicated scanning workflow that reported a passing check while leaving major findings underneath as annotations, which went unread. Resolving a false positive is a click, and a model reviewing prose for disclosure will produce some. An unread finding costs whatever it was warning about.
-
-That workflow also had to hold a Claude subscription credential as a repository secret to do its reading, which put a long-lived personal credential somewhere every repository administrator could reach. Retiring it removed the last one.
-
-**What was lost.** The old scan could sweep the whole tracked tree on demand, not just a diff. CodeRabbit reviews changes, so untouched files are no longer re-read on a schedule, and the `path_filters` in [`.coderabbit.yaml`](https://github.com/sentasity/sentinel/blob/main/.coderabbit.yaml) exclude generated trees (`fixtures/`, `docs/brand/assets/`) from review entirely. Those are covered by their generators and by `tests/test_public_tree.py`, which still reads every tracked file for banned strings. So the accurate claim is narrower than "everything gets read": the tree was swept clean before the change, and every hand-written change outside those filters passes a reader on the way in.
+Nothing automated reads a change for prose that describes a deployment without using a listed string. That is the author's to catch, by reading the diff before pushing, and the [security model](/sentinel/security-model/#what-a-list-cannot-catch) lists what to read for.
 
 The banned strings themselves are split in two. Generic shapes live in the test file; the literals that identify a real deployment live in an untracked local file, `config/banned.local.txt`, because a tracked ban list is an index of everything it protects. CI materializes that file from the `SENTINEL_BANNED_PATTERNS` secret and sets `SENTINEL_REQUIRE_BANNED_LOCAL`, so a vanished secret fails the suite rather than quietly narrowing the scan. After editing the local file, mirror it back:
 
@@ -117,8 +111,6 @@ gh secret set SENTINEL_BANNED_PATTERNS < config/banned.local.txt
 ```
 
 A fork's pull request runs without the secret and tests the generic patterns only, which is the same posture a stranger's clone gets: the push to the default branch after the merge is where the full list applies.
-
-**Accepted disclosures** live in [`.github/disclosure-allowlist.md`](https://github.com/sentasity/sentinel/blob/main/.github/disclosure-allowlist.md). Adding an entry changes what a public repository is willing to expose, so it gets reviewed like any other change.
 
 ## Reading autofix in the logs
 
