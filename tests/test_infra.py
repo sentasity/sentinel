@@ -1,5 +1,6 @@
 """CDK template assertions for the receiver stack."""
 
+import dataclasses
 from pathlib import Path
 
 import aws_cdk as cdk
@@ -499,3 +500,88 @@ def test_the_bundle_ships_only_the_receiver_config_file():
 
     assert "cp -r receiver config" not in source, "the bundle copies the whole config directory"
     assert "cp config/{DEFAULT_CONFIG_FILENAME} /asset-output/config/" in source
+
+
+FORWARDER_HANDLER = "receiver.alarm_forwarder.lambda_handler"
+
+
+@pytest.fixture(scope="module")
+def forwarding_template():
+    cfg = dataclasses.replace(CONFIG, alarm_ntfy_server="https://ntfy.example.com")
+    app = cdk.App(context={"aws:cdk:bundling-stacks": []})
+    stack = ReceiverStack(
+        app,
+        "sentinel-receiver",
+        cfg=cfg,
+        env=cdk.Environment(account=cfg.account, region=cfg.region),
+    )
+    return Template.from_stack(stack)
+
+
+def forwarder(template):
+    found = template.find_resources(
+        "AWS::Lambda::Function", {"Properties": {"Handler": FORWARDER_HANDLER}}
+    )
+    return found
+
+
+def test_no_forwarder_without_a_server(template):
+    assert forwarder(template) == {}
+    assert template.find_resources(
+        "AWS::SNS::Subscription", {"Properties": {"Protocol": "lambda"}}
+    ) == {}
+
+
+def test_forwarder_subscribes_to_the_alarm_topic(forwarding_template):
+    (function_id,) = forwarder(forwarding_template)
+    (topic_id,) = forwarding_template.find_resources("AWS::SNS::Topic")
+    subscriptions = forwarding_template.find_resources(
+        "AWS::SNS::Subscription", {"Properties": {"Protocol": "lambda"}}
+    )
+
+    assert len(subscriptions) == 1
+    (subscription,) = subscriptions.values()
+    assert subscription["Properties"]["TopicArn"] == {"Ref": topic_id}
+    assert subscription["Properties"]["Endpoint"] == {"Fn::GetAtt": [function_id, "Arn"]}
+
+
+def test_forwarder_environment(forwarding_template):
+    (function,) = forwarder(forwarding_template).values()
+
+    assert function["Properties"]["Environment"]["Variables"] == {
+        "NTFY_SERVER": "https://ntfy.example.com",
+        "NTFY_TOPIC_PARAMETER": "/sentinel/ntfy-topic",
+    }
+
+
+def test_forwarder_may_read_only_its_topic_parameter(forwarding_template):
+    (function_id,) = forwarder(forwarding_template)
+    role = forwarder(forwarding_template)[function_id]["Properties"]["Role"]["Fn::GetAtt"][0]
+    statements = []
+    for policy in forwarding_template.find_resources("AWS::IAM::Policy").values():
+        if {"Ref": role} in policy["Properties"]["Roles"]:
+            statements.extend(policy["Properties"]["PolicyDocument"]["Statement"])
+
+    ssm = [s for s in statements if "ssm:GetParameter" in str(s.get("Action"))]
+    assert len(ssm) == 1
+    assert ssm[0]["Resource"] == "arn:aws:ssm:us-east-1:123456789012:parameter/sentinel/ntfy-topic"
+    kms = [s for s in statements if "kms:Decrypt" in str(s.get("Action"))]
+    assert kms[0]["Condition"]["StringEquals"]["kms:ViaService"] == "ssm.us-east-1.amazonaws.com"
+
+
+def test_forwarder_errors_are_alarmed(forwarding_template):
+    (function_id,) = forwarder(forwarding_template)
+
+    forwarding_template.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        {
+            "MetricName": "Errors",
+            "Namespace": "AWS/Lambda",
+            "Dimensions": [{"Name": "FunctionName", "Value": {"Ref": function_id}}],
+            "Threshold": 1,
+        },
+    )
+
+
+def test_every_forwarding_alarm_action_points_at_the_alarm_topic(forwarding_template):
+    test_every_alarm_action_points_at_the_email_topic(forwarding_template)

@@ -23,7 +23,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from receiver.config import DEFAULT_CONFIG_FILENAME, ReceiverConfig
+from receiver.config import DEFAULT_CONFIG_FILENAME, NTFY_TOPIC_KEY, ReceiverConfig
 from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
@@ -112,6 +112,33 @@ class ReceiverStack(Stack):
             removal_policy=RemovalPolicy.DESTROY,
         )
 
+        code = lambda_.Code.from_asset(
+            str(REPO_ROOT),
+            bundling=BundlingOptions(
+                image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                # The function runs on x86_64, so the bundle must be built
+                # for it. Without this, an arm64 build host (any Apple
+                # Silicon Mac) installs aarch64 wheels and the function
+                # dies at import with Runtime.ImportModuleError. Pure
+                # Python deps hid this; cryptography, pulled in by
+                # PyJWT[crypto], has a native module and no fallback.
+                platform="linux/amd64",
+                # Only the one config file ships. `config/` also holds
+                # operator-local files (the disclosure ban list, and
+                # whatever else an operator keeps beside the config),
+                # and anything copied here is readable by everyone who
+                # can read the function's code.
+                command=[
+                    "bash",
+                    "-c",
+                    "pip install -r requirements-lambda.txt -t /asset-output "
+                    "&& cp -r receiver /asset-output "
+                    "&& mkdir -p /asset-output/config "
+                    f"&& cp config/{DEFAULT_CONFIG_FILENAME} /asset-output/config/",
+                ],
+            ),
+        )
+
         self.function = lambda_.Function(
             self,
             "Receiver",
@@ -138,32 +165,7 @@ class ReceiverStack(Stack):
                 "SENTASITY_ENV": "prod",
                 "TABLE_NAME": cfg.table_name,
             },
-            code=lambda_.Code.from_asset(
-                str(REPO_ROOT),
-                bundling=BundlingOptions(
-                    image=lambda_.Runtime.PYTHON_3_12.bundling_image,
-                    # The function runs on x86_64, so the bundle must be built
-                    # for it. Without this, an arm64 build host (any Apple
-                    # Silicon Mac) installs aarch64 wheels and the function
-                    # dies at import with Runtime.ImportModuleError. Pure
-                    # Python deps hid this; cryptography, pulled in by
-                    # PyJWT[crypto], has a native module and no fallback.
-                    platform="linux/amd64",
-                    # Only the one config file ships. `config/` also holds
-                    # operator-local files (the disclosure ban list, and
-                    # whatever else an operator keeps beside the config),
-                    # and anything copied here is readable by everyone who
-                    # can read the function's code.
-                    command=[
-                        "bash",
-                        "-c",
-                        "pip install -r requirements-lambda.txt -t /asset-output "
-                        "&& cp -r receiver /asset-output "
-                        "&& mkdir -p /asset-output/config "
-                        f"&& cp config/{DEFAULT_CONFIG_FILENAME} /asset-output/config/",
-                    ],
-                ),
-            ),
+            code=code,
         )
 
         self.function_url = self.function.add_function_url(
@@ -367,4 +369,80 @@ class ReceiverStack(Stack):
             )
             alarm.add_alarm_action(cloudwatch_actions.SnsAction(self.alarm_topic))
 
+        self.alarm_forwarder = (
+            self._add_alarm_forwarder(cfg, code) if cfg.alarm_ntfy_server else None
+        )
+
         CfnOutput(self, "FunctionUrl", value=self.function_url.url)
+
+    def _add_alarm_forwarder(self, cfg: ReceiverConfig, code) -> lambda_.Function:
+        """Publish every alarm to ntfy as well as email.
+
+        Optional: deployed only when `aws.alarm_ntfy_server` is set. It shares
+        the receiver's code asset but imports none of it, so it runs small and
+        never reads the receiver's configuration. Its only grant is the one
+        topic parameter.
+        """
+        topic_parameter = cfg.secret_name(NTFY_TOPIC_KEY)
+        log_group = logs.LogGroup(
+            self,
+            "AlarmForwarderLogs",
+            log_group_name="/aws/lambda/sentinel-alarm-forwarder",
+            retention=logs.RetentionDays.THREE_MONTHS,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+        forwarder = lambda_.Function(
+            self,
+            "AlarmForwarder",
+            function_name="sentinel-alarm-forwarder",
+            runtime=lambda_.Runtime.PYTHON_3_12,
+            handler="receiver.alarm_forwarder.lambda_handler",
+            memory_size=128,
+            timeout=Duration.seconds(30),
+            log_group=log_group,
+            environment={
+                "NTFY_SERVER": cfg.alarm_ntfy_server,
+                "NTFY_TOPIC_PARAMETER": topic_parameter,
+            },
+            code=code,
+        )
+        forwarder.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["ssm:GetParameter"],
+                resources=[
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter{topic_parameter}"
+                ],
+            )
+        )
+        forwarder.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["kms:Decrypt"],
+                resources=["*"],
+                conditions={
+                    "StringEquals": {
+                        "kms:ViaService": f"ssm.{self.region}.amazonaws.com"
+                    }
+                },
+            )
+        )
+        self.alarm_topic.add_subscription(sns_subscriptions.LambdaSubscription(forwarder))
+
+        # Its own failures alarm to the same topic. That cannot loop: an alarm
+        # notifies once per transition, and the email still delivers.
+        errors = cloudwatch.Alarm(
+            self,
+            "AlarmForwarderErrors",
+            alarm_description=(
+                "The alarm forwarder failed to publish to ntfy. Alarms still "
+                "arrive by email."
+            ),
+            metric=forwarder.metric_errors(period=Duration.minutes(5), statistic="Sum"),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=(
+                cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD
+            ),
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+        )
+        errors.add_alarm_action(cloudwatch_actions.SnsAction(self.alarm_topic))
+        return forwarder
