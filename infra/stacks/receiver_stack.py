@@ -27,8 +27,13 @@ from receiver.config import DEFAULT_CONFIG_FILENAME, ReceiverConfig
 from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
+    ENQUEUE_FAILED_MARKER,
     FINDINGS_REJECTED_MARKER,
+    FIRE_REJECTED_MARKER,
+    INVESTIGATION_FAILED_MARKER,
+    INVESTIGATION_TIMED_OUT_MARKER,
     ISSUE_TRACKING_FAILED_MARKER,
+    PAYLOAD_UNUSABLE_MARKER,
     WINDOW_EXHAUSTED_MARKER,
 )
 
@@ -297,6 +302,35 @@ class ReceiverStack(Stack):
                 "An alert's GitHub issue tracking failed: a grant was not "
                 "written, an issue operation was rejected or failed, a write "
                 "did not land as sent, or an alert was left untracked.",
+            ),
+            (
+                "InvestigationTimedOut",
+                INVESTIGATION_TIMED_OUT_MARKER,
+                "An investigation's session never reported back before its "
+                "deadline. The thread got the fallback reply and no findings.",
+            ),
+            (
+                "FireRejected",
+                FIRE_REJECTED_MARKER,
+                "The Claude routine API refused to start an investigation "
+                "session. The issues in that batch were marked failed.",
+            ),
+            (
+                "EnqueueFailed",
+                ENQUEUE_FAILED_MARKER,
+                "An alert card posted, but its investigation was never queued.",
+            ),
+            (
+                "PayloadUnusable",
+                PAYLOAD_UNUSABLE_MARKER,
+                "Sentry sent a signed alert the receiver could not parse. "
+                "Alerts may be failing to post at all.",
+            ),
+            (
+                "InvestigationFailed",
+                INVESTIGATION_FAILED_MARKER,
+                "An investigation session reported it could not investigate "
+                "an issue.",
             ),
         ):
             metric_filter = self.log_group.add_metric_filter(

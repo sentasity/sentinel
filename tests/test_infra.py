@@ -326,6 +326,11 @@ def test_eventbridge_may_invoke_the_function(template):
     [
         ("WindowExhausted", observability.WINDOW_EXHAUSTED_MARKER),
         ("FindingsRejected", observability.FINDINGS_REJECTED_MARKER),
+        ("InvestigationTimedOut", observability.INVESTIGATION_TIMED_OUT_MARKER),
+        ("FireRejected", observability.FIRE_REJECTED_MARKER),
+        ("EnqueueFailed", observability.ENQUEUE_FAILED_MARKER),
+        ("PayloadUnusable", observability.PAYLOAD_UNUSABLE_MARKER),
+        ("InvestigationFailed", observability.INVESTIGATION_FAILED_MARKER),
     ],
 )
 def test_each_marker_has_a_metric_filter(template, metric_name, marker):
@@ -340,7 +345,18 @@ def test_each_marker_has_a_metric_filter(template, metric_name, marker):
     )
 
 
-@pytest.mark.parametrize("alarm_metric", ["WindowExhausted", "FindingsRejected"])
+@pytest.mark.parametrize(
+    "alarm_metric",
+    [
+        "WindowExhausted",
+        "FindingsRejected",
+        "InvestigationTimedOut",
+        "FireRejected",
+        "EnqueueFailed",
+        "PayloadUnusable",
+        "InvestigationFailed",
+    ],
+)
 def test_each_new_metric_is_alarmed(template, alarm_metric):
     template.has_resource_properties(
         "AWS::CloudWatch::Alarm",

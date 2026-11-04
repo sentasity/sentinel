@@ -46,9 +46,12 @@ from receiver.observability import (
     AUTOFIX_DISPATCHED_MARKER,
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
+    ENQUEUE_FAILED_MARKER,
     FINDINGS_REJECTED_MARKER,
     FINDINGS_SCHEMA_OUTDATED_MARKER,
+    INVESTIGATION_FAILED_MARKER,
     ISSUE_TRACKING_FAILED_MARKER,
+    PAYLOAD_UNUSABLE_MARKER,
     PROBE_LOG_LIMIT,
     PROBE_MARKER,
     flush_sentry,
@@ -214,7 +217,7 @@ def deliver(alert) -> None:
             cfg=cfg, ref=ref, store=alert_store(), bot=bot_client(),
         )
     except Exception as exc:  # noqa: BLE001 - see the comment above
-        LOG.error("enqueue failed for %s: %s", ref.short_id, exc)
+        LOG.error("%s enqueue failed for %s: %s", ENQUEUE_FAILED_MARKER, ref.short_id, exc)
 
 
 def handle_sentry(event: dict) -> dict:
@@ -232,7 +235,7 @@ def handle_sentry(event: dict) -> dict:
     try:
         alert = parse_alert(json.loads(body))
     except (ValueError, InvalidAlertPayload) as exc:
-        LOG.error("unusable webhook payload: %s", exc)
+        LOG.error("%s unusable webhook payload: %s", PAYLOAD_UNUSABLE_MARKER, exc)
         return respond(400, "unusable payload")
 
     if alert.environment not in config().environments:
@@ -453,6 +456,13 @@ def deliver_findings(body, rows: list[dict]) -> dict:
     deliveries: list[dict] = []
     for result in doc.results:
         row = by_issue[result.issue_id]
+        if result.status == "failed":
+            # Delivered like any other result; the marker is what alarms.
+            LOG.error(
+                "%s %s %s",
+                INVESTIGATION_FAILED_MARKER, result.short_id,
+                (result.failure_reason or "no reason given")[:200],
+            )
         # Claim before posting: the deadline sweep targets the same transition
         # and exactly one of us may write into this thread. The outcome rides
         # on the claim so a repeat alert on this release can quote it without

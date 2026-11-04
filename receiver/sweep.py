@@ -18,6 +18,8 @@ from receiver.findings import reply_summary
 from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
+    FIRE_REJECTED_MARKER,
+    INVESTIGATION_TIMED_OUT_MARKER,
     ISSUE_TRACKING_FAILED_MARKER,
     WINDOW_EXHAUSTED_MARKER,
 )
@@ -112,7 +114,10 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
         LOG.warning("transient fire failure; holding %d rows", len(rows))
         return "retryable"
 
-    LOG.error("fire rejected for batch %s; marking %d rows failed", batch_id, len(rows))
+    LOG.error(
+        "%s fire rejected for batch %s; marking %d rows failed",
+        FIRE_REJECTED_MARKER, batch_id, len(rows),
+    )
     for r in rows:
         store.advance(r["issue_id"], r["environment"], r["release"], "pending", "failed")
     return "rejected"
@@ -313,6 +318,10 @@ def expire_overdue(*, store, bot) -> int:
             require_absent="pending_reply",
         ):
             continue
+        LOG.error(
+            "%s %s deadline passed with no findings",
+            INVESTIGATION_TIMED_OUT_MARKER, r.get("short_id", r["issue_id"]),
+        )
         try:
             bot.reply_in_thread(r["conversation_id"], r["message_id"], DEADLINE_REPLY)
             expired += 1

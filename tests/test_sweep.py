@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from receiver.observability import DELIVERY_FAILURE_MARKER
+from receiver.observability import (
+    DELIVERY_FAILURE_MARKER,
+    FIRE_REJECTED_MARKER,
+    INVESTIGATION_TIMED_OUT_MARKER,
+)
 from receiver.routines import FireOutcome
 from receiver.sweep import (
     DEADLINE_REPLY,
@@ -160,6 +164,15 @@ def test_a_rejected_fire_marks_the_rows_failed():
     assert store.advance.call_args.args[-1] == "failed"
 
 
+def test_rejected_fire_logs_the_fire_rejected_marker(caplog):
+    store, routines, bot = collaborators(FireOutcome.REJECTED)
+
+    with caplog.at_level("ERROR"):
+        fire_group([row("1")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert FIRE_REJECTED_MARKER in caplog.text
+
+
 def test_a_fired_group_tells_every_thread_it_is_being_investigated():
     """The session takes minutes; the channel learns within one sweep."""
     store, routines, bot = collaborators()
@@ -306,6 +319,42 @@ def test_a_failed_fallback_reply_is_logged_with_the_delivery_marker(caplog):
         assert expire_overdue(store=store, bot=bot) == 0
 
     assert DELIVERY_FAILURE_MARKER in caplog.text
+
+
+def test_expired_row_logs_the_timed_out_marker(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    lines = [r.getMessage() for r in caplog.records if INVESTIGATION_TIMED_OUT_MARKER in r.getMessage()]
+    assert len(lines) == 1
+    assert "PROCESSING-7" in lines[0]
+
+
+def test_timed_out_marker_logs_even_when_the_reply_fails(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = True
+    bot.reply_in_thread.side_effect = RuntimeError("bot down")
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    assert INVESTIGATION_TIMED_OUT_MARKER in caplog.text
+
+
+def test_a_row_another_writer_claimed_logs_no_timed_out_marker(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = False
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    assert INVESTIGATION_TIMED_OUT_MARKER not in caplog.text
 
 
 def test_the_fallback_claim_is_conditioned_on_no_stored_reply():

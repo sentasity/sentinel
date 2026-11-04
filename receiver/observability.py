@@ -98,3 +98,30 @@ AUTOFIX_FAILED_MARKER = "AUTOFIX_FAILED"
 # and if that leaves an alert untracked the backstop logs this marker once,
 # at the grant's expiry. Imported by the CDK stack rather than repeated.
 ISSUE_TRACKING_FAILED_MARKER = "ISSUE_TRACKING_FAILED"
+
+# Each of these is a way the pipeline fails at its job with nothing else
+# alarmed: a thread left with no findings, an alert never investigated, or
+# alerts not posting at all. Every one is alarmed, and imported by the CDK
+# stack rather than repeated, for the same reason as the markers above.
+
+# A fired session never reported before its deadline, so the thread got the
+# fallback reply instead of findings. Logged once per row, at the claim,
+# whether or not the fallback reply then posts.
+INVESTIGATION_TIMED_OUT_MARKER = "INVESTIGATION_TIMED_OUT"
+
+# The routine API refused to start a session (or the payload was over its
+# cap), and the batch's rows were marked failed. The 429 and 5xx paths are
+# retried or alarmed elsewhere; this is the one that gives up on the spot.
+FIRE_REJECTED_MARKER = "FIRE_REJECTED"
+
+# The card posted, but its investigation row was never written, so nothing
+# will ever investigate the alert.
+ENQUEUE_FAILED_MARKER = "ENQUEUE_FAILED"
+
+# Sentry sent a correctly signed alert the receiver could not parse. A
+# payload shape change would fail every alert this way, so one is enough.
+PAYLOAD_UNUSABLE_MARKER = "PAYLOAD_UNUSABLE"
+
+# A session reported `failed` for an issue it was asked to investigate.
+# `partial` is not under it: a partial result still delivered findings.
+INVESTIGATION_FAILED_MARKER = "INVESTIGATION_FAILED"
