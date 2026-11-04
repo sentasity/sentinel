@@ -122,8 +122,8 @@ grant was for, so Sentry resolves that issue in the first release that ships the
 A grant that never reports is failed into the thread once its hour is up.
 
 The gate stays on the receiver rather than moving into the session, and so does every
-GitHub write: the session reads as the operator through the platform's GitHub tools and
-has no write path. [The security model](/sentinel/security-model/) explains why both of
+GitHub write: the session reads as the operator through the platform's GitHub tools,
+holds no write credential, and never pushes. [The security model](/sentinel/security-model/) explains why both of
 those matter.
 
 ## 5. Track
