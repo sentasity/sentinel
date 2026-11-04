@@ -19,7 +19,7 @@ PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
 PREFIX = "mcp__github__"
 
-READ_ALLOWLIST = ["search_issues", "issue_read"]
+READ_ALLOWLIST = ["issue_read"]
 
 # Write tools a routine session is known to carry, or that the issue
 # conventions a session reads point a person at. A careless edit to the list
@@ -43,6 +43,11 @@ NAME_CHECKING_READS = ("get_label", "list_issue_fields", "list_issue_types")
 # was applied. Each one stays withheld, so a regenerated list cannot drop it.
 SEEN_BY_PROBE = ("disable_pr_auto_merge", "get_check_run")
 
+# The server's own issue searches. The receiver searches as the App instead,
+# so the session has one search path, and these stay withheld even if the
+# platform stops removing them.
+SEARCHES = ("search_issues", "semantic_issues_search", "semantic_issue_similarity_search")
+
 
 def policy() -> dict:
     return yaml.safe_load((PROMPTS / "routine-tools.yaml").read_text())
@@ -62,7 +67,7 @@ def github_access() -> str:
     return body[body.index("GitHub access.") : body.index("Input:")]
 
 
-def test_the_policy_names_the_built_in_server_and_the_two_reads():
+def test_the_policy_names_the_built_in_server_and_its_one_read():
     assert policy()["prefix"] == PREFIX
     assert policy()["read_allowlist"] == READ_ALLOWLIST
 
@@ -86,7 +91,9 @@ def test_the_deny_list_never_withholds_an_allowed_read():
 
 
 def test_the_deny_list_keeps_the_write_floor_and_the_name_checking_reads():
-    missing = (set(WRITE_FLOOR) | set(NAME_CHECKING_READS) | set(SEEN_BY_PROBE)) - denied_unprefixed()
+    missing = (
+        set(WRITE_FLOOR) | set(NAME_CHECKING_READS) | set(SEEN_BY_PROBE) | set(SEARCHES)
+    ) - denied_unprefixed()
 
     assert not missing, f"disallowed_tools dropped: {sorted(missing)}"
 
@@ -96,6 +103,17 @@ def test_every_allowed_read_is_named_in_the_github_access_paragraph():
 
     for name in policy()["read_allowlist"]:
         assert f"`{name}`" in body, f"the GitHub-access paragraph never names {name}"
+
+
+def test_the_github_access_paragraph_searches_through_the_receiver_and_bans_gh():
+    """The platform tells a routine session to search with `gh api` when its
+    own search tools are gone. That route carries the operator's credential,
+    so the paragraph names it and rules it out, reads included."""
+    body = " ".join(github_access().split())
+
+    assert "the receiver's `search` operation" in body
+    assert "never call the GitHub API with `gh`, curl, or any other client, reads included" in body
+    assert "The platform may tell this session to search GitHub with `gh api` instead" in body
 
 
 def test_the_investigator_prompt_never_names_a_withheld_tool():

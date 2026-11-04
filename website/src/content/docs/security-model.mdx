@@ -49,7 +49,7 @@ rather than hiding it is deliberate, because a compensating control nobody knows
 re-run is not a control.
 
 The routine's tool settings are in the same position as its connectors. The routine
-withholds every tool of the platform's built-in GitHub server except two issue reads,
+withholds every tool of the platform's built-in GitHub server except one issue read,
 and the receiver cannot read that list. Reading the routine back through routine tooling
 proves the list was saved, not that the session runs under it, so the probe also lists
 the GitHub tools its own session can see and tries one it should not have, on an issue
@@ -126,12 +126,19 @@ the target repository writes text the session reads. The prompt treats it as dat
 the most an injected issue can do is steer the session's own draft, which reaches GitHub
 only through the receiver's named operations.
 
+The duplicate search is not one of those reads. The platform removes its GitHub server's
+search tools from routine sessions and points them at `gh api` instead, a route that
+carries the same operator credential and can write as readily as it reads. Allowing it
+for searches would leave the prompt as the only thing standing between the session and
+a write under a person's name, so the prompt forbids `gh` for reads too, and the
+receiver runs the search itself, as the App, with a token that can only read.
+
 ### The receiver's token
 
 | | |
 |---|---|
 | Scope | one repository, the configured `target_repo` |
-| Permissions | per operation (`OP_PERMISSIONS`): `contents: write` and `pull_requests: write` for a pull request; `issues: write` for `file_issue`, `comment`, and `reopen`; `issues: write` plus the organization Issue fields read permission for `set_fields`; `issues: read` and `organization_projects: write` for `add_to_project`; never `workflows` or any administration permission |
+| Permissions | per operation (`OP_PERMISSIONS`): `contents: write` and `pull_requests: write` for a pull request; `issues: write` for `file_issue`, `comment`, and `reopen`; `issues: write` plus the organization Issue fields read permission for `set_fields`; `issues: read` and `organization_projects: write` for `add_to_project`; `issues: read` alone for `search`; never `workflows` or any administration permission |
 | Lifetime | one hour, set by GitHub when the token is minted; spent inside the one invocation that minted it |
 | Storage | none: minted per pull request or per issue operation inside the receiver, never returned, never written down |
 
@@ -335,7 +342,10 @@ worth engineering against is the silent one.
 
 A finding that ends without a pull request is filed as a GitHub issue, and the session
 reaches that write only by asking the receiver for one of five named operations:
-`file_issue`, `comment`, `reopen`, `set_fields`, and `add_to_project`. Each request
+`file_issue`, `comment`, `reopen`, `set_fields`, and `add_to_project`. A sixth,
+`search`, is the duplicate search, and only reads: its terms can carry no GitHub
+qualifier, so it runs over issues in `target_repo` alone, and it spends a per-alert cap
+but none of the day's write budget. Each request
 carries a tracking token issued in the findings response, one per finding, stored only
 as a hash, scoped to that one alert, and expiring on its own. No operation closes,
 deletes, locks, or transfers an issue, or edits the text of an existing one, and

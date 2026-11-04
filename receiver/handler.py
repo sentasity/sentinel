@@ -917,7 +917,9 @@ def handle_issue_op(event: dict) -> dict:
     fit, the mint and the reads with their target checks. The claims then
     run cheapest first and the day's budget last, so an op refused or
     rejected before them never spends budget. The repository is always
-    `cfg.target_repo`, never anything the request names.
+    `cfg.target_repo`, never anything the request names. A search leaves
+    for `run_issue_search` right after validation: it writes nothing, so
+    none of the write guards apply to it.
     """
     cfg = config()
     if not cfg.issues_enabled:
@@ -968,6 +970,8 @@ def handle_issue_op(event: dict) -> dict:
         LOG.error("%s %s issue op rejected: %s", ISSUE_TRACKING_FAILED_MARKER, short_id, exc)
         return respond_json(400, {"status": "rejected", "reason": str(exc)})
     name = op["op"]
+    if name == "search":
+        return run_issue_search(cfg, grant, op)
 
     key = issues.op_key(op)
     record = store.get_issue_op(grant["tracking_id"], key) or {}
@@ -1063,6 +1067,53 @@ def handle_issue_op(event: dict) -> dict:
     return run_issue_op(
         cfg, grant, op, key, minted.token, deadline, issue=issue, repo_labels=repo_labels
     )
+
+
+def run_issue_search(cfg: ReceiverConfig, grant: dict, op: dict) -> dict:
+    """Search the target repository's issues for `op["query"]` as the App,
+    and answer with what GitHub found.
+
+    The one read among the operations, so it skips everything that guards a
+    write: no replay record (a repeated read is harmless), no daily budget,
+    no tracking claim and no thread reply. It spends only its own per-alert
+    cap, claimed after the mint like every op's caps, so a failed mint costs
+    nothing. The repository and the issues-only qualifier are the
+    receiver's, added to terms that can carry no qualifier of their own, and
+    the token can only read.
+    """
+    store = alert_store()
+    short_id = str(grant.get("short_id") or "")
+    deadline = time.monotonic() + ISSUE_SEQUENCE_BUDGET_SECONDS
+    client = github_client()
+    minted = client.mint_token(cfg.target_repo, OP_PERMISSIONS["search"], deadline=deadline)
+    if minted is None:
+        return fail_issue_op(short_id, "search", "token mint failed")
+    if not store.claim_grant_cap(grant["tracking_id"], "search", issues.GRANT_CAPS["search"]):
+        return refuse_issue_op(short_id, "search cap reached for this alert")
+
+    query = issues.search_query(op["query"], cfg.target_repo)
+    call = client.find_issues(query, token=minted.token, deadline=deadline)
+    if not call.ok:
+        if call.status == 422:
+            # GitHub could not parse the terms. The session can reword them;
+            # nothing here is the receiver's failure.
+            LOG.warning("issue search for %s refused by GitHub", short_id)
+            return respond_json(400, {"status": "rejected", "reason": "GitHub refused the query"})
+        LOG.error(
+            "%s %s search failed: %s (HTTP %d)",
+            ISSUE_TRACKING_FAILED_MARKER, short_id, call.step, call.status,
+        )
+        return respond_json(502, {"status": "failed", "reason": call.step})
+
+    hits = issues.search_hits(call.body)
+    total = call.body.get("total_count") if isinstance(call.body, dict) else None
+    LOG.info("issue search for %s found %d issues", short_id, len(hits))
+    return respond_json(200, {
+        "status": "done",
+        "op": "search",
+        "total_count": total if isinstance(total, int) else len(hits),
+        "issues": hits,
+    })
 
 
 def post_tracking_reply(grant: dict, text: str) -> bool:

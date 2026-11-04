@@ -19,6 +19,9 @@ from receiver.issues import (
     OPS,
     OPTIONAL_FIELDS,
     RELATED_PER_RESULT,
+    SEARCH_PER_RESULT,
+    SEARCH_QUERY_LIMIT,
+    SEARCH_RESULTS_LIMIT,
     SEARCH_UNAVAILABLE_LINE,
     TRACKING_CAPS,
     TRACKING_FIELDS,
@@ -31,6 +34,8 @@ from receiver.issues import (
     match_labels,
     op_key,
     parse_issue_op,
+    search_hits,
+    search_query,
     shape_body,
     shape_title,
     tracking_reply,
@@ -86,6 +91,7 @@ VALID = {
         "fields": {"Priority": "High", "Effort": "Quick Win"},
     },
     "add_to_project": {"tracking_id": "t-1", "op": "add_to_project", "issue_number": 42},
+    "search": {"tracking_id": "t-1", "op": "search", "query": "CHECKOUT-4B2 cart total is None"},
 }
 
 GRANT = {
@@ -153,6 +159,12 @@ def test_each_valid_op_parses_to_exactly_what_was_sent(op):
         (broken("set_fields", fields={"Status": "Done"}), "only the tracking block's fields"),
         (broken("set_fields", fields={"Priority": "  "}), "non-empty option name"),
         (broken("set_fields", fields={"Priority": 1}), "non-empty option name"),
+        (broken("search", query=...), "search needs query"),
+        (broken("search", query="  "), "query must be a non-empty string"),
+        (broken("search", query=["cart"]), "query must be a non-empty string"),
+        (broken("search", query="x" * (SEARCH_QUERY_LIMIT + 1)), f"query exceeds {SEARCH_QUERY_LIMIT}"),
+        (broken("search", query="cart\ntotal"), "query must be one line"),
+        (broken("search", repo="acme-tools/ledger"), "search takes only"),
     ],
 )
 def test_each_rule_rejects_a_request_that_breaks_only_it(body, rule):
@@ -230,6 +242,7 @@ def test_only_a_create_a_reopen_or_a_duplicate_comment_tracks_the_alert():
     assert not is_tracking_op(broken("comment", relation="related"))
     assert not is_tracking_op(VALID["set_fields"])
     assert not is_tracking_op(VALID["add_to_project"])
+    assert not is_tracking_op(VALID["search"])
 
 
 def test_the_footer_names_the_grants_sentry_issue():
@@ -306,6 +319,7 @@ def test_the_tracking_caps_are_the_limits_the_validation_enforces():
         "title_max_chars": ISSUE_TITLE_LIMIT,
         "body_max_chars": ISSUE_BODY_LIMIT,
         "comment_max_chars": COMMENT_BODY_LIMIT,
+        "search_per_result": SEARCH_PER_RESULT,
     }
     assert RELATED_PER_RESULT == GRANT_CAPS["comment"] - 1 == 5
 
@@ -409,3 +423,80 @@ def test_a_label_or_type_that_did_not_land_is_warned_about():
 
 def test_no_type_sent_means_no_type_checked():
     assert landing_warnings({"labels": [], "type": None}, [], "") == []
+
+
+def test_a_search_is_scoped_to_the_target_repo_and_to_issues():
+    assert search_query("CHECKOUT-4B2 cart total", "acme-tools/checkout") == (
+        "CHECKOUT-4B2 cart total repo:acme-tools/checkout is:issue"
+    )
+
+
+@pytest.mark.parametrize(
+    "terms",
+    [
+        "cart repo:acme-tools/ledger",
+        "cart user:someone org:elsewhere",
+        "cart is:pr",
+        "cart -repo:acme-tools/checkout",
+        'cart "repo:acme-tools/ledger"',
+    ],
+)
+def test_a_search_cannot_add_a_qualifier_of_its_own(terms):
+    """A qualifier is a name, a colon and a value. Without the colon there is
+    none, so a session steered by injected text cannot widen the search to
+    another repository, a user, or pull requests."""
+    query = search_query(terms, "acme-tools/checkout")
+    terms_part = query.removesuffix(" repo:acme-tools/checkout is:issue")
+
+    assert ":" not in terms_part
+    assert query.endswith(" repo:acme-tools/checkout is:issue")
+
+
+def test_a_search_keeps_the_words_of_an_error_message():
+    assert search_query("KeyError: 'total'  in\tcart_total", "acme-tools/checkout") == (
+        "KeyError 'total' in cart_total repo:acme-tools/checkout is:issue"
+    )
+
+
+def test_search_hits_shape_each_issue_and_drop_pull_requests():
+    body = {
+        "total_count": 3,
+        "items": [
+            {
+                "number": 7, "title": "Fix: cart total", "state": "closed",
+                "state_reason": "completed", "updated_at": "2026-10-01T00:00:00Z",
+                "html_url": "https://github.com/acme-tools/checkout/issues/7",
+                "body": "long text the session reads with issue_read instead",
+                "user": {"login": "someone"},
+            },
+            {"number": 8, "title": "A pull request", "pull_request": {"url": "x"}},
+            "not an issue",
+        ],
+    }
+
+    assert search_hits(body) == [
+        {
+            "number": 7, "title": "Fix: cart total", "state": "closed",
+            "state_reason": "completed", "updated_at": "2026-10-01T00:00:00Z",
+            "url": "https://github.com/acme-tools/checkout/issues/7",
+        }
+    ]
+
+
+def test_search_hits_keep_at_most_the_results_limit():
+    items = [{"number": n, "title": str(n)} for n in range(1, SEARCH_RESULTS_LIMIT + 5)]
+
+    assert [hit["number"] for hit in search_hits({"items": items})] == list(
+        range(1, SEARCH_RESULTS_LIMIT + 1)
+    )
+
+
+def test_search_hits_of_an_unusable_body_are_empty():
+    assert search_hits({}) == []
+    assert search_hits({"items": "nope"}) == []
+    assert search_hits(None) == []
+
+
+def test_the_search_budget_is_told_to_the_session_and_enforced_per_grant():
+    assert GRANT_CAPS["search"] == SEARCH_PER_RESULT
+    assert TRACKING_CAPS["search_per_result"] == SEARCH_PER_RESULT

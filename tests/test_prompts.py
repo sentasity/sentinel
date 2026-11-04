@@ -574,7 +574,23 @@ def test_the_issue_step_searches_with_both_kinds_of_query():
 
     assert "key terms" in body
     assert "plain language" in body
-    assert "An empty result is a search that worked" in body
+    assert 'An empty "issues" list is a search that worked' in body
+
+
+def test_the_issue_step_searches_through_the_receiver_and_never_another_way():
+    """The platform strips its own GitHub search tools from routine sessions
+    and points them at `gh api`, which carries the operator's credential and
+    writes as readily as it reads. The receiver's read-only search is the one
+    route, and a failed search ends in the flagged create, never a fallback."""
+    body = " ".join(tracking_step().split())
+
+    assert 'calling the receiver\'s search: op "search" with a "query"' in body
+    assert "within `caps.search_per_result`" in body
+    assert "Never fall back to another way of searching" in body
+    for field in issues.SEARCH_HIT_FIELDS:
+        assert f'"{field}"' in body, f"the issue step never names the search hit field {field}"
+    assert f"at most {issues.SEARCH_QUERY_LIMIT} characters on one line" in body
+    assert f"up to {issues.SEARCH_RESULTS_LIMIT} best matches" in body
 
 
 def test_the_issue_step_forbids_other_identities_curl_and_tokens():
@@ -583,7 +599,7 @@ def test_the_issue_step_forbids_other_identities_curl_and_tokens():
     body = " ".join(tracking_step().split())
 
     assert "through any other identity, connector, or built-in GitHub tool" in body
-    assert "Never call the GitHub API with curl or any other HTTP client" in body
+    assert "Never call the GitHub API with `gh`, curl, or any other HTTP client" in body
     assert "never read, print, or use a GitHub token" in body
 
 
@@ -711,7 +727,7 @@ def test_the_probe_reports_the_routine_github_tools_before_the_token_checks():
     unwilling to touch GitHub at all."""
     body = " ".join(probe().split())
 
-    for name in ("mcp__github__", "`search_issues`", "`issue_read`", "`add_issue_comment`", "999999999"):
+    for name in ("mcp__github__", "`issue_read`", "`add_issue_comment`", "999999999"):
         assert name in body, f"the probe's GitHub-tools step never names {name}"
     assert "This is the one step that calls a tool from your list in step 2" in body
     assert body.index("mcp__github__") < body.index("GH_TOKEN")

@@ -2352,6 +2352,111 @@ def test_issue_route_hands_the_claimed_op_to_the_back_half(proxy, handed_off):
 
 # ---- Issue tracking: the /issues route, performing the op ----
 
+SEARCH = {"op": "search", "query": "CHECKOUT-4B2 cart total"}
+FOUND = {
+    "total_count": 2,
+    "items": [
+        {
+            "number": 42, "title": "Fix: cart total", "state": "open", "state_reason": None,
+            "updated_at": "2026-10-01T00:00:00Z",
+            "html_url": "https://github.com/acme-tools/checkout/issues/42", "body": "text",
+        },
+        {"number": 43, "title": "A pull request", "pull_request": {}},
+    ],
+}
+
+
+@pytest.fixture
+def searching(proxy):
+    proxy.github.find_issues.return_value = IssueCall(ok=True, status=200, body=FOUND)
+    return proxy
+
+
+def test_issue_search_answers_with_the_issues_github_found(searching, handed_off):
+    assert status_of(route(issues_event(**SEARCH))) == (200, {
+        "status": "done",
+        "op": "search",
+        "total_count": 2,
+        "issues": [{
+            "number": 42, "title": "Fix: cart total", "state": "open", "state_reason": None,
+            "updated_at": "2026-10-01T00:00:00Z",
+            "url": "https://github.com/acme-tools/checkout/issues/42",
+        }],
+    })
+    handed_off.assert_not_called()
+
+
+def test_issue_search_runs_in_the_target_repo_with_a_read_only_token(searching, handed_off):
+    route(issues_event(op="search", query="cart repo:acme-tools/ledger is:pr"))
+
+    assert searching.github.mint_token.call_args.args == ("acme-tools/checkout", {"issues": "read"})
+    call = searching.github.find_issues.call_args
+    assert call.args == ("cart repo acme-tools/ledger is pr repo:acme-tools/checkout is:issue",)
+    assert call.kwargs["token"] == "ghs_issue"
+
+
+def test_issue_search_spends_only_its_own_per_alert_cap(searching, handed_off):
+    route(issues_event(**SEARCH))
+
+    assert searching.store.claim_grant_cap.call_args.args == ("t-1", "search", 8)
+    searching.store.claim_daily_issue_cap.assert_not_called()
+    searching.store.claim_issue_op.assert_not_called()
+    searching.store.get_issue_op.assert_not_called()
+    searching.store.claim_tracking_issue.assert_not_called()
+    searching.bot.reply_in_thread.assert_not_called()
+
+
+def test_issue_search_runs_after_the_alert_is_tracked(searching, handed_off):
+    searching.store.get_tracking_grant.return_value = grant_row(tracked_issue=42)
+
+    assert route(issues_event(**SEARCH))["statusCode"] == 200
+
+
+def test_issue_search_refuses_past_its_cap_without_searching(searching, handed_off):
+    searching.store.claim_grant_cap.return_value = False
+
+    assert status_of(route(issues_event(**SEARCH))) == (
+        409, {"status": "refused", "reason": "search cap reached for this alert"},
+    )
+    searching.github.find_issues.assert_not_called()
+
+
+def test_issue_search_answers_502_when_the_mint_fails_and_claims_nothing(searching, handed_off):
+    searching.github.mint_token.return_value = None
+
+    assert status_of(route(issues_event(**SEARCH))) == (
+        502, {"status": "failed", "reason": "token mint failed"},
+    )
+    searching.store.claim_grant_cap.assert_not_called()
+
+
+def test_issue_search_maps_githubs_422_to_a_rejection(searching, handed_off, caplog):
+    searching.github.find_issues.return_value = IssueCall(ok=False, status=422, step="search the issues")
+
+    with caplog.at_level(logging.WARNING):
+        assert status_of(route(issues_event(**SEARCH))) == (
+            400, {"status": "rejected", "reason": "GitHub refused the query"},
+        )
+
+
+@pytest.mark.parametrize("status", [0, 403, 500])
+def test_issue_search_answers_502_naming_the_step_when_github_fails(
+    searching, handed_off, caplog, status
+):
+    searching.github.find_issues.return_value = IssueCall(ok=False, status=status, step="search the issues")
+
+    with caplog.at_level(logging.ERROR):
+        assert status_of(route(issues_event(**SEARCH))) == (
+            502, {"status": "failed", "reason": "search the issues"},
+        )
+    assert observability.ISSUE_TRACKING_FAILED_MARKER in caplog.text
+
+
+def test_issue_search_with_an_invalid_query_is_rejected_before_any_call(searching, handed_off):
+    assert route(issues_event(op="search", query=""))["statusCode"] == 400
+    searching.github.mint_token.assert_not_called()
+
+
 CREATED = {
     "number": 9,
     "html_url": "https://github.com/acme-tools/checkout/issues/9",

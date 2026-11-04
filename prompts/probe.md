@@ -78,11 +78,12 @@ session's transcript:
 
    a. List, by full name, every tool in your tool list whose name begins
       `mcp__github__`. Report the list exactly; do not summarise it.
-   b. Call each of these once, with this session's repository owner and
-      name, and report success or the exact error: `search_issues` for
-      open issues in the repository (the query must return at least one
-      issue), and `issue_read` with method `get` on the first issue it
-      returned.
+   b. Call `issue_read` once, with method `get`, on issue number 1 in
+      this session's repository, and report success or the exact error. An
+      answer from GitHub, a not-found included, means the tool works; a
+      refusal from this session or the platform means it does not. Do not
+      search for issues by any route: the investigator's search runs in
+      the receiver, and `search_issues` is withheld.
    c. If `add_issue_comment` is in the list from a, call it once on issue
       number 999999999 in this session's repository with the body
       `probe`. No issue has that number, so nothing can be written

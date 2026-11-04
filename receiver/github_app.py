@@ -66,13 +66,15 @@ ISSUE_FIELDS_PERMISSION = "issue_fields"
 # AUTOFIX_PERMISSIONS scopes a fix. No entry carries `contents`,
 # `pull_requests`, `workflows` or any administration permission, so an
 # issue op's token cannot write a file or open a pull request whatever its
-# request said.
+# request said. The search's token can only read: it writes nothing even if
+# the receiver had a bug that sent it somewhere other than the search.
 OP_PERMISSIONS = {
     "file_issue": {"issues": "write"},
     "comment": {"issues": "write"},
     "reopen": {"issues": "write"},
     "set_fields": {"issues": "write", ISSUE_FIELDS_PERMISSION: "read"},
     "add_to_project": {"issues": "read", "organization_projects": "write"},
+    "search": {"issues": "read"},
 }
 
 # The GitHub part of one issue op, from the mint to its last call. The
@@ -82,6 +84,10 @@ OP_PERMISSIONS = {
 ISSUE_SEQUENCE_BUDGET_SECONDS = 35
 
 GRAPHQL_URL = f"{API_BASE}/graphql"
+SEARCH_ISSUES_URL = f"{API_BASE}/search/issues"
+# One page of a search's results; matches receiver.issues.SEARCH_RESULTS_LIMIT,
+# which this module cannot import without a cycle.
+SEARCH_PAGE_SIZE = 20
 
 # A repository's labels are listed 100 a page for at most this many pages.
 # A requested label past the last page reads as unknown and is dropped
@@ -648,6 +654,22 @@ class GitHubAppClient:
         return self._issue_call(
             "get", f"{API_BASE}/repos/{repo}/issues/{number}", token,
             step="read the issue", deadline=deadline,
+        )
+
+    def find_issues(
+        self, query: str, *, token: str, deadline: float | None = None
+    ) -> IssueCall:
+        """One page of GitHub's issue search for `query`, best match first.
+
+        `query` arrives whole, its repository qualifier included, from
+        `receiver.issues.search_query`; the token, minted for the target
+        repository alone with read access, is the second fence. A search can
+        answer 403 for its own rate limit and 422 for a query it cannot
+        parse, and both are failures like any other non-2xx."""
+        return self._issue_call(
+            "get", SEARCH_ISSUES_URL, token,
+            step="search the issues", deadline=deadline,
+            params={"q": query, "per_page": SEARCH_PAGE_SIZE},
         )
 
     def list_label_names(

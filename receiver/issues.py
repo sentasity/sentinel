@@ -11,9 +11,15 @@ check the investigator prompt names every one of these) all read one source.
 
 The operation set is the security boundary. The session reads text that
 strangers influence (Sentry events, other people's issues), so it may ask
-for these five writes and nothing else: no close, delete, lock, transfer,
-edit of an existing issue, or file write exists to be asked for. None of the
-names is also the name of a GitHub tool the routine withholds.
+for these five writes and one read, and nothing else: no close, delete,
+lock, transfer, edit of an existing issue, or file write exists to be asked
+for. None of the names is also the name of a GitHub tool the routine
+withholds.
+
+The read is the duplicate search. The session's own GitHub search would
+run under the credential of whoever connected the cloud environment, by a
+route that can write as easily as it reads, so the receiver searches as the
+App instead, with a read-only token, in `target_repo` alone.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from receiver.autofix import CALLBACK_DEADLINE_SECONDS
 from receiver.config import ReceiverConfig
 from receiver.findings import redact
 
-OPS = ("file_issue", "comment", "reopen", "set_fields", "add_to_project")
+OPS = ("file_issue", "comment", "reopen", "set_fields", "add_to_project", "search")
 
 # Each operation's request fields, beside the envelope's `tracking_id` and
 # `op`. A request carrying any other field is rejected.
@@ -36,6 +42,7 @@ OP_FIELDS: dict[str, tuple[str, ...]] = {
     "reopen": ("issue_number", "body"),
     "set_fields": ("issue_number", "fields"),
     "add_to_project": ("issue_number",),
+    "search": ("query",),
 }
 
 # The fields a request may leave out. A JSON null reads as absent: a session
@@ -54,6 +61,17 @@ COMMENT_BODY_LIMIT = 10_000
 LABEL_LIMIT = 10
 LABEL_NAME_LIMIT = 50
 
+# GitHub's own ceiling on a search's text, qualifiers aside. The receiver's
+# qualifiers are added after the check, so a session can use all of it.
+SEARCH_QUERY_LIMIT = 256
+# The issues one search answers with: the first page, best match first. A
+# session that needs more words a narrower query rather than paging.
+SEARCH_RESULTS_LIMIT = 20
+# Searches per grant. The prompt asks for at least two kinds of query; this
+# leaves room for several of each without letting one alert spend the
+# installation's search rate limit, which every alert in a batch shares.
+SEARCH_PER_RESULT = 8
+
 # Attempts per grant, per operation. The second attempt on the single-success
 # operations is the retry after a failure; `comment` covers one duplicate
 # comment plus up to five related ones.
@@ -63,6 +81,7 @@ GRANT_CAPS = {
     "comment": 6,
     "set_fields": 2,
     "add_to_project": 2,
+    "search": SEARCH_PER_RESULT,
 }
 
 # The most related issues one result may link: the comment cap less the one
@@ -81,6 +100,7 @@ TRACKING_CAPS = {
     "title_max_chars": ISSUE_TITLE_LIMIT,
     "body_max_chars": ISSUE_BODY_LIMIT,
     "comment_max_chars": COMMENT_BODY_LIMIT,
+    "search_per_result": SEARCH_PER_RESULT,
 }
 
 # The keys of the findings response's `tracking` object, and of each entry
@@ -186,6 +206,16 @@ def _search_unavailable(value, name: str, cfg: ReceiverConfig):
     return value
 
 
+def _query(value, name: str, cfg: ReceiverConfig):
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidIssueOp("query must be a non-empty string")
+    if len(value) > SEARCH_QUERY_LIMIT:
+        raise InvalidIssueOp(f"query exceeds {SEARCH_QUERY_LIMIT} characters")
+    if "\r" in value or "\n" in value:
+        raise InvalidIssueOp("query must be one line")
+    return value
+
+
 def _issue_number(value, name: str, cfg: ReceiverConfig):
     # bool is an int subclass, so `true` would otherwise pass as issue 1.
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -219,6 +249,7 @@ _CHECKS = {
     "issue_number": _issue_number,
     "relation": _relation,
     "fields": _fields,
+    "query": _query,
 }
 
 
@@ -272,6 +303,52 @@ def is_tracking_op(op: dict) -> bool:
     return op["op"] in ("file_issue", "reopen") or (
         op["op"] == "comment" and op.get("relation") == "duplicate"
     )
+
+
+# What each search hit carries, the keys the prompt names, and the GitHub key
+# a field is read from where the two differ.
+SEARCH_HIT_FIELDS = ("number", "title", "state", "state_reason", "updated_at", "url")
+SEARCH_HIT_SOURCES = {"url": "html_url"}
+
+
+def search_query(terms: str, repo: str) -> str:
+    """The query the receiver sends to GitHub's issue search for `terms`.
+
+    A GitHub search qualifier is a name, a colon and a value (`repo:x`,
+    `is:pr`), and several `repo:` qualifiers widen a search rather than
+    narrow it. Every colon in the session's terms becomes a space, so the
+    terms are words and nothing else, and the receiver's own qualifiers,
+    added last, are the only ones: the target repository, and issues rather
+    than pull requests. An error message loses nothing a search would have
+    matched on, since GitHub drops the punctuation of free text anyway.
+    """
+    words = " ".join(terms.replace(":", " ").split())
+    return f"{words} repo:{repo} is:issue"
+
+
+def search_hits(body) -> list[dict]:
+    """The issues a search answered with, as the session reads them: number,
+    title, state, why it was closed, when it last changed, and its link.
+
+    Bodies, comments and authors are left out. The session opens the
+    candidates it judges plausible with its own issue read, and a list that
+    carried every body would put the most stranger-written text in front of
+    it for the least reason. A pull request is dropped even though the query
+    asked for issues only.
+    """
+    items = body.get("items") if isinstance(body, dict) else None
+    if not isinstance(items, list):
+        return []
+    hits = []
+    for item in items:
+        if not isinstance(item, dict) or "pull_request" in item:
+            continue
+        hits.append(
+            {field: item.get(SEARCH_HIT_SOURCES.get(field, field)) for field in SEARCH_HIT_FIELDS}
+        )
+        if len(hits) == SEARCH_RESULTS_LIMIT:
+            break
+    return hits
 
 
 def footer(grant: dict) -> str:
