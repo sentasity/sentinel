@@ -1,13 +1,13 @@
 # The GitHub tool policy both routines carry: the investigator and the probe.
 # Applied to each routine's job_config.ccr.session_context; see the runbooks.
 # read_allowlist: the only GitHub tools the session uses, also added to
-#   allowed_tools with the prefix below.
+#   allowed_tools with the prefix below. The duplicate search is not one of
+#   them: the receiver runs it as the App, through its `search` operation.
 # disallowed_tools: every other tool of the built-in GitHub server, reads
 #   included. When a probe lists a GitHub tool not named in either list,
 #   add it here before anything else changes.
 prefix: mcp__github__
 read_allowlist:
-  - search_issues
   - issue_read
 disallowed_tools:
   - mcp__github__actions_get
@@ -115,6 +115,7 @@ disallowed_tools:
   - mcp__github__run_secret_scanning
   - mcp__github__search_code
   - mcp__github__search_commits
+  - mcp__github__search_issues
   - mcp__github__search_orgs
   - mcp__github__search_pull_requests
   - mcp__github__search_repositories

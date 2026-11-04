@@ -669,6 +669,7 @@ def test_each_op_mints_exactly_what_it_needs():
     assert OP_PERMISSIONS["add_to_project"] == {
         "issues": "read", "organization_projects": "write",
     }
+    assert OP_PERMISSIONS["search"] == {"issues": "read"}
 
 
 def test_the_issue_budget_leaves_the_lambda_time_to_settle_and_reply():
@@ -735,6 +736,38 @@ def test_fetch_issue_reads_with_redirects_disabled_and_the_ops_token():
     assert call.kwargs["allow_redirects"] is False
     assert call.kwargs["headers"]["Authorization"] == "Bearer ghs_issue"
     assert 0 < call.kwargs["timeout"] <= 15
+
+
+def test_find_issues_searches_with_the_query_it_was_given_and_the_ops_token():
+    body = {"total_count": 1, "items": [{"number": 7}]}
+    client, session = issue_client(gets=[reply(200, body)])
+
+    got = client.find_issues("cart total repo:acme-tools/checkout is:issue", token="ghs_search")
+
+    assert got == IssueCall(ok=True, status=200, body=body)
+    call = session.get.call_args
+    assert call.args[0] == "https://api.github.com/search/issues"
+    assert call.kwargs["params"] == {
+        "q": "cart total repo:acme-tools/checkout is:issue", "per_page": 20,
+    }
+    assert call.kwargs["allow_redirects"] is False
+    assert call.kwargs["headers"]["Authorization"] == "Bearer ghs_search"
+
+
+def test_a_search_page_is_the_number_of_hits_the_session_is_told():
+    from receiver.github_app import SEARCH_PAGE_SIZE
+    from receiver.issues import SEARCH_RESULTS_LIMIT
+
+    assert SEARCH_PAGE_SIZE == SEARCH_RESULTS_LIMIT
+
+
+@pytest.mark.parametrize("status", [403, 422, 503])
+def test_a_search_outside_2xx_is_a_failure_naming_its_step(status):
+    client, _ = issue_client(gets=[reply(status, {"message": "nope"})])
+
+    got = client.find_issues("q", token="t")
+
+    assert got == IssueCall(ok=False, status=status, step="search the issues")
 
 
 @pytest.mark.parametrize("status", [301, 302, 404, 410, 500])

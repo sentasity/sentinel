@@ -134,8 +134,9 @@ partial or failed investigation, and a fix attempt that stopped short. A finding
 back as a finished fix is never filed, even when the receiver then fails to open the
 pull request, because that failure is the receiver's own.
 
-The session searches the target repository's issues, through two read-only GitHub tools,
-for one that already describes the same defect. It comments on a duplicate, reopens a
+The session asks the receiver to search the target repository's issues for one that
+already describes the same defect, and reads the likely matches with a read-only GitHub
+tool. It comments on a duplicate, reopens a
 closed one whose fix the investigated release already contains, or files a new issue the
 way the repository's own issue conventions describe, with a Priority taken from the
 finding's urgency and links to related issues. It makes none of those writes itself. It
