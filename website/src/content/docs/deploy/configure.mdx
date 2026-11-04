@@ -125,7 +125,11 @@ write, organization Projects read and write, and organization Issue fields read-
 The order of the steps, and how to undo each, is the
 [enabling issue filing runbook](/sentinel/operate/runbooks/).
 
-Two things outside this file have to be true before it can work: the autofix App must be
-installed on `target_repo` with contents and pull-requests write, and the routine's cloud
-environment must be allowed to reach GitHub. Both are covered in the
-[runbooks](/sentinel/operate/runbooks/).
+Three things outside this file have to be true before it can work: the autofix App must
+be installed on `target_repo` with contents and pull-requests write, the routine's cloud
+environment must be allowed to reach GitHub, and `target_repo`'s dependencies must be
+installed in the routine's sessions, because the fix phase runs its test and may not
+install anything. The first two are covered in the
+[runbooks](/sentinel/operate/runbooks/). For the third, the recommended way is a
+SessionStart hook in that repository, with the environment's setup script prebuilding
+the dependencies so the hook only has to link them into place.
