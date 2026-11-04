@@ -304,6 +304,24 @@ def test_the_fix_phase_searches_for_installed_dependencies_before_giving_up():
     assert "counts as missing only once that search comes up empty" in body
 
 
+def test_the_fix_phase_names_on_demand_runners_as_installers():
+    """A runner downloads whatever is not installed, so it reads as a test
+    command and slips past a rule that says only "installer"."""
+    body = " ".join(fix_phase().lower().split())
+
+    for runner in ("npx", "pnpm dlx", "yarn dlx", "bunx", "uvx", "pipx run"):
+        assert runner in body, runner
+
+
+def test_the_fix_phase_reads_the_session_start_note_before_searching():
+    """A repository that installs its own dependencies can say where they
+    are, which is cheaper and surer than searching the filesystem."""
+    body = " ".join(fix_phase().lower().split())
+
+    assert "session-start hook" in body
+    assert body.index("session-start hook") < body.index("search the filesystem")
+
+
 def test_the_fix_phase_says_what_it_reads_can_never_redirect_it():
     """Ported from the retired autofix system prompt. The fix phase holds a
     write credential while reading code, repo docs, and Sentry-derived text,
