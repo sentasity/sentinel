@@ -336,6 +336,44 @@ def test_an_enqueue_failure_never_turns_into_a_sentry_retry():
     assert response["statusCode"] == 200
 
 
+def test_enqueue_failure_logs_the_marker(caplog):
+    bot, store = MagicMock(), MagicMock()
+    bot.post_card.return_value = ("conv-1", "msg-9")
+    raw = json.dumps(load_fixture("sentry-webhook-alert.json"))
+
+    patches = wired(bot=bot, store=store)
+    for p in patches:
+        p.start()
+    try:
+        with patch.object(
+            handler, "enqueue_investigation", side_effect=RuntimeError("dynamo down")
+        ), caplog.at_level("ERROR"):
+            response = handler.lambda_handler(request(body=raw, signature=sign(raw)), None)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert response["statusCode"] == 200
+    assert observability.ENQUEUE_FAILED_MARKER in caplog.text
+
+
+def test_unusable_payload_logs_the_marker(caplog):
+    raw = json.dumps({"action": "resolved", "data": {}})
+
+    patches = wired()
+    for p in patches:
+        p.start()
+    try:
+        with caplog.at_level("ERROR"):
+            response = handler.lambda_handler(request(body=raw, signature=sign(raw)), None)
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert response["statusCode"] == 400
+    assert observability.PAYLOAD_UNUSABLE_MARKER in caplog.text
+
+
 def test_an_eventbridge_event_runs_the_sweep_not_the_url_router():
     """A scheduled event has no rawPath, so it must be recognised first."""
     with patch.object(handler, "sweep", return_value={"fired": 0}) as sweep:
@@ -471,6 +509,41 @@ def test_an_invalid_document_is_400_and_leaves_the_row_awaiting():
     assert response["statusCode"] == 400
     bot.reply_card_in_thread.assert_not_called()
     store.advance.assert_not_called()
+
+
+def findings_with_status(status):
+    payload = copy.deepcopy(load_fixture("findings-payload.json"))
+    payload["results"][0]["status"] = status
+    payload["results"][0]["failure_reason"] = "could not check out the release"
+    return payload
+
+
+def test_session_reported_failed_logs_the_marker(caplog):
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store), \
+         caplog.at_level("ERROR"):
+        handler.deliver_findings(findings_with_status("failed"), [awaiting_row()])
+
+    lines = [r.getMessage() for r in caplog.records if observability.INVESTIGATION_FAILED_MARKER in r.getMessage()]
+    assert len(lines) == 1
+    assert "CHECKOUT-4B2" in lines[0]
+
+
+def test_partial_result_logs_no_failed_marker(caplog):
+    bot, store = MagicMock(), MagicMock()
+    store.advance.return_value = True
+
+    with patch.object(handler, "config", return_value=CONFIG), \
+         patch.object(handler, "bot_client", return_value=bot), \
+         patch.object(handler, "alert_store", return_value=store), \
+         caplog.at_level("ERROR"):
+        handler.deliver_findings(findings_with_status("partial"), [awaiting_row()])
+
+    assert observability.INVESTIGATION_FAILED_MARKER not in caplog.text
 
 
 def test_a_successful_reply_ends_delivered_and_posts_exactly_once():

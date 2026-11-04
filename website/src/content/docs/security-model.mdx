@@ -369,6 +369,13 @@ secrets. Neither ever appears in the config file, which carries only a reference
 parameter name. The full inventory and the rotation runbooks are in
 [Runbooks](/sentinel/operate/runbooks/).
 
+The optional alarm forwarder is the one outbound destination the alarm path adds. It
+sends an alarm's description, name and time to an ntfy server, and nothing from an alert,
+a finding or a thread. On a public ntfy server the topic name is the only access control,
+so it is a SecureString like the credentials, and anyone who learns it can read those
+messages and publish to the topic. A subscriber that acts on what arrives should treat
+the content as untrusted, since a forged message is indistinguishable from a real one.
+
 One non-credential is held the same way: the ban list `tests/test_public_tree.py`
 enforces splits its generic patterns, which are tracked, from the literals that would
 identify a real deployment, which live in an untracked local file mirrored by an

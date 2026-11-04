@@ -7,6 +7,9 @@
 #
 #   SENTRY_WEBHOOK_SECRET=... SENTRY_API_TOKEN=... BOT_CLIENT_SECRET=... \
 #     ROUTINE_TRIGGER_TOKEN=... GITHUB_APP_PRIVATE_KEY=... scripts/put-parameters.sh
+#
+# NTFY_TOPIC is optional: set it only when `aws.alarm_ntfy_server` is
+# configured, to write the topic the alarm forwarder publishes to.
 set -euo pipefail
 
 PREFIX="${SSM_PREFIX:-/sentinel}"
@@ -32,5 +35,8 @@ put sentry-api-token "${SENTRY_API_TOKEN:-}"
 put bot-client-secret "${BOT_CLIENT_SECRET:-}"
 put routine-trigger-token "${ROUTINE_TRIGGER_TOKEN:-}"
 put github-app-private-key "${GITHUB_APP_PRIVATE_KEY:-}"
+if [[ -n "${NTFY_TOPIC:-}" ]]; then
+  put ntfy-topic "$NTFY_TOPIC"
+fi
 
 echo "done. Verify with: aws ssm get-parameters-by-path --path ${PREFIX} --region ${REGION}"

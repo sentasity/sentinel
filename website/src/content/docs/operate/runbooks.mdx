@@ -15,6 +15,7 @@ Runbooks for the credentials the engine holds, what the Sentinel App needs on th
 | Callback capability tokens | DynamoDB, hashed, one per dispatch | Bearer credential the fix session presents to `/autofix-result`; scoped to a single dispatch, not reusable |
 | Tracking tokens | DynamoDB, hashed, one per delivered result while issue filing is on for its environment | Bearer credential a session presents to `/issues`; scoped to one alert and its thread, dead at its grant's `expires_at` (30 minutes after findings, or 90 when the result also earned an autofix grant) |
 | The operator's GitHub connection | The cloud platform, outside the session; never in this repository or the parameter store | Authenticates the session's repository fetch and its issue reads through the platform's built-in GitHub tools; the routine's tool policy withholds every write tool, so it is used for reads only |
+| `/sentinel/ntfy-topic` | SSM SecureString, alarm forwarder (optional) | The ntfy topic alarms are published to, read only by the forwarder and only when `aws.alarm_ntfy_server` is set. On a public ntfy server the topic name is the only access control, so it is held like a credential |
 | `SENTINEL_BANNED_PATTERNS` | Actions secret, engine repo | The deployment-identifying ban patterns `tests/test_public_tree.py` enforces; not a credential, but held like one because publishing the list would index what it protects |
 
 The routine trigger token is never stored in this repo; keep the only other copy in your password manager.
@@ -111,6 +112,43 @@ gh secret set SENTINEL_BANNED_PATTERNS < config/banned.local.txt
 ```
 
 A fork's pull request runs without the secret and tests the generic patterns only, which is the same posture a stranger's clone gets: the push to the default branch after the merge is where the full list applies.
+
+## Alarms
+
+Every way the pipeline can fail at its job raises a CloudWatch alarm on the stack's alarm topic, which emails `aws.alarm_email` and, when configured, is [forwarded to ntfy](#forwarding-alarms-to-ntfy). Each alarm fires on a single occurrence in five minutes, and each log-derived one counts a marker the receiver writes at the point of failure, so the receiver's log group, filtered on the marker, shows which alert it was.
+
+| Alarm | Marker | What failed | Where to look |
+|---|---|---|---|
+| `ReceiverErrors` | (the Lambda `Errors` metric) | The receiver raised. Teams alerts may be silent | The receiver's log group around the alarm time |
+| `ReceiverDeliveryFailures` | `ALERT_DELIVERY_FAILED` | A card or a thread reply could not be posted to Teams | The line names the issue and what was being posted |
+| `ReceiverPayloadUnusable` | `PAYLOAD_UNUSABLE` | Sentry sent a correctly signed alert the receiver could not parse. A payload shape change fails every alert this way | The line carries the parse error; compare it with Sentry's current webhook payload |
+| `ReceiverEnqueueFailed` | `ENQUEUE_FAILED` | An alert card posted, but its investigation row was never written, so nothing will investigate it | The line names the issue; [replay the alert](#runbook-replaying-an-alert-the-receiver-has-already-seen) once the cause is fixed |
+| `ReceiverFireRejected` | `FIRE_REJECTED` | The routine API refused to start a session (or the payload was over its cap), and the batch's rows were marked failed | The `FIRE_UNCLASSIFIED` line just before it carries the API's response |
+| `ReceiverFireStalled` | `FIRE_STALLED` | Fires have failed with a retryable error (a 5xx, or the API unreachable) for over an hour, so nothing is being investigated. Logged once per unbroken run of failures | The `transient fire failure` warnings since the time the line names |
+| `ReceiverWindowExhausted` | `SUBSCRIPTION_WINDOW_EXHAUSTED` | The Claude subscription's usage window is spent, so investigations are being skipped | Usage on the subscription; nothing fires until the window resets |
+| `ReceiverInvestigationTimedOut` | `INVESTIGATION_TIMED_OUT` | A fired session never reported before `investigation.deadline_seconds`, and the thread got the fallback reply | The session's own transcript, from the routine's run history |
+| `ReceiverInvestigationFailed` | `INVESTIGATION_FAILED` | A session reported `failed` for an issue, with its reason on the line. A `partial` result is not under it | The reason on the line, then the session's transcript |
+| `ReceiverFindingsRejected` | `FINDINGS_REJECTED` | A findings document failed validation: the stored prompt and the receiver disagree | [Updating the investigator routine](#runbook-updating-the-investigator-routine) |
+| `ReceiverAutofixFailures` | `AUTOFIX_FAILED` | A fix attempt failed or never called back | [Reading autofix in the logs](#reading-autofix-in-the-logs) |
+| `ReceiverIssueTrackingFailures` | `ISSUE_TRACKING_FAILED` | Filing, matching or searching issues failed, or an alert was left untracked | [Reading issue tracking in the logs](#reading-issue-tracking-in-the-logs) |
+| `AlarmForwarderErrors` | (the forwarder's `Errors` metric) | The forwarder could not publish to ntfy. The email still arrives | The forwarder's own log group |
+
+Deliberate holds are never alarmed: a paused routine, the daily fire cap, and a 429 that names a short `Retry-After` (the platform's daily run cap) are each the operator's budget at work, and an alarm on them would teach people to ignore the rest. Construct ids carry a generated suffix after the names above.
+
+### Forwarding alarms to ntfy
+
+The alarm email is easy to miss. With `aws.alarm_ntfy_server` set (see [Configure and deploy](/sentinel/deploy/configure/)), the stack adds a small forwarder function subscribed to the alarm topic, which publishes every alarm, as it moves into `ALARM`, to an [ntfy](https://ntfy.sh) topic at high priority, tagged `sentinel`. Anything subscribed to the topic receives it: the ntfy phone app, or a desktop subscriber that raises its own alert.
+
+Each message carries the alarm's description as its title and body, its name, and when it fired. Nothing else: no Sentry data, no thread or issue link.
+
+To set it up:
+
+1. Generate a topic name that cannot be guessed, for example `openssl rand -hex 16`. On a public ntfy server the name is the only access control: anyone who has it can read the messages and publish to the topic.
+2. Write it to `/sentinel/ntfy-topic` by running `scripts/put-parameters.sh` with `NTFY_TOPIC` set alongside the other secrets, or with a single `aws ssm put-parameter --type SecureString`.
+3. Set `aws.alarm_ntfy_server` and deploy.
+4. Subscribe your devices to the topic, then test the path by setting one alarm's state by hand: `aws cloudwatch set-alarm-state --alarm-name <name> --state-value ALARM --state-reason "forwarder test"`. The next evaluation returns it to `OK`.
+
+To rotate the topic, generate a new one, write it to the parameter, and move every subscriber to it. The forwarder reads the parameter once per container, so a new topic is picked up within minutes as containers recycle; redeploying picks it up at once. To turn forwarding off, remove `aws.alarm_ntfy_server` and deploy.
 
 ## Reading autofix in the logs
 

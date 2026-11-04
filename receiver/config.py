@@ -32,6 +32,10 @@ SECRET_KEYS = (
     "github-app-private-key",
 )
 
+# Optional, so not in SECRET_KEYS: only the alarm forwarder reads it, and the
+# forwarder exists only when `aws.alarm_ntfy_server` is set.
+NTFY_TOPIC_KEY = "ntfy-topic"
+
 # The only environments whose events carry a resolvable release. Deliberately a
 # constant rather than a config knob: the whole investigation pipeline checks
 # out the event's release SHA, and a per-developer environment has none.
@@ -97,6 +101,9 @@ class ReceiverConfig:
     # above do not, and a dataclass requires defaulted fields last. The
     # defaults are also what makes an incomplete config inert: `trigger_mode`
     # starts at the one mode that never fires.
+    # An ntfy server the alarm forwarder publishes alarms to. Empty means
+    # no forwarder; alarms go to the email subscription alone.
+    alarm_ntfy_server: str = ""
     target_repo: str = ""
     release_to_sha: str = "identity"
     trigger_mode: str = "shadow"
@@ -189,6 +196,7 @@ def load_config(path: str | Path | None = None) -> ReceiverConfig:
         region=aws.get("region") or "us-east-1",
         table_name=aws.get("table_name") or "",
         alarm_email=aws.get("alarm_email") or "",
+        alarm_ntfy_server=aws.get("alarm_ntfy_server") or "",
         tenant_id=teams.get("tenant_id") or "",
         service_url=teams.get("service_url") or "",
         bot_app_id=teams.get("bot_app_id") or "",
