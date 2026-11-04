@@ -243,10 +243,9 @@ def test_retryable_run_under_an_hour_is_quiet(caplog):
     [
         {"outcome": FireOutcome.RATE_LIMITED, "delay": 600},
         {"outcome": FireOutcome.PAUSED},
-        {"claim": False},
         {"outcome": FireOutcome.RATE_LIMITED, "delay": RETRY_TTL_SECONDS + 1},
     ],
-    ids=["rate_limited_retry", "paused", "throttled", "exhausted"],
+    ids=["rate_limited_retry", "paused", "exhausted"],
 )
 def test_a_non_retryable_hold_ends_a_retryable_run(kwargs):
     store, routines, bot = collaborators(**kwargs)
@@ -259,6 +258,66 @@ def test_a_non_retryable_hold_ends_a_retryable_run(kwargs):
     ends = [w for w in run_writes(store) if "retryable_since" in w]
     assert ends == [{**ends[0], "retryable_since": "", "stall_reported": False}]
     assert store.advance.call_args.kwargs["due_at"]
+
+
+
+def test_throttled_leaves_an_open_retryable_run_alone():
+    """Retryable fires spend the daily budget, so an outage runs into the cap.
+    Ending the run there would stop the stall alarm ever reaching its hour."""
+    store, routines, bot = collaborators(claim=False)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30))],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    store.advance.assert_not_called()
+
+
+def test_a_run_that_hits_the_cap_still_reports_its_stall(caplog):
+    store, routines, bot = collaborators(claim=False)
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        fire_group(
+            [held("1", retryable_since=minutes_ago(61))],
+            cfg=conf(), store=store, routines=routines, bot=bot,
+        )
+
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
+    assert run_writes(store) == [{"stall_reported": True}]
+
+
+def test_an_outage_that_spends_the_cap_reports_a_stall_once(caplog):
+    """A minute-by-minute outage against the default cap of 40: one group,
+    every fire answered 5xx, run start aged one simulated minute per sweep."""
+    state = {**held("1")}
+    spent = {"n": 0}
+    run = {"started": None}
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    def claim_fire(day, cap):
+        spent["n"] += 1
+        return spent["n"] <= cap
+
+    def advance(*args, **kwargs):
+        state.update(kwargs.get("extra") or {})
+        return True
+
+    store.claim_fire.side_effect = claim_fire
+    store.advance.side_effect = advance
+
+    with caplog.at_level("ERROR"):
+        for minute in range(90):
+            if state.get("retryable_since"):
+                if run["started"] is None:
+                    run["started"] = minute - 1
+                state["retryable_since"] = minutes_ago(minute - run["started"])
+            else:
+                run["started"] = None
+            fire_group([dict(state)], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
 
 
 @pytest.mark.parametrize(

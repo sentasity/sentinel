@@ -67,7 +67,10 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
     day = datetime.now(timezone.utc).date().isoformat()
     if not store.claim_fire(day, cfg.daily_fire_cap):
         LOG.info("daily fire cap of %d reached; %d rows held", cfg.daily_fire_cap, len(rows))
-        _end_retryable_run(rows, store=store)
+        # Neither starts nor ends a run. Retryable fires spend this same
+        # budget, so an outage reaches the cap within the hour; ending the
+        # run here would mean the stall is never reported.
+        _report_stalled_run(rows, store=store)
         return "throttled"
 
     batch_id = str(uuid.uuid4())
@@ -161,17 +164,23 @@ def _end_retryable_run(rows: list[dict], *, store) -> None:
 
 
 def _track_retryable_run(rows: list[dict], *, store) -> None:
-    """Start a run on rows that have none, and report the batch once when its
-    run has lasted STALL_SECONDS. The report is claimed per row, so the next
-    minute's sweep, which sees `stall_reported`, stays quiet."""
+    """Start a run on rows that have none, and report a run that has lasted
+    STALL_SECONDS."""
+    for r in rows:
+        if not r.get("retryable_since"):
+            _hold(store, r, {"retryable_since": utc_now()})
+    _report_stalled_run(rows, store=store)
+
+
+def _report_stalled_run(rows: list[dict], *, store) -> None:
+    """Report the batch once when any row's open run has lasted STALL_SECONDS.
+    The report is claimed per row, so the next minute's sweep, which sees
+    `stall_reported`, stays quiet."""
     now = datetime.now(timezone.utc)
     oldest = ""
     for r in rows:
         since = str(r.get("retryable_since") or "")
-        if not since:
-            _hold(store, r, {"retryable_since": utc_now()})
-            continue
-        if r.get("stall_reported"):
+        if not since or r.get("stall_reported"):
             continue
         started = datetime.fromisoformat(since.replace("Z", "+00:00"))
         if (now - started).total_seconds() < STALL_SECONDS:
