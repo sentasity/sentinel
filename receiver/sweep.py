@@ -19,6 +19,7 @@ from receiver.observability import (
     AUTOFIX_FAILED_MARKER,
     DELIVERY_FAILURE_MARKER,
     FIRE_REJECTED_MARKER,
+    FIRE_STALLED_MARKER,
     INVESTIGATION_TIMED_OUT_MARKER,
     ISSUE_TRACKING_FAILED_MARKER,
     WINDOW_EXHAUSTED_MARKER,
@@ -37,6 +38,10 @@ LOG = logging.getLogger(__name__)
 # observed on this account. Replace with a real discriminator once a 429 is
 # seen in practice.
 RETRY_TTL_SECONDS = 4 * 60 * 60
+
+# How long an unbroken run of retryable fire failures may hold a batch before
+# it is reported as stalled.
+STALL_SECONDS = 60 * 60
 
 
 def _at(seconds: int) -> str:
@@ -62,6 +67,7 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
     day = datetime.now(timezone.utc).date().isoformat()
     if not store.claim_fire(day, cfg.daily_fire_cap):
         LOG.info("daily fire cap of %d reached; %d rows held", cfg.daily_fire_cap, len(rows))
+        _end_retryable_run(rows, store=store)
         return "throttled"
 
     batch_id = str(uuid.uuid4())
@@ -86,6 +92,7 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
                 extra={
                     "batch_id": batch_id,
                     "reply_token_hash": store.hash_token(reply_token),
+                    **NO_RETRYABLE_RUN,
                 },
             )
         return "fired"
@@ -94,6 +101,7 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
         # INFO on purpose. A pause is deliberate, so it is counted and not
         # announced; exhaustion below is the version nobody chose.
         LOG.info("routine paused; holding %d rows", len(rows))
+        _end_retryable_run(rows, store=store)
         return "paused"
 
     if outcome is FireOutcome.RATE_LIMITED and delay and delay <= RETRY_TTL_SECONDS:
@@ -101,17 +109,19 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
             store.advance(
                 r["issue_id"], r["environment"], r["release"], "pending", "pending",
                 due_at=_at(delay),
-                extra={"attempt": int(r.get("attempt", 0)) + 1},
+                extra={"attempt": int(r.get("attempt", 0)) + 1, **NO_RETRYABLE_RUN},
             )
         LOG.info("daily cap hit; retrying %d rows in %ds", len(rows), delay)
         return "retry"
 
     if outcome is FireOutcome.RATE_LIMITED:
         LOG.error("%s skipping %d rows", WINDOW_EXHAUSTED_MARKER, len(rows))
+        _end_retryable_run(rows, store=store)
         return "exhausted"
 
     if outcome is FireOutcome.RETRYABLE:
         LOG.warning("transient fire failure; holding %d rows", len(rows))
+        _track_retryable_run(rows, store=store)
         return "retryable"
 
     LOG.error(
@@ -119,8 +129,60 @@ def _fire(rows: list[dict], *, cfg, store, routines) -> str:
         FIRE_REJECTED_MARKER, batch_id, len(rows),
     )
     for r in rows:
-        store.advance(r["issue_id"], r["environment"], r["release"], "pending", "failed")
+        store.advance(
+            r["issue_id"], r["environment"], r["release"], "pending", "failed",
+            extra=dict(NO_RETRYABLE_RUN),
+        )
     return "rejected"
+
+
+# What a row carries once no run of retryable failures is open on it. Every
+# outcome other than `retryable` writes this, so a stall is only ever an
+# unbroken run: a routine paused for a week between two 5xx errors has not
+# been failing for a week.
+NO_RETRYABLE_RUN = {"retryable_since": "", "stall_reported": False}
+
+
+def _hold(store, r: dict, extra: dict) -> bool:
+    """Write `extra` onto a held pending row without moving it in the index."""
+    return store.advance(
+        r["issue_id"], r["environment"], r["release"], "pending", "pending",
+        due_at=r.get("due_at") or utc_now(),
+        extra=extra,
+    )
+
+
+def _end_retryable_run(rows: list[dict], *, store) -> None:
+    """Close any open run of retryable failures. Rows with none get no write,
+    so a long pause or a spent budget costs nothing per sweep."""
+    for r in rows:
+        if r.get("retryable_since"):
+            _hold(store, r, dict(NO_RETRYABLE_RUN))
+
+
+def _track_retryable_run(rows: list[dict], *, store) -> None:
+    """Start a run on rows that have none, and report the batch once when its
+    run has lasted STALL_SECONDS. The report is claimed per row, so the next
+    minute's sweep, which sees `stall_reported`, stays quiet."""
+    now = datetime.now(timezone.utc)
+    oldest = ""
+    for r in rows:
+        since = str(r.get("retryable_since") or "")
+        if not since:
+            _hold(store, r, {"retryable_since": utc_now()})
+            continue
+        if r.get("stall_reported"):
+            continue
+        started = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        if (now - started).total_seconds() < STALL_SECONDS:
+            continue
+        if _hold(store, r, {"stall_reported": True}):
+            oldest = min(oldest, since) if oldest else since
+    if oldest:
+        LOG.error(
+            "%s batch of %d rows held by retryable fire failures since %s",
+            FIRE_STALLED_MARKER, len(rows), oldest,
+        )
 
 
 # Posted into every alert thread the moment its investigation starts, so the

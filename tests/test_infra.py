@@ -331,6 +331,7 @@ def test_eventbridge_may_invoke_the_function(template):
         ("EnqueueFailed", observability.ENQUEUE_FAILED_MARKER),
         ("PayloadUnusable", observability.PAYLOAD_UNUSABLE_MARKER),
         ("InvestigationFailed", observability.INVESTIGATION_FAILED_MARKER),
+        ("FireStalled", observability.FIRE_STALLED_MARKER),
     ],
 )
 def test_each_marker_has_a_metric_filter(template, metric_name, marker):
@@ -355,6 +356,7 @@ def test_each_marker_has_a_metric_filter(template, metric_name, marker):
         "EnqueueFailed",
         "PayloadUnusable",
         "InvestigationFailed",
+        "FireStalled",
     ],
 )
 def test_each_new_metric_is_alarmed(template, alarm_metric):

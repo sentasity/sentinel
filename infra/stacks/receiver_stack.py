@@ -30,6 +30,7 @@ from receiver.observability import (
     ENQUEUE_FAILED_MARKER,
     FINDINGS_REJECTED_MARKER,
     FIRE_REJECTED_MARKER,
+    FIRE_STALLED_MARKER,
     INVESTIGATION_FAILED_MARKER,
     INVESTIGATION_TIMED_OUT_MARKER,
     ISSUE_TRACKING_FAILED_MARKER,
@@ -331,6 +332,12 @@ class ReceiverStack(Stack):
                 INVESTIGATION_FAILED_MARKER,
                 "An investigation session reported it could not investigate "
                 "an issue.",
+            ),
+            (
+                "FireStalled",
+                FIRE_STALLED_MARKER,
+                "Investigations have been failing to start for over an hour "
+                "because the Claude routine API is erroring or unreachable.",
             ),
         ):
             metric_filter = self.log_group.add_metric_filter(

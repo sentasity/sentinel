@@ -60,6 +60,7 @@ def test_every_alarming_marker_is_a_distinct_string():
         obs.ENQUEUE_FAILED_MARKER,
         obs.PAYLOAD_UNUSABLE_MARKER,
         obs.INVESTIGATION_FAILED_MARKER,
+        obs.FIRE_STALLED_MARKER,
     ]
 
     assert len(set(markers)) == len(markers)

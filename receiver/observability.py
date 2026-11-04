@@ -125,3 +125,9 @@ PAYLOAD_UNUSABLE_MARKER = "PAYLOAD_UNUSABLE"
 # A session reported `failed` for an issue it was asked to investigate.
 # `partial` is not under it: a partial result still delivered findings.
 INVESTIGATION_FAILED_MARKER = "INVESTIGATION_FAILED"
+
+# Fires have failed with a retryable error (a 5xx, or the API unreachable)
+# for over an hour, so nothing is being investigated. Logged once per run of
+# failures. A 429 with a `Retry-After` is the platform's daily cap, a budget
+# hold like the receiver's own, and never counts toward a stall.
+FIRE_STALLED_MARKER = "FIRE_STALLED"

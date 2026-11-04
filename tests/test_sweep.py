@@ -1,6 +1,7 @@
 """Grouping, throttling, firing, and deadline enforcement."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from receiver.observability import (
     DELIVERY_FAILURE_MARKER,
     FIRE_REJECTED_MARKER,
+    FIRE_STALLED_MARKER,
     INVESTIGATION_TIMED_OUT_MARKER,
 )
 from receiver.routines import FireOutcome
@@ -18,6 +20,7 @@ from receiver.sweep import (
     NOT_STARTED_PREFIX,
     NOT_STARTED_REASONS,
     RETRY_TTL_SECONDS,
+    STALL_SECONDS,
     expire_overdue,
     fire_group,
     group_pending,
@@ -171,6 +174,116 @@ def test_rejected_fire_logs_the_fire_rejected_marker(caplog):
         fire_group([row("1")], cfg=conf(), store=store, routines=routines, bot=bot)
 
     assert FIRE_REJECTED_MARKER in caplog.text
+
+
+def minutes_ago(minutes):
+    when = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    return when.isoformat().replace("+00:00", "Z")
+
+
+def held(issue_id, **extra):
+    return {**row(issue_id), "due_at": "2026-01-01T00:00:00Z", **extra}
+
+
+def run_writes(store):
+    """The `extra` of every advance the fire made, in call order."""
+    return [c.kwargs.get("extra") or {} for c in store.advance.call_args_list]
+
+
+def test_first_retryable_outcome_starts_a_run(caplog):
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    with caplog.at_level("ERROR"):
+        fire_group([held("1"), held("2")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert store.advance.call_count == 2
+    for c in store.advance.call_args_list:
+        assert c.args[3:] == ("pending", "pending")
+        assert c.kwargs["due_at"] == "2026-01-01T00:00:00Z"
+        assert c.kwargs["extra"]["retryable_since"]
+    assert FIRE_STALLED_MARKER not in caplog.text
+
+
+def test_retryable_run_over_an_hour_logs_stalled_once(caplog):
+    rows = [held("1", retryable_since=minutes_ago(61)), held("2", retryable_since=minutes_ago(61))]
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        fire_group(rows, cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert [w.get("stall_reported") for w in run_writes(store)] == [True, True]
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
+
+    caplog.clear()
+    reported = [{**r, "stall_reported": True} for r in rows]
+    store2, routines2, bot2 = collaborators(FireOutcome.RETRYABLE)
+    with caplog.at_level("ERROR"):
+        fire_group(reported, cfg=conf(), store=store2, routines=routines2, bot=bot2)
+
+    assert FIRE_STALLED_MARKER not in caplog.text
+    store2.advance.assert_not_called()
+
+
+def test_retryable_run_under_an_hour_is_quiet(caplog):
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    with caplog.at_level("ERROR"):
+        fire_group(
+            [held("1", retryable_since=minutes_ago(59))],
+            cfg=conf(), store=store, routines=routines, bot=bot,
+        )
+
+    assert FIRE_STALLED_MARKER not in caplog.text
+    assert STALL_SECONDS == 3600
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"outcome": FireOutcome.RATE_LIMITED, "delay": 600},
+        {"outcome": FireOutcome.PAUSED},
+        {"claim": False},
+        {"outcome": FireOutcome.RATE_LIMITED, "delay": RETRY_TTL_SECONDS + 1},
+    ],
+    ids=["rate_limited_retry", "paused", "throttled", "exhausted"],
+)
+def test_a_non_retryable_hold_ends_a_retryable_run(kwargs):
+    store, routines, bot = collaborators(**kwargs)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30), stall_reported=True)],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    ends = [w for w in run_writes(store) if "retryable_since" in w]
+    assert ends == [{**ends[0], "retryable_since": "", "stall_reported": False}]
+    assert store.advance.call_args.kwargs["due_at"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"outcome": FireOutcome.PAUSED}, {"claim": False}],
+    ids=["paused", "throttled"],
+)
+def test_a_hold_with_no_run_writes_nothing(kwargs):
+    store, routines, bot = collaborators(**kwargs)
+
+    fire_group([held("1")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    store.advance.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", [FireOutcome.FIRED, FireOutcome.REJECTED])
+def test_fired_and_rejected_clear_the_run(outcome):
+    store, routines, bot = collaborators(outcome)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30))],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    assert run_writes(store)[0]["retryable_since"] == ""
 
 
 def test_a_fired_group_tells_every_thread_it_is_being_investigated():
