@@ -122,8 +122,8 @@ grant was for, so Sentry resolves that issue in the first release that ships the
 A grant that never reports is failed into the thread once its hour is up.
 
 The gate stays on the receiver rather than moving into the session, and so does every
-GitHub write: the session reads as the operator through the platform's GitHub tools and
-has no write path. [The security model](/sentinel/security-model/) explains why both of
+GitHub write: the session reads as the operator through the platform's GitHub tools,
+holds no write credential, and never pushes. [The security model](/sentinel/security-model/) explains why both of
 those matter.
 
 ## 5. Track
@@ -169,3 +169,7 @@ Every one of these is a config value, so tightening a gate is a deploy rather th
 code change. [Configure and deploy](/sentinel/deploy/configure/) covers setting them.
 The intent check has no setting: a finding whose intent is not settled never earns a
 fix, whatever the other minimums are.
+
+## When Sentinel itself fails
+
+Every stage above has a way to fail that leaves an alert without the answer it was promised: a card that does not post, an investigation that never starts or never reports, a session that reports it could not investigate, a fix or an issue write that does not land. Each is an alarm on the receiver's alarm topic, which emails the operator and can also publish to an ntfy topic, so a failure reaches someone even when nobody is reading the channel. The full list is in [Runbooks](/sentinel/operate/runbooks/#alarms).

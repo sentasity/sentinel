@@ -315,6 +315,26 @@ def test_enabled_autofix_requires_a_base_branch(tmp_path):
         assert_ready(load_config(write(tmp_path, body)))
 
 
+def test_alarm_ntfy_server_defaults_to_empty(tmp_path):
+    assert load_config(write(tmp_path, VALID)).alarm_ntfy_server == ""
+
+
+def test_alarm_ntfy_server_is_read_from_aws(tmp_path):
+    body = VALID.replace(
+        "  alarm_email: ops@example.com\n",
+        "  alarm_email: ops@example.com\n  alarm_ntfy_server: https://ntfy.example.com\n",
+    )
+
+    assert load_config(write(tmp_path, body)).alarm_ntfy_server == "https://ntfy.example.com"
+
+
+def test_the_ntfy_topic_key_is_not_a_required_secret():
+    from receiver.config import NTFY_TOPIC_KEY, SECRET_KEYS
+
+    assert NTFY_TOPIC_KEY == "ntfy-topic"
+    assert NTFY_TOPIC_KEY not in SECRET_KEYS
+
+
 def test_the_config_no_longer_has_a_dispatch_repo(tmp_path):
     cfg = load_config(write(tmp_path, VALID + AUTOFIX))
 

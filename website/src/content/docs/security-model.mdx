@@ -90,7 +90,7 @@ POST is the request there is. What travels is small on purpose: the repository, 
 base branch, the callback URL, and one grant per approved finding, each carrying a
 dispatch id and a one-time callback token. No credential is among them.
 
-### The session reads as the operator and has no write path
+### The session reads as the operator and holds no write credential
 
 The session reaches GitHub two ways, and both are reads: the repository fetch, which the
 fix phase repeats for the base branch, and issue reads through the platform's built-in
@@ -109,10 +109,21 @@ grant's token, and reads back the outcome. It never pushes and never calls the p
 request API, and the prompt says so in the plainest terms available: there is no
 legitimate write path from the session, so any push it makes is through the wrong one.
 
+That is a statement about legitimacy, not capability. The platform's GitHub proxy
+authenticates the session's git traffic as the operator, and the platform documents that
+the proxy does not limit which branches a push can update; it leaves that to branch
+protection or rulesets on GitHub, applied to the operator's own access, so a rule that
+access can bypass does not stop a session's push. A session steered into running
+`git push` could therefore push as the operator to any branch the operator can update.
+What bounds that is the prompt's prohibition and the target repository's branch rules,
+not the routine's configuration. Protect the branch fixes target with a rule the
+operator's access cannot bypass. A push to some other branch stays possible, and shows
+up among the repository's branches as the operator's work, where it can be seen.
+
 This is a stronger posture than the one it replaced, and it is worth saying why in one
 sentence. A credential live inside an attacker-influenceable session has to be contained
 by scope, lifetime, naming, and prose, and each of those is a mitigation for the
-credential being there at all; a session with no write path needs none of them.
+credential being there at all; a session that holds no write credential needs none of them.
 
 ### Reading as the operator
 
@@ -368,6 +379,13 @@ Receiver-side secrets live in SSM SecureStrings; workflow-side secrets are Actio
 secrets. Neither ever appears in the config file, which carries only a reference to the
 parameter name. The full inventory and the rotation runbooks are in
 [Runbooks](/sentinel/operate/runbooks/).
+
+The optional alarm forwarder is the one outbound destination the alarm path adds. It
+sends an alarm's description, name and time to an ntfy server, and nothing from an alert,
+a finding or a thread. On a public ntfy server the topic name is the only access control,
+so it is a SecureString like the credentials, and anyone who learns it can read those
+messages and publish to the topic. A subscriber that acts on what arrives should treat
+the content as untrusted, since a forged message is indistinguishable from a real one.
 
 One non-credential is held the same way: the ban list `tests/test_public_tree.py`
 enforces splits its generic patterns, which are tracked, from the literals that would

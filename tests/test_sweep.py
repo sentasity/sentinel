@@ -1,11 +1,17 @@
 """Grouping, throttling, firing, and deadline enforcement."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
-from receiver.observability import DELIVERY_FAILURE_MARKER
+from receiver.observability import (
+    DELIVERY_FAILURE_MARKER,
+    FIRE_REJECTED_MARKER,
+    FIRE_STALLED_MARKER,
+    INVESTIGATION_TIMED_OUT_MARKER,
+)
 from receiver.routines import FireOutcome
 from receiver.sweep import (
     DEADLINE_REPLY,
@@ -14,6 +20,7 @@ from receiver.sweep import (
     NOT_STARTED_PREFIX,
     NOT_STARTED_REASONS,
     RETRY_TTL_SECONDS,
+    STALL_SECONDS,
     expire_overdue,
     fire_group,
     group_pending,
@@ -158,6 +165,184 @@ def test_a_rejected_fire_marks_the_rows_failed():
         [row("1")], cfg=conf(), store=store, routines=routines, bot=bot
     ) == "rejected"
     assert store.advance.call_args.args[-1] == "failed"
+
+
+def test_rejected_fire_logs_the_fire_rejected_marker(caplog):
+    store, routines, bot = collaborators(FireOutcome.REJECTED)
+
+    with caplog.at_level("ERROR"):
+        fire_group([row("1")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert FIRE_REJECTED_MARKER in caplog.text
+
+
+def minutes_ago(minutes):
+    when = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    return when.isoformat().replace("+00:00", "Z")
+
+
+def held(issue_id, **extra):
+    return {**row(issue_id), "due_at": "2026-01-01T00:00:00Z", **extra}
+
+
+def run_writes(store):
+    """The `extra` of every advance the fire made, in call order."""
+    return [c.kwargs.get("extra") or {} for c in store.advance.call_args_list]
+
+
+def test_first_retryable_outcome_starts_a_run(caplog):
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    with caplog.at_level("ERROR"):
+        fire_group([held("1"), held("2")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert store.advance.call_count == 2
+    for c in store.advance.call_args_list:
+        assert c.args[3:] == ("pending", "pending")
+        assert c.kwargs["due_at"] == "2026-01-01T00:00:00Z"
+        assert c.kwargs["extra"]["retryable_since"]
+    assert FIRE_STALLED_MARKER not in caplog.text
+
+
+def test_retryable_run_over_an_hour_logs_stalled_once(caplog):
+    rows = [held("1", retryable_since=minutes_ago(61)), held("2", retryable_since=minutes_ago(61))]
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        fire_group(rows, cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert [w.get("stall_reported") for w in run_writes(store)] == [True, True]
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
+
+    caplog.clear()
+    reported = [{**r, "stall_reported": True} for r in rows]
+    store2, routines2, bot2 = collaborators(FireOutcome.RETRYABLE)
+    with caplog.at_level("ERROR"):
+        fire_group(reported, cfg=conf(), store=store2, routines=routines2, bot=bot2)
+
+    assert FIRE_STALLED_MARKER not in caplog.text
+    store2.advance.assert_not_called()
+
+
+def test_retryable_run_under_an_hour_is_quiet(caplog):
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    with caplog.at_level("ERROR"):
+        fire_group(
+            [held("1", retryable_since=minutes_ago(59))],
+            cfg=conf(), store=store, routines=routines, bot=bot,
+        )
+
+    assert FIRE_STALLED_MARKER not in caplog.text
+    assert STALL_SECONDS == 3600
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"outcome": FireOutcome.RATE_LIMITED, "delay": 600},
+        {"outcome": FireOutcome.PAUSED},
+        {"outcome": FireOutcome.RATE_LIMITED, "delay": RETRY_TTL_SECONDS + 1},
+    ],
+    ids=["rate_limited_retry", "paused", "exhausted"],
+)
+def test_a_non_retryable_hold_ends_a_retryable_run(kwargs):
+    store, routines, bot = collaborators(**kwargs)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30), stall_reported=True)],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    ends = [w for w in run_writes(store) if "retryable_since" in w]
+    assert ends == [{**ends[0], "retryable_since": "", "stall_reported": False}]
+    assert store.advance.call_args.kwargs["due_at"]
+
+
+
+def test_throttled_leaves_an_open_retryable_run_alone():
+    """Retryable fires spend the daily budget, so an outage runs into the cap.
+    Ending the run there would stop the stall alarm ever reaching its hour."""
+    store, routines, bot = collaborators(claim=False)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30))],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    store.advance.assert_not_called()
+
+
+def test_a_run_that_hits_the_cap_still_reports_its_stall(caplog):
+    store, routines, bot = collaborators(claim=False)
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        fire_group(
+            [held("1", retryable_since=minutes_ago(61))],
+            cfg=conf(), store=store, routines=routines, bot=bot,
+        )
+
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
+    assert run_writes(store) == [{"stall_reported": True}]
+
+
+def test_an_outage_that_spends_the_cap_reports_a_stall_once(caplog):
+    """A minute-by-minute outage against the default cap of 40: one group,
+    every fire answered 5xx, run start aged one simulated minute per sweep."""
+    state = {**held("1")}
+    spent = {"n": 0}
+    run = {"started": None}
+    store, routines, bot = collaborators(FireOutcome.RETRYABLE)
+
+    def claim_fire(day, cap):
+        spent["n"] += 1
+        return spent["n"] <= cap
+
+    def advance(*args, **kwargs):
+        state.update(kwargs.get("extra") or {})
+        return True
+
+    store.claim_fire.side_effect = claim_fire
+    store.advance.side_effect = advance
+
+    with caplog.at_level("ERROR"):
+        for minute in range(90):
+            if state.get("retryable_since"):
+                if run["started"] is None:
+                    run["started"] = minute - 1
+                state["retryable_since"] = minutes_ago(minute - run["started"])
+            else:
+                run["started"] = None
+            fire_group([dict(state)], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    assert caplog.text.count(FIRE_STALLED_MARKER) == 1
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"outcome": FireOutcome.PAUSED}, {"claim": False}],
+    ids=["paused", "throttled"],
+)
+def test_a_hold_with_no_run_writes_nothing(kwargs):
+    store, routines, bot = collaborators(**kwargs)
+
+    fire_group([held("1")], cfg=conf(), store=store, routines=routines, bot=bot)
+
+    store.advance.assert_not_called()
+
+
+@pytest.mark.parametrize("outcome", [FireOutcome.FIRED, FireOutcome.REJECTED])
+def test_fired_and_rejected_clear_the_run(outcome):
+    store, routines, bot = collaborators(outcome)
+
+    fire_group(
+        [held("1", retryable_since=minutes_ago(30))],
+        cfg=conf(), store=store, routines=routines, bot=bot,
+    )
+
+    assert run_writes(store)[0]["retryable_since"] == ""
 
 
 def test_a_fired_group_tells_every_thread_it_is_being_investigated():
@@ -306,6 +491,42 @@ def test_a_failed_fallback_reply_is_logged_with_the_delivery_marker(caplog):
         assert expire_overdue(store=store, bot=bot) == 0
 
     assert DELIVERY_FAILURE_MARKER in caplog.text
+
+
+def test_expired_row_logs_the_timed_out_marker(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = True
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    lines = [r.getMessage() for r in caplog.records if INVESTIGATION_TIMED_OUT_MARKER in r.getMessage()]
+    assert len(lines) == 1
+    assert "PROCESSING-7" in lines[0]
+
+
+def test_timed_out_marker_logs_even_when_the_reply_fails(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = True
+    bot.reply_in_thread.side_effect = RuntimeError("bot down")
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    assert INVESTIGATION_TIMED_OUT_MARKER in caplog.text
+
+
+def test_a_row_another_writer_claimed_logs_no_timed_out_marker(caplog):
+    store, bot = MagicMock(), MagicMock()
+    store.query_due.return_value = [awaiting()]
+    store.advance.return_value = False
+
+    with caplog.at_level("ERROR"):
+        expire_overdue(store=store, bot=bot)
+
+    assert INVESTIGATION_TIMED_OUT_MARKER not in caplog.text
 
 
 def test_the_fallback_claim_is_conditioned_on_no_stored_reply():

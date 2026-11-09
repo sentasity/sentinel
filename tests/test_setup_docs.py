@@ -41,3 +41,10 @@ def test_put_parameters_writes_every_secret_the_receiver_reads():
 
     for key in SECRET_KEYS:
         assert f"put {key} " in body, f"put-parameters.sh never writes {key}"
+
+
+def test_put_parameters_writes_the_optional_ntfy_topic():
+    body = (SCRIPTS / "put-parameters.sh").read_text()
+
+    assert 'if [[ -n "${NTFY_TOPIC:-}" ]]' in body
+    assert 'put ntfy-topic "$NTFY_TOPIC"' in body

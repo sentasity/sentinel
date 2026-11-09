@@ -90,6 +90,20 @@ SENTRY_API_TOKEN='...' \
   scripts/put-parameters.sh
 ```
 
+Alarms go to `aws.alarm_email`. They can also be published to an ntfy topic, which is
+optional and off as shipped:
+
+```yaml
+  # Optional. An ntfy server (for example https://ntfy.sh) to publish every
+  # alarm to, as well as emailing it. Set it and a forwarder function is
+  # deployed; leave it out and there is none. The topic is a secret, kept in
+  # the <ssm_prefix>/ntfy-topic SecureString, never here.
+  # alarm_ntfy_server: https://ntfy.sh
+```
+
+Write the topic with `NTFY_TOPIC='...'` added to the `put-parameters.sh` run above. The
+setup and the test are in [Runbooks](/sentinel/operate/runbooks/#forwarding-alarms-to-ntfy).
+
 The one value in the config that looks like a secret and is not is
 `observability.automation_dsn`. A Sentry DSN is ingest-only, so it lives in config and
 CDK passes it through as `SENTRY_DSN`.

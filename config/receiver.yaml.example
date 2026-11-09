@@ -72,6 +72,11 @@ aws:
   region: us-east-1
   table_name: sentinel-alerts
   alarm_email: alerts@example.com
+  # Optional. An ntfy server (for example https://ntfy.sh) to publish every
+  # alarm to, as well as emailing it. Set it and a forwarder function is
+  # deployed; leave it out and there is none. The topic is a secret, kept in
+  # the <ssm_prefix>/ntfy-topic SecureString, never here.
+  # alarm_ntfy_server: https://ntfy.sh
 
 teams:
   tenant_id: "REPLACE_WITH_ENTRA_TENANT_ID"
