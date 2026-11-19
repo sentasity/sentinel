@@ -50,10 +50,13 @@ re-run is not a control.
 
 The routine's tool settings are in the same position as its connectors. The routine
 withholds every tool of the platform's built-in GitHub server except one issue read,
-and the receiver cannot read that list. Reading the routine back through routine tooling
-proves the list was saved, not that the session runs under it, so the probe also lists
-the GitHub tools its own session can see and tries one it should not have, on an issue
-number that cannot exist. Re-run it whenever the investigator's or the probe's prompt or
+and every tool of the Sentry connector that changes something in Sentry, and the
+receiver cannot read that list. The Sentry connector acts as the operator across the
+whole organization, alert rules and keys included, and the session only ever reads
+through it. Reading the routine back through routine tooling proves the list was saved,
+not that the session runs under it, so the probe also lists the GitHub tools its own
+session can see and tries one it should not have, on an issue number that cannot exist,
+and names any Sentry tool it can see that writes. Re-run it whenever the investigator's or the probe's prompt or
 tool settings change.
 
 ## Findings delivery is verified out-of-band

@@ -44,9 +44,11 @@ repository fetch already takes. If fixes are failing while findings keep arrivin
 pattern points at the receiver's side, the App configuration above or the
 `AUTOFIX_FAILED` lines below, before it points at egress.
 
-## The routine's GitHub tool policy
+## The routine's tool policy
 
 The cloud platform gives every routine session a built-in GitHub server whose tools act as the operator. The investigator uses one of them, `issue_read`, to open the target repository's issues. It does not search with that server: the platform removes the server's search tools from routine sessions and points them at `gh api` instead, which carries the same operator credential and can write as easily as it reads. The investigator searches through the receiver's `search` operation, which runs as the App with a read-only token. Every other tool of the server, `search_issues` and every tool that writes among them, is withheld by the routine's own tool settings. `prompts/routine-tools.yaml` is the canonical copy of those settings: `read_allowlist` holds the one read, and `disallowed_tools` holds every other tool of the server, each with the `mcp__github__` prefix. `tests/test_routine_tools.py` keeps the list sorted, disjoint from the read, and complete against a floor of write tools and the server's issue searches, and fails if the investigator prompt names a withheld tool.
+
+The Sentry connector is the other server whose tools act as the operator. The investigator reads issues, events, and traces through it and never writes there, so `disallowed_tools` also holds every connector tool that changes something in Sentry: issue updates, notes, and links, alert rules, monitors, projects, teams, keys, and automated root-cause analysis. Its reads stay available. Those entries carry the prefix the session sees, `mcp__<connector name>__`, which the file records as `sentry_prefix`. A connector under another name needs them renamed to match, or none of them applies. The tests keep every Sentry write a probe has listed in the file, and no Sentry read.
 
 Both routines carry the same policy: the investigator, and the probe routine recorded as `trigger.probe_routine_id`. That keeps a probe run a faithful test of the investigator's settings.
 
@@ -59,12 +61,14 @@ Both routines carry the same policy: the investigator, and the probe routine rec
 
 Then do the same for the probe routine.
 
-**Regenerating the list.** Step 5 of `prompts/probe.md` lists every GitHub tool the probe's session can see. A name beyond `issue_read` is a tool the list does not know about: add it to `disallowed_tools` in sorted order, fold in any new names from the upstream github-mcp-server tool catalog at the same time, run the tests, apply the file to both routines, and probe again until the probe sees only that read. Re-run the probe whenever either routine's prompt or tool settings change.
+**Regenerating the list.** Step 5 of `prompts/probe.md` lists every GitHub tool the probe's session can see, and step 2 names every Sentry tool it can see that writes. A GitHub name beyond `issue_read`, or any Sentry name step 2 reports, is a tool the list does not know about: add it to `disallowed_tools` in sorted order, fold in any new names from the upstream github-mcp-server tool catalog at the same time, run the tests, apply the file to both routines, and probe again until the probe sees only that read and no Sentry write. Re-run the probe whenever either routine's prompt or tool settings change.
 
-**Reading the probe.** Read steps 4 to 6 of the probe's transcript against this table, and the receiver's log for the `/findings/probe` line.
+**Reading the probe.** Read steps 2 and 4 to 6 of the probe's transcript against this table, and the receiver's log for the `/findings/probe` line.
 
 | The probe shows | Verdict | Next |
 |---|---|---|
+| 2 names no Sentry tool that writes | The Sentry entries apply | Pass |
+| 2 names a Sentry tool that writes | The list does not withhold it: a tool the connector added, or a connector under another prefix | Add it, or rename the entries to the connector's prefix; apply again, probe again |
 | 4b: the receiver logged the POST, and the transcript's repository and commit match it | The investigator's delivery path works from this environment | Pass |
 | 4b: the transcript shows the POST attempted and failing, and the receiver logged nothing | Egress to the receiver is blocked | Check the environment's allowed hosts |
 | 5a lists exactly `issue_read`, and 5c made no call | The list applies | Pass |
@@ -263,7 +267,7 @@ Without `--reset`, a repeat issue posts a fresh card that points at the earlier 
 A routine holds one prompt and its own tool settings, and the receiver's contract with the prompt changes whenever steps 6 to 8 of `prompts/investigator.md` do. The public routines API cannot read or write a routine's configuration, so the update happens through routine tooling (a Claude Code session's routine `get` and `update`) or on the routine's own page at claude.ai:
 
 1. Substitute both placeholders in the repository file: the receiver's origin for `REPLACE_WITH_FUNCTION_URL`, and the paths in `issues.conventions`, separated by a comma and a space, for `REPLACE_WITH_ISSUE_CONVENTIONS` (the word `none` when that list is empty).
-2. Apply the substituted prompt and the tool policy from `prompts/routine-tools.yaml` together, as [the tool policy section](#the-routines-github-tool-policy) describes.
+2. Apply the substituted prompt and the tool policy from `prompts/routine-tools.yaml` together, as [the tool policy section](#the-routines-tool-policy) describes.
 3. Read the routine back and compare its prompt with the substituted file and both tool lists with `prompts/routine-tools.yaml`. A prompt update sends the whole job config again, so the read-back covers the two tool lists as well as the prompt. Any difference is a partial update: apply again.
 4. Write down the engine commit the prompt came from, the UTC date, and whether the read-back matched. Nothing compares the routine's copy with the repository on a schedule, so that record is how a later reader learns which commit the routine carries. Every later prompt or tool-list change repeats it.
 
