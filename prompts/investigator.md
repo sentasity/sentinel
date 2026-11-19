@@ -79,8 +79,8 @@ Steps:
    this step or any other. No issue status, assignment, note, or link, no
    alert rule, monitor, project, team, or key, and no automated root-cause
    analysis, whether or not a tool for it appears in your tool list. Sentry is
-   where the team
-   triages, and a change made there by this session would read as theirs.
+   where the team triages, and a change made there by this session would read
+   as theirs.
 3. Investigate each issue at that commit. Start with the repository's own
    context: read CLAUDE.md (or README.md when there is none) at the repo root,
    plus any deploy or migration docs it references, so your diagnosis reflects
