@@ -838,3 +838,20 @@ def test_the_probe_names_any_sentry_tool_that_writes_without_calling_it():
     assert "name every Sentry connector tool that changes something in Sentry" in body
     assert "the expected answer is none" in body
     assert "Call none of them; listing is the whole check." in body
+
+
+def test_the_investigator_works_only_in_its_checkout():
+    body = " ".join(investigator().split())
+
+    assert "never add another repository to this session" in body
+    assert "never subscribe it to a pull request's activity" in body
+
+
+def test_the_probe_names_any_platform_session_tool_without_calling_it():
+    body = " ".join(probe().split())
+
+    assert "the platform's own `claude-code-remote` server" in body
+    assert (
+        "the operator's tool settings withhold all of them, and the expected answer is none"
+        in body
+    )

@@ -2,9 +2,10 @@
 
 `prompts/routine-tools.yaml` is the canonical copy of the tool settings both
 routines carry: the one issue read the session may use, every other tool of
-the platform's built-in GitHub server withheld, and every Sentry connector tool
-that writes withheld too. The routines hold their own copy, applied by hand, so
-these checks are what keep the file worth applying.
+the platform's built-in GitHub server withheld, every Sentry connector tool
+that writes withheld too, and every tool of the platform's own session server.
+The routines hold their own copy, applied by hand, so these checks are what
+keep the file worth applying.
 """
 
 import inspect
@@ -21,6 +22,14 @@ PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 PREFIX = "mcp__github__"
 
 SENTRY_PREFIX = "mcp__Sentry__"
+
+REMOTE_PREFIX = "mcp__claude-code-remote__"
+
+# The platform's own session server. Adding a repository widens what the
+# session reads beyond the one it checked out, and subscribing to a pull
+# request's activity is how a session comes to act on review comments, which
+# it answers as the operator. The investigator needs neither.
+REMOTE_TOOLS = ("add_repo", "subscribe_pr_activity", "unsubscribe_pr_activity")
 
 READ_ALLOWLIST = ["issue_read"]
 
@@ -127,14 +136,21 @@ def github_access() -> str:
 def test_the_policy_names_the_built_in_server_and_its_one_read():
     assert policy()["prefix"] == PREFIX
     assert policy()["sentry_prefix"] == SENTRY_PREFIX
+    assert policy()["remote_prefix"] == REMOTE_PREFIX
     assert policy()["read_allowlist"] == READ_ALLOWLIST
 
 
-def test_every_denied_tool_carries_one_of_the_two_prefixes():
+def test_every_denied_tool_carries_one_of_the_three_prefixes():
     for name in denied():
-        assert name.startswith((PREFIX, SENTRY_PREFIX)), (
-            f"{name} is neither a built-in GitHub tool nor a Sentry connector tool"
+        assert name.startswith((PREFIX, SENTRY_PREFIX, REMOTE_PREFIX)), (
+            f"{name} is not a GitHub, Sentry connector, or platform session tool"
         )
+
+
+def test_the_deny_list_withholds_every_platform_session_tool():
+    missing = {REMOTE_PREFIX + name for name in REMOTE_TOOLS} - set(denied())
+
+    assert not missing, f"disallowed_tools dropped platform session tools: {sorted(missing)}"
 
 
 def test_the_deny_list_withholds_every_sentry_write():

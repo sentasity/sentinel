@@ -66,6 +66,9 @@ Steps:
    git checkout <release>, then verify with git rev-parse HEAD. Every issue
    in this batch shares this release, so check out once. If checkout fails,
    record that and continue at branch HEAD, saying so in every result.
+   Work only in this checkout: never add another repository to this
+   session, and never subscribe it to a pull request's activity, whether or
+   not a tool for either appears in your tool list.
 2. For each id in issue_ids, fetch the issue and its latest event through the
    Sentry connector. Extract the short id, title, culprit, level, environment,
    and the top stack-trace frames. A performance issue (titled N+1 Query or

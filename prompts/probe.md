@@ -72,6 +72,11 @@ session's transcript:
    `onboarding_`. The investigator reads Sentry and never writes to it, so
    the operator's tool settings withhold every one of these, and the
    expected answer is none. Call none of them; listing is the whole check.
+   Do the same for the platform's own `claude-code-remote` server, which can
+   add a repository to a session or subscribe it to pull request activity:
+   name every tool of it in your list. The investigator needs none of
+   them, the operator's tool settings withhold all of them, and the
+   expected answer is none.
 3. Environment: report the name or identifier of the cloud environment you are
    running in, if it is visible to you, and say so plainly if it is not.
    Transcript only, like the connector list.

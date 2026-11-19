@@ -50,6 +50,8 @@ The cloud platform gives every routine session a built-in GitHub server whose to
 
 The Sentry connector is the other server whose tools act as the operator. The investigator reads issues, events, and traces through it and never writes there, so `disallowed_tools` also holds every connector tool that changes something in Sentry: issue updates, notes, and links, alert rules, monitors, projects, teams, keys, and automated root-cause analysis. Its reads stay available. Those entries carry the prefix the session sees, `mcp__<connector name>__`, which the file records as `sentry_prefix`. A connector under another name needs them renamed to match, or none of them applies. The tests keep every Sentry write a probe has listed in the file, and no Sentry read.
 
+The platform also gives routine sessions a server of its own, `claude-code-remote`, whose tools add a repository to the session and subscribe it to a pull request's activity. A session subscribed to a pull request acts on its review comments and can answer them as the operator. The investigator works in the one repository it checked out and the receiver opens every pull request, so `disallowed_tools` withholds every tool of that server, under the prefix the file records as `remote_prefix`.
+
 Both routines carry the same policy: the investigator, and the probe routine recorded as `trigger.probe_routine_id`. That keeps a probe run a faithful test of the investigator's settings.
 
 **Applying it.** The public routines API cannot read or write a routine's tool settings. Apply them through routine tooling (a Claude Code session's routine `get` and `update`), or on the routine's page at claude.ai when it shows both fields. Either way:
@@ -67,7 +69,8 @@ Then do the same for the probe routine.
 
 | The probe shows | Verdict | Next |
 |---|---|---|
-| 2 names no Sentry tool that writes | The Sentry entries apply | Pass |
+| 2 names no Sentry tool that writes and no `claude-code-remote` tool | The Sentry and platform entries apply | Pass |
+| 2 names a `claude-code-remote` tool | The list does not withhold it: a tool the platform added | Add it, apply again, probe again |
 | 2 names a Sentry tool that writes | The list does not withhold it: a tool the connector added, or a connector under another prefix | Add it, or rename the entries to the connector's prefix; apply again, probe again |
 | 4b: the receiver logged the POST, and the transcript's repository and commit match it | The investigator's delivery path works from this environment | Pass |
 | 4b: the transcript shows the POST attempted and failing, and the receiver logged nothing | Egress to the receiver is blocked | Check the environment's allowed hosts |

@@ -10,11 +10,17 @@
 #   When a probe lists a GitHub tool not named in either list, or a Sentry
 #   tool that writes and is not named here, add it before anything else
 #   changes.
+#   It also holds every tool of the platform's own claude-code-remote server
+#   (adding a repository to the session, subscribing it to pull request
+#   activity), which the session never needs: it works in the one
+#   repository it checked out, and the receiver opens every pull request.
 # sentry_prefix: the connector's tool prefix as the session sees it,
 #   mcp__<connector name>__. A connector under another name needs its
 #   entries renamed to match, or none of them applies.
+# remote_prefix: the platform server's tool prefix.
 prefix: mcp__github__
 sentry_prefix: mcp__Sentry__
+remote_prefix: mcp__claude-code-remote__
 read_allowlist:
   - issue_read
 disallowed_tools:
@@ -43,6 +49,9 @@ disallowed_tools:
   - mcp__Sentry__update_metric_monitor
   - mcp__Sentry__update_project
   - mcp__Sentry__update_uptime_monitor
+  - mcp__claude-code-remote__add_repo
+  - mcp__claude-code-remote__subscribe_pr_activity
+  - mcp__claude-code-remote__unsubscribe_pr_activity
   - mcp__github__actions_get
   - mcp__github__actions_list
   - mcp__github__actions_run_trigger
