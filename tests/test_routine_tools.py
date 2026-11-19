@@ -1,9 +1,10 @@
-"""The routine's GitHub tool policy must stay complete and agree with the prompt.
+"""The routine's tool policy must stay complete and agree with the prompt.
 
 `prompts/routine-tools.yaml` is the canonical copy of the tool settings both
-routines carry: the two issue reads the session may use, and every other tool
-of the platform's built-in GitHub server, withheld. The routines hold their own
-copy, applied by hand, so these checks are what keep the file worth applying.
+routines carry: the one issue read the session may use, every other tool of
+the platform's built-in GitHub server withheld, and every Sentry connector tool
+that writes withheld too. The routines hold their own copy, applied by hand, so
+these checks are what keep the file worth applying.
 """
 
 import inspect
@@ -18,6 +19,8 @@ from receiver.issues import OPS
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
 PREFIX = "mcp__github__"
+
+SENTRY_PREFIX = "mcp__Sentry__"
 
 READ_ALLOWLIST = ["issue_read"]
 
@@ -48,6 +51,53 @@ SEEN_BY_PROBE = ("disable_pr_auto_merge", "get_check_run")
 # platform stops removing them.
 SEARCHES = ("search_issues", "semantic_issues_search", "semantic_issue_similarity_search")
 
+# Every Sentry connector tool a probe listed that changes something in Sentry.
+# The session reads Sentry and never writes to it, so each stays withheld.
+SENTRY_WRITES = (
+    "add_issue_note",
+    "add_team_to_project",
+    "analyze_issue_with_seer",
+    "create_alert_rule",
+    "create_dsn",
+    "create_metric_monitor",
+    "create_monitor",
+    "create_project",
+    "create_team",
+    "create_uptime_monitor",
+    "delete_alert_rule",
+    "delete_metric_monitor",
+    "delete_monitor_environment",
+    "delete_uptime_monitor",
+    "link_issue",
+    "onboarding_status_update",
+    "remove_team_from_project",
+    "submit_feedback_to_sentry_team",
+    "unlink_issue",
+    "update_alert_rule",
+    "update_dsn",
+    "update_issue",
+    "update_metric_monitor",
+    "update_project",
+    "update_uptime_monitor",
+)
+
+# How a Sentry tool that writes is named. The investigation runs on the
+# connector's reads (issue details, events, stack traces, traces), so a name
+# without one of these starts is a read, and withholding it would blind the
+# session rather than protect anything.
+SENTRY_WRITE_STARTS = (
+    "add_",
+    "analyze_",
+    "create_",
+    "delete_",
+    "link_",
+    "onboarding_",
+    "remove_",
+    "submit_",
+    "unlink_",
+    "update_",
+)
+
 
 def policy() -> dict:
     return yaml.safe_load((PROMPTS / "routine-tools.yaml").read_text())
@@ -58,7 +108,14 @@ def denied() -> list[str]:
 
 
 def denied_unprefixed() -> set[str]:
-    return {name.removeprefix(PREFIX) for name in denied()}
+    """The withheld GitHub tools, without their prefix."""
+    return {name.removeprefix(PREFIX) for name in denied() if name.startswith(PREFIX)}
+
+
+def sentry_denied_unprefixed() -> set[str]:
+    return {
+        name.removeprefix(SENTRY_PREFIX) for name in denied() if name.startswith(SENTRY_PREFIX)
+    }
 
 
 def github_access() -> str:
@@ -69,12 +126,29 @@ def github_access() -> str:
 
 def test_the_policy_names_the_built_in_server_and_its_one_read():
     assert policy()["prefix"] == PREFIX
+    assert policy()["sentry_prefix"] == SENTRY_PREFIX
     assert policy()["read_allowlist"] == READ_ALLOWLIST
 
 
-def test_every_denied_tool_carries_the_prefix():
+def test_every_denied_tool_carries_one_of_the_two_prefixes():
     for name in denied():
-        assert name.startswith(PREFIX), f"{name} is not a built-in GitHub tool name"
+        assert name.startswith((PREFIX, SENTRY_PREFIX)), (
+            f"{name} is neither a built-in GitHub tool nor a Sentry connector tool"
+        )
+
+
+def test_the_deny_list_withholds_every_sentry_write():
+    missing = set(SENTRY_WRITES) - sentry_denied_unprefixed()
+
+    assert not missing, f"disallowed_tools dropped Sentry writes: {sorted(missing)}"
+
+
+def test_the_deny_list_leaves_every_sentry_read_available():
+    reads = {
+        name for name in sentry_denied_unprefixed() if not name.startswith(SENTRY_WRITE_STARTS)
+    }
+
+    assert not reads, f"disallowed_tools withholds Sentry reads: {sorted(reads)}"
 
 
 def test_the_deny_list_is_sorted_with_no_duplicates():
@@ -121,8 +195,11 @@ def test_the_investigator_prompt_never_names_a_withheld_tool():
     at the call or, wherever the list does not apply, licenses the very
     write the list exists to prevent."""
     body = (PROMPTS / "investigator.md").read_text()
-    backticked = {name.removeprefix(PREFIX) for name in re.findall(r"`([^`\s]+)`", body)}
-    named = backticked & denied_unprefixed()
+    backticked = {
+        name.removeprefix(PREFIX).removeprefix(SENTRY_PREFIX)
+        for name in re.findall(r"`([^`\s]+)`", body)
+    }
+    named = backticked & (denied_unprefixed() | sentry_denied_unprefixed())
 
     assert not named, f"the investigator prompt names withheld tools: {sorted(named)}"
 

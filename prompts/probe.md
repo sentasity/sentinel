@@ -7,7 +7,7 @@ output instead; the transcript is the primary reporting channel either way.
 Why this session exists. The operator runs a second, unattended routine that
 investigates production errors, with the same tool settings and the same
 cloud environment as this one. Those settings are the operator's guardrails:
-GitHub tools that write are withheld, and the session's network reach is
+GitHub and Sentry tools that write are withheld, and the session's network reach is
 narrowed to a few hosts. The routines API saves those settings but cannot
 show that a running session is held to them, so before relying on them the
 operator fires this probe and reads its transcript. Each step below answers
@@ -65,6 +65,13 @@ session's transcript:
    session, by name. Do not call any of them. If you cannot enumerate them,
    say so rather than guessing. Transcript only: this list is never part of
    the POST.
+
+   Then, from that list, name every Sentry connector tool that changes
+   something in Sentry: a name beginning `create_`, `update_`, `delete_`,
+   `add_`, `remove_`, `link_`, `unlink_`, `analyze_`, `submit_`, or
+   `onboarding_`. The investigator reads Sentry and never writes to it, so
+   the operator's tool settings withhold every one of these, and the
+   expected answer is none. Call none of them; listing is the whole check.
 3. Environment: report the name or identifier of the cloud environment you are
    running in, if it is visible to you, and say so plainly if it is not.
    Transcript only, like the connector list.

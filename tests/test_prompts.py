@@ -819,3 +819,22 @@ def test_neither_prompt_hardcodes_a_deployed_receiver_url():
     against SENTINEL_RECEIVER_URL still holds live."""
     for body in (investigator(), probe()):
         assert "lambda-url" not in body
+
+
+def test_the_investigator_reads_sentry_and_never_writes_to_it():
+    """The Sentry connector acts as the operator across the whole
+    organization. The tool settings withhold its writes, and the prompt
+    forbids them too, so a write tool the list has not caught up with is
+    still off limits."""
+    body = " ".join(investigator().split())
+
+    assert "Use the connector to read and nothing else: never change anything in Sentry" in body
+    assert "whether or not a tool for it appears in your tool list" in body
+
+
+def test_the_probe_names_any_sentry_tool_that_writes_without_calling_it():
+    body = " ".join(probe().split())
+
+    assert "name every Sentry connector tool that changes something in Sentry" in body
+    assert "the expected answer is none" in body
+    assert "Call none of them; listing is the whole check." in body

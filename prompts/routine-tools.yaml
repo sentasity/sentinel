@@ -1,15 +1,48 @@
-# The GitHub tool policy both routines carry: the investigator and the probe.
+# The tool policy both routines carry: the investigator and the probe.
 # Applied to each routine's job_config.ccr.session_context; see the runbooks.
 # read_allowlist: the only GitHub tools the session uses, also added to
 #   allowed_tools with the prefix below. The duplicate search is not one of
 #   them: the receiver runs it as the App, through its `search` operation.
 # disallowed_tools: every other tool of the built-in GitHub server, reads
-#   included. When a probe lists a GitHub tool not named in either list,
-#   add it here before anything else changes.
+#   included, and every tool of the Sentry connector that changes anything
+#   in Sentry. The session reads Sentry and never writes to it, so the
+#   connector's reads stay available and its writes are withheld.
+#   When a probe lists a GitHub tool not named in either list, or a Sentry
+#   tool that writes and is not named here, add it before anything else
+#   changes.
+# sentry_prefix: the connector's tool prefix as the session sees it,
+#   mcp__<connector name>__. A connector under another name needs its
+#   entries renamed to match, or none of them applies.
 prefix: mcp__github__
+sentry_prefix: mcp__Sentry__
 read_allowlist:
   - issue_read
 disallowed_tools:
+  - mcp__Sentry__add_issue_note
+  - mcp__Sentry__add_team_to_project
+  - mcp__Sentry__analyze_issue_with_seer
+  - mcp__Sentry__create_alert_rule
+  - mcp__Sentry__create_dsn
+  - mcp__Sentry__create_metric_monitor
+  - mcp__Sentry__create_monitor
+  - mcp__Sentry__create_project
+  - mcp__Sentry__create_team
+  - mcp__Sentry__create_uptime_monitor
+  - mcp__Sentry__delete_alert_rule
+  - mcp__Sentry__delete_metric_monitor
+  - mcp__Sentry__delete_monitor_environment
+  - mcp__Sentry__delete_uptime_monitor
+  - mcp__Sentry__link_issue
+  - mcp__Sentry__onboarding_status_update
+  - mcp__Sentry__remove_team_from_project
+  - mcp__Sentry__submit_feedback_to_sentry_team
+  - mcp__Sentry__unlink_issue
+  - mcp__Sentry__update_alert_rule
+  - mcp__Sentry__update_dsn
+  - mcp__Sentry__update_issue
+  - mcp__Sentry__update_metric_monitor
+  - mcp__Sentry__update_project
+  - mcp__Sentry__update_uptime_monitor
   - mcp__github__actions_get
   - mcp__github__actions_list
   - mcp__github__actions_run_trigger
